@@ -1,0 +1,46 @@
+{
+  "name": "@zktx.io/sui-move-builder",
+  "version": "0.1.0",
+  "description": "Build Move packages in web or Node.js with dependency fetching and dump outputs.",
+  "license": "MIT",
+  "author": "",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "clean": "rm -rf dist",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "build:js": "tsup",
+    "build": "npm run build:js && npm run build:wasm",
+    "serve:test": "python3 -m http.server 8000 --directory .",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "eslint": "^9.39.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.3.3",
+    "tsup": "^8.0.1",
+    "typescript": "^5.4.0",
+    "typescript-eslint": "^8.26.0"
+  }
+}

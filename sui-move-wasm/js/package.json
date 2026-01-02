@@ -1,0 +1,15 @@
+{
+  "name": "sui-move-wasm-resolver",
+  "version": "0.1.0",
+  "description": "JS-based dependency resolver for Sui Move WASM compiler",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "test": "node test/test.js"
+  },
+  "dependencies": {
+    "@iarna/toml": "^2.2.5"
+  },
+  "author": "",
+  "license": "Apache-2.0"
+}

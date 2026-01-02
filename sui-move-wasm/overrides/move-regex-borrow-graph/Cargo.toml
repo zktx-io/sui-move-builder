@@ -1,0 +1,24 @@
+[package]
+name = "move-regex-borrow-graph"
+version = "0.0.1"
+authors = ["The Move Contributors"]
+publish = false
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+itertools = "0.10.0"
+
+move-binary-format = "0.0.3"
+move-core-types = "0.0.4"
+move-command-line-common = "0.1.0"
+petgraph = "0.8.1"
+
+[dev-dependencies]
+datatest-stable = "0.1.1"
+proptest = "1.6.0"
+insta = "1.42.0"
+
+[[test]]
+name = "borrow_graph_tests"
+harness = false

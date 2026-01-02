@@ -1,0 +1,10 @@
+[package]
+name = "stacker"
+version = "0.1.15"
+edition = "2018"
+authors = ["Stub"]
+license = "MIT/Apache-2.0"
+description = "Stub for stacker (wasm-safe)"
+
+[lib]
+name = "stacker"
