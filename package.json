@@ -4,6 +4,14 @@
   "description": "Build Move packages in web or Node.js with dependency fetching and dump outputs.",
   "license": "MIT",
   "author": "",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zktx-io/sui-move-builder.git"
+  },
+  "homepage": "https://github.com/zktx-io/sui-move-builder",
+  "bugs": {
+    "url": "https://github.com/zktx-io/sui-move-builder/issues"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
