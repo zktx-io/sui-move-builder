@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sui Move WASM - dist test</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 960px;
+      margin: 32px auto;
+      padding: 0 16px;
+      line-height: 1.5;
+      color: #111827;
+    }
+    #output {
+      white-space: pre-wrap;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      padding: 12px;
+      margin-top: 12px;
+      font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 13px;
+    }
+    .log-line {
+      display: block;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    button {
+      padding: 10px 16px;
+      border: 1px solid #0f172a;
+      background: #111827;
+      color: #fff;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #0b1222;
+    }
+    .log-info { color: #334155; }
+    .log-success { color: #166534; }
+    .log-error { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <h1>Sui Move WASM (dist) test</h1>
+  <div id="version">Loading wasm...</div>
+  <button id="compileBtn">Compile sample package</button>
+  <pre id="output"></pre>
+
+  <script type="module">
+    import {
+      initMoveCompiler,
+      buildMovePackage,
+      getSuiMoveVersion,
+      getSuiVersion,
+      resolve,
+      GitHubFetcher,
+    } from "../dist/index.js";
+
+    // Package that depends on Sui framework (fetched from GitHub).
+    const moveToml = `
+[package]
+name = "hello_world"
+version = "0.0.1"
+
+[dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/testnet" }
+
+[addresses]
+hello_world = "0x0"
+`;
+
+    const moveCode = `
+module hello_world::hello_world;
+
+use sui::object;
+use sui::transfer;
+use sui::tx_context;
+
+public struct HelloWorldObject has key, store {
+    id: object::UID,
+    text: vector<u8>,
+}
+
+#[lint_allow(self_transfer)]
+public fun mint(ctx: &mut tx_context::TxContext) {
+    let object = HelloWorldObject {
+        id: object::new(ctx),
+        text: b"Hello World!",
+    };
+    transfer::public_transfer(object, tx_context::sender(ctx));
+}
+`;
+
+    function logLine(el, text, className) {
+      const span = document.createElement("span");
+      span.className = className ? `log-line ${className}` : "log-line";
+      span.textContent = text;
+      el.append(span, document.createTextNode("\n"));
+    }
+
+    async function main() {
+      const versionDiv = document.getElementById("version");
+      const output = document.getElementById("output");
+      const compileBtn = document.getElementById("compileBtn");
+
+      try {
+        await initMoveCompiler();
+        const mv = await getSuiMoveVersion();
+        const sv = await getSuiVersion();
+        versionDiv.textContent = `sui-move ${mv} | sui ${sv}`;
+      } catch (error) {
+        versionDiv.textContent = `Failed to init wasm: ${error}`;
+        return;
+      }
+
+      compileBtn.addEventListener("click", async () => {
+        output.textContent = "";
+        logLine(output, "Compiling...", "log-info");
+        const start = performance.now();
+        try {
+          logLine(output, "Resolving dependencies from GitHub...", "log-info");
+          const resolver = await resolve(
+            moveToml,
+            {
+              "Move.toml": moveToml,
+              "sources/hello_world.move": moveCode,
+            },
+            new GitHubFetcher()
+          );
+
+          const files =
+            typeof resolver.files === "string" ? JSON.parse(resolver.files) : resolver.files;
+          const dependencies =
+            typeof resolver.dependencies === "string"
+              ? JSON.parse(resolver.dependencies)
+              : resolver.dependencies;
+
+          const result = await buildMovePackage({ files, dependencies });
+
+          const end = performance.now();
+          if (!result.success) {
+            logLine(output, `Compilation failed: ${result.error}`, "log-error");
+            return;
+          }
+
+          logLine(output, `Success! (${(end - start).toFixed(2)}ms)`, "log-success");
+          logLine(output, `Digest: ${result.digest}`, "log-info");
+          logLine(output, `Dependencies: ${JSON.stringify(result.dependencies)}`, "log-info");
+          logLine(output, "Modules (base64):", "log-info");
+          result.modules.forEach((m, i) => {
+            logLine(output, `Module ${i}: ${m}`, "log-info");
+          });
+        } catch (error) {
+          logLine(output, `Runtime error: ${error}`, "log-error");
+        }
+      });
+    }
+
+    main();
+  </script>
+</body>
+</html>
