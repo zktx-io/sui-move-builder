@@ -1,0 +1,44 @@
+name: Deploy and Publish
+
+on:
+    release:
+        types: [published]
+
+permissions:
+    id-token: write
+    contents: write
+    actions: read
+
+jobs:
+    deploy-and-publish:
+        runs-on: ubuntu-latest
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Set up Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: "20"
+                  registry-url: "https://registry.npmjs.org"
+
+            - name: Set up Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+
+            - name: Install wasm-pack
+              uses: jetli/wasm-pack-action@v0.4.0
+
+            - name: Install deps
+              run: npm ci
+
+            - name: Build package (js + wasm)
+              run: npm run build
+
+            - name: Publish to npm
+              uses: JS-DevTools/npm-publish@v3
+              with:
+                  access: public
+                  provenance: true
+                  token: ${{ secrets.NPM_TOKEN }}
+                  package: "package.json"
+                  strategy: upgrade
