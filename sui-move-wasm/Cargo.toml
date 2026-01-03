@@ -7,6 +7,9 @@ publish = false
 edition = "2024"
 build = "build.rs"
 
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--strip-debug", "--strip-producers", "--enable-bulk-memory-opt"]
+
 [workspace]
 resolver = "2"
 
@@ -199,7 +202,6 @@ vfs = "0.10.0"
 hex = "0.4.3"
 getrandom = { version = "0.2", features = ["js"] }
 console_error_panic_hook = "0.1.7"
-web-sys = { version = "0.3", features = ["console"] }
 base64 = "0.21"
 toml = "0.7"
 blake2 = "0.10"

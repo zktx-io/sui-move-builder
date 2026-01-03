@@ -89,3 +89,7 @@ const resultWithColor = await buildMovePackage({
 npm run serve:test   # serves ./test via python -m http.server
 # open http://localhost:8000/test/index.html
 ```
+
+## Source
+
+> **Upstream source (Sui repository):** https://github.com/MystenLabs/sui

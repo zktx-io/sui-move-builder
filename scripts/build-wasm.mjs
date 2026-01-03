@@ -21,6 +21,14 @@ function run(command, args, options = {}) {
   });
 }
 
+async function hasCommand(command) {
+  return new Promise((resolve) => {
+    const child = spawn(command, ["--version"], { stdio: "ignore" });
+    child.on("error", () => resolve(false));
+    child.on("close", (code) => resolve(code === 0));
+  });
+}
+
 async function main() {
   // Fresh clone into .sui so crate path is .sui/crates/sui-move-wasm.
   await fs.rm(cloneDir, { recursive: true, force: true });
@@ -72,11 +80,43 @@ async function main() {
 
     // Step 2: wasm-pack build (from crate dir)
     console.log("Building wasm with wasm-pack...");
+    const releaseEnv = {
+      ...process.env,
+      CARGO_PROFILE_RELEASE_LTO: "true",
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1",
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "z",
+      CARGO_PROFILE_RELEASE_PANIC: "abort",
+      CARGO_PROFILE_RELEASE_STRIP: "symbols",
+    };
     await run(
       "wasm-pack",
-      ["build", ".", "--target", "web", "--out-dir", "pkg"],
-      { cwd: cratePath }
+      ["build", ".", "--target", "web", "--out-dir", "pkg", "--release"],
+      { cwd: cratePath, env: releaseEnv }
     );
+
+    const wasmPath = path.join(cratePath, "pkg", "sui_move_wasm_bg.wasm");
+    if (await hasCommand("wasm-opt")) {
+      console.log("Optimizing wasm with wasm-opt...");
+      await run(
+        "wasm-opt",
+        [
+          "-Oz",
+          "--strip-debug",
+          "--strip-producers",
+          "--enable-bulk-memory-opt",
+          "-o",
+          wasmPath,
+          wasmPath,
+        ],
+        {
+          cwd: cratePath,
+        }
+      );
+    } else {
+      console.log(
+        "wasm-opt not found; skipping post-build optimization. Install Binaryen to enable it."
+      );
+    }
 
     // Step 3: copy artifacts to dist
     const pkgDir = path.join(cratePath, "pkg");

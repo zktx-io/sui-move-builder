@@ -142,6 +142,7 @@ fn compile_impl(
     dependencies_json: &str, // Optional: dependency content map
     ansi_color: bool,
 ) -> MoveCompilerResult {
+    #[cfg(debug_assertions)]
     console_error_panic_hook::set_once();
     let files: BTreeMap<String, String> = match serde_json::from_str(files_json) {
         Ok(f) => f,
