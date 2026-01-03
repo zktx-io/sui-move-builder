@@ -68,6 +68,13 @@ const result = await buildMovePackage({
   files: filesJson,
   dependencies: depsJson,
 });
+
+// Enable ANSI-colored diagnostics (CLI-like output)
+const resultWithColor = await buildMovePackage({
+  files: filesJson,
+  dependencies: depsJson,
+  ansiColor: true,
+});
 ```
 
 `buildMovePackage` returns:

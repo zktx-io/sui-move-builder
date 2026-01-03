@@ -138,9 +138,10 @@ fn blake2b256(input: &[u8]) -> [u8; 32] {
 }
 
 #[wasm_bindgen]
-pub fn compile(
+fn compile_impl(
     files_json: &str,
     dependencies_json: &str, // Optional: dependency content map
+    ansi_color: bool,
 ) -> MoveCompilerResult {
     console_error_panic_hook::set_once();
     let files: BTreeMap<String, String> = match serde_json::from_str(files_json) {
@@ -366,11 +367,29 @@ pub fn compile(
         }
         Err(diags) => {
             // Compilation failed
-            let error_buffer = move_compiler::diagnostics::report_diagnostics_to_buffer(&files, diags, false);
+            let error_buffer = move_compiler::diagnostics::report_diagnostics_to_buffer(&files, diags, ansi_color);
             MoveCompilerResult {
                 success: false,
                 output: String::from_utf8_lossy(&error_buffer).to_string(),
             }
         }
     }
+}
+
+
+#[wasm_bindgen]
+pub fn compile(
+    files_json: &str,
+    dependencies_json: &str,
+) -> MoveCompilerResult {
+    compile_impl(files_json, dependencies_json, false)
+}
+
+#[wasm_bindgen]
+pub fn compile_with_color(
+    files_json: &str,
+    dependencies_json: &str,
+    ansi_color: bool,
+) -> MoveCompilerResult {
+    compile_impl(files_json, dependencies_json, ansi_color)
 }

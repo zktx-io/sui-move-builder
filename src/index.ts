@@ -7,6 +7,8 @@ export interface BuildInput {
   dependencies?: Record<string, string>;
   /** Optional custom URL for the wasm binary. Defaults to bundled wasm next to this module. */
   wasm?: string | URL;
+  /** Emit ANSI color codes in diagnostics when available. */
+  ansiColor?: boolean;
 }
 
 export interface BuildSuccess {
@@ -127,10 +129,17 @@ export async function buildMovePackage(
 ): Promise<BuildSuccess | BuildFailure> {
   try {
     const mod = await loadWasm(input.wasm);
-    const raw = mod.compile(
-      toJson(input.files),
-      toJson(input.dependencies ?? {})
-    );
+    const raw =
+      input.ansiColor && typeof (mod as any).compile_with_color === "function"
+        ? (mod as any).compile_with_color(
+            toJson(input.files),
+            toJson(input.dependencies ?? {}),
+            true
+          )
+        : mod.compile(
+            toJson(input.files),
+            toJson(input.dependencies ?? {})
+          );
     const result = ensureCompileResult(raw);
     const ok = result.success();
     const output = result.output();
@@ -171,10 +180,14 @@ export async function getWasmBindings(options?: {
 export async function compileRaw(
   filesJson: string,
   depsJson: string,
-  options?: { wasm?: string | URL }
+  options?: { wasm?: string | URL; ansiColor?: boolean }
 ) {
   const mod = await loadWasm(options?.wasm);
-  const result = ensureCompileResult(mod.compile(filesJson, depsJson));
+  const raw =
+    options?.ansiColor && typeof (mod as any).compile_with_color === "function"
+      ? (mod as any).compile_with_color(filesJson, depsJson, true)
+      : mod.compile(filesJson, depsJson);
+  const result = ensureCompileResult(raw);
   return {
     success: result.success(),
     output: result.output(),

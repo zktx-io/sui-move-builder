@@ -5,18 +5,48 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Sui Move WASM - dist test</title>
   <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #111827;
+      --panel: #ffffff;
+      --border: #e2e8f0;
+      --button-bg: #111827;
+      --button-bg-hover: #0b1222;
+      --button-border: #0f172a;
+      --button-fg: #ffffff;
+      --log-info: #334155;
+      --log-success: #166534;
+      --log-error: #b91c1c;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b0f16;
+        --fg: #e2e8f0;
+        --panel: #111827;
+        --border: #1f2937;
+        --button-bg: #e2e8f0;
+        --button-bg-hover: #cbd5f5;
+        --button-border: #e2e8f0;
+        --button-fg: #0b0f16;
+        --log-info: #94a3b8;
+        --log-success: #22c55e;
+        --log-error: #ef4444;
+      }
+    }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       max-width: 960px;
       margin: 32px auto;
       padding: 0 16px;
       line-height: 1.5;
-      color: #111827;
+      color: var(--fg);
+      background: var(--bg);
     }
     #output {
       white-space: pre-wrap;
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
+      background: var(--panel);
+      border: 1px solid var(--border);
       padding: 12px;
       margin-top: 12px;
       font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
@@ -31,23 +61,27 @@
     }
     button {
       padding: 10px 16px;
-      border: 1px solid #0f172a;
-      background: #111827;
-      color: #fff;
+      border: 1px solid var(--button-border);
+      background: var(--button-bg);
+      color: var(--button-fg);
       border-radius: 6px;
       cursor: pointer;
     }
     button:hover {
-      background: #0b1222;
+      background: var(--button-bg-hover);
     }
-    .log-info { color: #334155; }
-    .log-success { color: #166534; }
-    .log-error { color: #b91c1c; }
+    .log-info { color: var(--log-info); }
+    .log-success { color: var(--log-success); }
+    .log-error { color: var(--log-error); }
   </style>
 </head>
 <body>
   <h1>Sui Move WASM (dist) test</h1>
   <div id="version">Loading wasm...</div>
+  <label style="display:inline-flex; align-items:center; gap:8px; margin-right:12px;">
+    <input id="ansiColor" type="checkbox" checked />
+    ANSI color
+  </label>
   <button id="compileBtn">Compile sample package</button>
   <pre id="output"></pre>
 
@@ -103,6 +137,70 @@ public fun mint(ctx: &mut tx_context::TxContext) {
       el.append(span, document.createTextNode("\n"));
     }
 
+    function appendAnsiText(el, text) {
+      const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
+      const COLOR_MAP = {
+        30: "#000000",
+        31: "#b91c1c",
+        32: "#166534",
+        33: "#b45309",
+        34: "#1d4ed8",
+        35: "#7e22ce",
+        36: "#0f766e",
+        37: "#334155",
+        90: "#64748b",
+        91: "#dc2626",
+        92: "#16a34a",
+        93: "#f59e0b",
+        94: "#2563eb",
+        95: "#a855f7",
+        96: "#14b8a6",
+        97: "#1e293b"
+      };
+      let currentColor = null;
+      let isBold = false;
+      let lastIndex = 0;
+      const matches = text.matchAll(ANSI_REGEX);
+      const flushText = (chunk) => {
+        if (!chunk) return;
+        const span = document.createElement("span");
+        if (currentColor) span.style.color = currentColor;
+        if (isBold) span.style.fontWeight = "600";
+        span.textContent = chunk;
+        el.append(span);
+      };
+      for (const match of matches) {
+        const idx = match.index ?? 0;
+        flushText(text.slice(lastIndex, idx));
+        const codeStr = match[0].slice(2, -1);
+        const codes = codeStr ? codeStr.split(";").map(Number) : [0];
+        for (const code of codes) {
+          if (code === 0) {
+            currentColor = null;
+            isBold = false;
+          } else if (code === 1) {
+            isBold = true;
+          } else if (code === 22) {
+            isBold = false;
+          } else if (code === 39) {
+            currentColor = null;
+          } else if (COLOR_MAP[code]) {
+            currentColor = COLOR_MAP[code];
+          }
+        }
+        lastIndex = idx + match[0].length;
+      }
+      flushText(text.slice(lastIndex));
+    }
+
+    function appendAnsiBlock(el, text) {
+      const lines = text.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        appendAnsiText(el, lines[i]);
+        el.append(document.createTextNode("\n"));
+      }
+    }
+
     async function main() {
       const versionDiv = document.getElementById("version");
       const output = document.getElementById("output");
@@ -140,11 +238,12 @@ public fun mint(ctx: &mut tx_context::TxContext) {
               ? JSON.parse(resolver.dependencies)
               : resolver.dependencies;
 
-          const result = await buildMovePackage({ files, dependencies });
+          const useAnsi = ansiColor && ansiColor.checked;
+          const result = await buildMovePackage({ files, dependencies, ansiColor: useAnsi });
 
           const end = performance.now();
           if (!result.success) {
-            logLine(output, `Compilation failed: ${result.error}`, "log-error");
+            appendAnsiBlock(output, result.error);
             return;
           }
 
