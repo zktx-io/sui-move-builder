@@ -137,7 +137,6 @@ fn blake2b256(input: &[u8]) -> [u8; 32] {
     out
 }
 
-#[wasm_bindgen]
 fn compile_impl(
     files_json: &str,
     dependencies_json: &str, // Optional: dependency content map
