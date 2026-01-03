@@ -30,11 +30,19 @@ jobs:
 
             - name: Install wasm-opt (Binaryen)
               run: |
-                  BINARYEN_VERSION=116
-                  curl -L "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz" -o /tmp/binaryen.tar.gz
+                  BINARYEN_TAG=$(python - <<'PY'
+                  import json
+                  import urllib.request
+                  url = "https://api.github.com/repos/WebAssembly/binaryen/releases/latest"
+                  data = json.load(urllib.request.urlopen(url))
+                  print(data["tag_name"])
+                  PY
+                  )
+                  curl -L "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_TAG}/binaryen-${BINARYEN_TAG}-x86_64-linux.tar.gz" -o /tmp/binaryen.tar.gz
                   tar -xzf /tmp/binaryen.tar.gz -C /tmp
-                  sudo cp "/tmp/binaryen-version_${BINARYEN_VERSION}/bin/wasm-opt" /usr/local/bin/wasm-opt
+                  sudo cp "/tmp/binaryen-${BINARYEN_TAG}/bin/wasm-opt" /usr/local/bin/wasm-opt
                   sudo chmod +x /usr/local/bin/wasm-opt
+                  wasm-opt --version
 
             - name: Install deps
               run: npm ci
