@@ -29,25 +29,35 @@ async function hasCommand(command) {
   });
 }
 
-async function main() {
-  // Fresh clone into .sui so crate path is .sui/crates/sui-move-wasm.
-  await fs.rm(cloneDir, { recursive: true, force: true });
-
+async function dirHasContents(dir) {
   try {
-    console.log("Cloning Sui...");
-    await run("git", [
-      "clone",
-      "--depth",
-      "1",
-      "https://github.com/MystenLabs/sui.git",
-      cloneDir,
-    ]);
-    // Bring in Move sources required for build.
-    await run("git", ["submodule", "update", "--init", "--recursive"], {
-      cwd: cloneDir,
-    });
+    const entries = await fs.readdir(dir);
+    return entries.length > 0;
+  } catch {
+    return false;
+  }
+}
 
-    // Copy our local crate into the cloned workspace.
+async function main() {
+  try {
+    if (!(await dirHasContents(cloneDir))) {
+      console.log("Cloning Sui...");
+      await run("git", [
+        "clone",
+        "--depth",
+        "1",
+        "https://github.com/MystenLabs/sui.git",
+        cloneDir,
+      ]);
+      // Bring in Move sources required for build.
+      await run("git", ["submodule", "update", "--init", "--recursive"], {
+        cwd: cloneDir,
+      });
+    } else {
+      console.log(`Reusing existing Sui checkout at ${cloneDir}`);
+    }
+
+    // Copy our local crate into the workspace.
     const cratePath = path.join(cloneDir, "crates", "sui-move-wasm");
     await fs.rm(cratePath, { recursive: true, force: true });
     await fs.cp(localWasmCrate, cratePath, { recursive: true });
@@ -140,11 +150,7 @@ async function main() {
     }
     console.log(`Copied wasm artifacts to ${distDir}`);
   } finally {
-    if (!process.env.SUI_KEEP_TEMP) {
-      await fs.rm(cloneDir, { recursive: true, force: true });
-    } else {
-      console.log(`Temp kept at ${cloneDir}`);
-    }
+    console.log(`Temp kept at ${cloneDir}`);
   }
 }
 

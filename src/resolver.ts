@@ -28,8 +28,8 @@ export class Resolver {
 
     if (parsedToml.dependencies) {
       await this.resolveDeps(parsedToml.dependencies);
-      await this.injectSystemDepsFromRoot(parsedToml.dependencies);
     }
+    await this.injectSystemDeps(parsedToml.dependencies);
 
     const finalMoveToml = this.reconstructMoveToml(parsedToml, this.globalAddresses);
     const finalFiles = { ...rootFiles, "Move.toml": finalMoveToml };
@@ -144,12 +144,19 @@ export class Resolver {
     return newToml;
   }
 
-  private async injectSystemDepsFromRoot(depsObj: Record<string, any>) {
-    for (const depInfo of Object.values(depsObj)) {
-      if (!depInfo || !(depInfo as any).git || !(depInfo as any).rev) continue;
-      if (!this.isSuiRepo((depInfo as any).git)) continue;
-      await this.addImplicitSystemDepsForRepo((depInfo as any).git, (depInfo as any).rev);
-      return;
+  private async injectSystemDeps(depsObj?: Record<string, any>) {
+    if (depsObj) {
+      for (const depInfo of Object.values(depsObj)) {
+        if (!depInfo || !(depInfo as any).git || !(depInfo as any).rev) continue;
+        if (!this.isSuiRepo((depInfo as any).git)) continue;
+        await this.addImplicitSystemDepsForRepo((depInfo as any).git, (depInfo as any).rev);
+        break;
+      }
+    }
+
+    const hasMoveStdlib = Boolean(this.dependencyFiles["dependencies/MoveStdlib/Move.toml"]);
+    if (!hasMoveStdlib) {
+      this.addFallbackSystemDeps();
     }
   }
 
@@ -180,28 +187,44 @@ export class Resolver {
     } catch (e) {}
 
     if (!packages) {
-      packages = [
-        { name: "MoveStdlib", id: "0x1" },
-        { name: "Sui", id: "0x2" },
-        { name: "SuiSystem", id: "0x3" },
-        { name: "Bridge", id: "0xb" },
-      ];
+      packages = this.fallbackSystemPackages();
     }
 
     for (const pkg of packages) {
       if (!pkg || !pkg.name || !pkg.id) continue;
       if (pkg.name === "DeepBook") continue;
-      const targetPath = `dependencies/${pkg.name}/Move.toml`;
-      if (this.dependencyFiles[targetPath]) continue;
-      const moveToml = [
-        "[package]",
-        `name = "${pkg.name}"`,
-        'version = "0.0.0"',
-        `published-at = "${pkg.id}"`,
-        "",
-      ].join("\n");
-      this.dependencyFiles[targetPath] = moveToml;
+      this.addSystemDep(pkg.name, pkg.id);
     }
+  }
+
+  private addFallbackSystemDeps() {
+    for (const pkg of this.fallbackSystemPackages()) {
+      if (!pkg || !pkg.name || !pkg.id) continue;
+      if (pkg.name === "DeepBook") continue;
+      this.addSystemDep(pkg.name, pkg.id);
+    }
+  }
+
+  private addSystemDep(name: string, id: string) {
+    const targetPath = `dependencies/${name}/Move.toml`;
+    if (this.dependencyFiles[targetPath]) return;
+    const moveToml = [
+      "[package]",
+      `name = "${name}"`,
+      'version = "0.0.0"',
+      `published-at = "${this.normalizeAddress(id)}"`,
+      "",
+    ].join("\n");
+    this.dependencyFiles[targetPath] = moveToml;
+  }
+
+  private fallbackSystemPackages(): { name: string; id: string }[] {
+    return [
+      { name: "MoveStdlib", id: "0x1" },
+      { name: "Sui", id: "0x2" },
+      { name: "SuiSystem", id: "0x3" },
+      { name: "Bridge", id: "0xb" },
+    ];
   }
 
   private isSuiRepo(gitUrl: string): boolean {

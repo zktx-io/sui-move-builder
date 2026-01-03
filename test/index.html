@@ -91,40 +91,45 @@
       buildMovePackage,
       getSuiMoveVersion,
       getSuiVersion,
-      resolve,
-      GitHubFetcher,
     } from "../dist/index.js";
 
-    // Package that depends on Sui framework (fetched from GitHub).
     const moveToml = `
 [package]
 name = "hello_world"
 version = "0.0.1"
+edition = "2024.beta"
 
 [dependencies]
-Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/testnet" }
 
 [addresses]
 hello_world = "0x0"
 `;
 
     const moveCode = `
+// Copyright (c) Sui Foundation, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+/// A basic Hello World example for Sui Move, part of the Sui Move intro course:
+/// https://github.com/sui-foundation/sui-move-intro-course
+///
 module hello_world::hello_world;
 
-use sui::object;
+use std::string;
+use sui::object::{Self, UID};
 use sui::transfer;
-use sui::tx_context;
+use sui::tx_context::{Self, TxContext};
 
+/// An object that contains an arbitrary string
 public struct HelloWorldObject has key, store {
-    id: object::UID,
-    text: vector<u8>,
+    id: UID,
+    /// A string contained in the object
+    text: string::String,
 }
 
-#[lint_allow(self_transfer)]
-public fun mint(ctx: &mut tx_context::TxContext) {
+public fun mint(ctx: &mut TxContext) {
     let object = HelloWorldObject {
         id: object::new(ctx),
-        text: b"Hello World!",
+        text: string::utf8(b"Hello World!"),
     };
     transfer::public_transfer(object, tx_context::sender(ctx));
 }
@@ -221,25 +226,17 @@ public fun mint(ctx: &mut tx_context::TxContext) {
         logLine(output, "Compiling...", "log-info");
         const start = performance.now();
         try {
-          logLine(output, "Resolving dependencies from GitHub...", "log-info");
-          const resolver = await resolve(
-            moveToml,
-            {
-              "Move.toml": moveToml,
-              "sources/hello_world.move": moveCode,
-            },
-            new GitHubFetcher()
-          );
-
-          const files =
-            typeof resolver.files === "string" ? JSON.parse(resolver.files) : resolver.files;
-          const dependencies =
-            typeof resolver.dependencies === "string"
-              ? JSON.parse(resolver.dependencies)
-              : resolver.dependencies;
+          const files = {
+            "Move.toml": moveToml,
+            "sources/hello_world.move": moveCode,
+          };
 
           const useAnsi = ansiColor && ansiColor.checked;
-          const result = await buildMovePackage({ files, dependencies, ansiColor: useAnsi });
+          const result = await buildMovePackage({
+            files,
+            ansiColor: useAnsi,
+            autoSystemDeps: true,
+          });
 
           const end = performance.now();
           if (!result.success) {

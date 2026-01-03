@@ -34,7 +34,11 @@ module hello_world::hello_world {
 };
 
 // 3) Compile
-const result = await buildMovePackage({ files, dependencies: {} });
+const result = await buildMovePackage({
+  files,
+  dependencies: {},
+  autoSystemDeps: true, // Sui CLI-like defaults for std/Sui packages
+});
 
 if (result.success) {
   console.log(result.digest);
@@ -67,7 +71,11 @@ const depsJson =
 const result = await buildMovePackage({
   files: filesJson,
   dependencies: depsJson,
+  autoSystemDeps: true,
 });
+
+// If autoSystemDeps is enabled and std/Sui packages are missing,
+// the builder fetches them from GitHub using the Sui framework snapshot.
 
 // Enable ANSI-colored diagnostics (CLI-like output)
 const resultWithColor = await buildMovePackage({

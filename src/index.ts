@@ -1,3 +1,6 @@
+import { GitHubFetcher } from "./fetcher.js";
+import { resolve as resolveMoveToml } from "./resolver.js";
+
 type MaybePromise<T> = T | Promise<T>;
 
 export interface BuildInput {
@@ -9,6 +12,8 @@ export interface BuildInput {
   wasm?: string | URL;
   /** Emit ANSI color codes in diagnostics when available. */
   ansiColor?: boolean;
+  /** Inject standard Sui system packages when missing (CLI-like behavior). */
+  autoSystemDeps?: boolean;
 }
 
 export interface BuildSuccess {
@@ -116,6 +121,161 @@ function parseCompileResult(output: string): BuildSuccess | BuildFailure {
   }
 }
 
+function normalizeAddress(addr: string) {
+  if (!addr) return addr;
+  let clean = addr;
+  if (clean.startsWith("0x")) clean = clean.slice(2);
+  if (/^[0-9a-fA-F]+$/.test(clean)) {
+    return "0x" + clean.padStart(64, "0");
+  }
+  return addr;
+}
+
+function ensureDefaultAddresses(moveToml: string): string {
+  const defaults: Record<string, string> = {
+    std: "0x1",
+    sui: "0x2",
+    sui_system: "0x3",
+    bridge: "0xb",
+  };
+  const lines = moveToml.split(/\r?\n/);
+  const sectionHeader = /^\s*\[[^\]]+\]\s*$/;
+  let addrStart = -1;
+  let addrEnd = lines.length;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*\[addresses\]\s*$/.test(lines[i])) {
+      addrStart = i;
+      for (let j = i + 1; j < lines.length; j++) {
+        if (sectionHeader.test(lines[j])) {
+          addrEnd = j;
+          break;
+        }
+      }
+      break;
+    }
+  }
+
+  const existing = new Set<string>();
+  if (addrStart >= 0) {
+    for (let i = addrStart + 1; i < addrEnd; i++) {
+      const line = lines[i].trim();
+      if (!line || line.startsWith("#")) continue;
+      const match = line.match(/^([A-Za-z0-9_.-]+)\s*=/);
+      if (match) existing.add(match[1]);
+    }
+  }
+
+  const missingLines = Object.entries(defaults)
+    .filter(([name]) => !existing.has(name))
+    .map(([name, value]) => `${name} = "${normalizeAddress(value)}"`);
+
+  if (missingLines.length === 0) return moveToml;
+
+  if (addrStart >= 0) {
+    lines.splice(addrEnd, 0, ...missingLines);
+  } else {
+    lines.push("", "[addresses]", ...missingLines);
+  }
+  return lines.join("\n");
+}
+
+function ensureSystemDepsInMoveToml(moveToml: string): string {
+  const systemDeps = [
+    {
+      name: "Sui",
+      git: "https://github.com/MystenLabs/sui.git",
+      subdir: "crates/sui-framework/packages/sui-framework",
+      rev: "framework/mainnet",
+    },
+    {
+      name: "MoveStdlib",
+      git: "https://github.com/MystenLabs/sui.git",
+      subdir: "crates/sui-framework/packages/move-stdlib",
+      rev: "framework/mainnet",
+    },
+  ];
+  const lines = moveToml.split(/\r?\n/);
+  const sectionHeader = /^\s*\[[^\]]+\]\s*$/;
+  let depsStart = -1;
+  let depsEnd = lines.length;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*\[dependencies\]\s*$/.test(lines[i])) {
+      depsStart = i;
+      for (let j = i + 1; j < lines.length; j++) {
+        if (sectionHeader.test(lines[j])) {
+          depsEnd = j;
+          break;
+        }
+      }
+      break;
+    }
+  }
+
+  const existing = new Set<string>();
+  if (depsStart >= 0) {
+    for (let i = depsStart + 1; i < depsEnd; i++) {
+      const line = lines[i].trim();
+      if (!line || line.startsWith("#")) continue;
+      const match = line.match(/^([A-Za-z0-9_.-]+)\s*=/);
+      if (match) existing.add(match[1]);
+    }
+  }
+
+  const missingLines = systemDeps
+    .filter((dep) => !existing.has(dep.name))
+    .map(
+      (dep) =>
+        `${dep.name} = { git = "${dep.git}", subdir = "${dep.subdir}", rev = "${dep.rev}" }`
+    );
+
+  if (missingLines.length === 0) return moveToml;
+
+  if (depsStart >= 0) {
+    lines.splice(depsEnd, 0, ...missingLines);
+  } else {
+    lines.push("", "[dependencies]", ...missingLines);
+  }
+  return lines.join("\n");
+}
+
+function injectFallbackSystemDeps(
+  deps: Record<string, string> | undefined
+): Record<string, string> {
+  const next = { ...(deps ?? {}) };
+  if (next["dependencies/MoveStdlib/Move.toml"]) return next;
+  const systemPkgs = [
+    { name: "MoveStdlib", id: "0x1" },
+    { name: "Sui", id: "0x2" },
+    { name: "SuiSystem", id: "0x3" },
+    { name: "Bridge", id: "0xb" },
+  ];
+  for (const pkg of systemPkgs) {
+    const targetPath = `dependencies/${pkg.name}/Move.toml`;
+    if (next[targetPath]) continue;
+    next[targetPath] = [
+      "[package]",
+      `name = "${pkg.name}"`,
+      'version = "0.0.0"',
+      `published-at = "${normalizeAddress(pkg.id)}"`,
+      "",
+    ].join("\n");
+  }
+  return next;
+}
+
+function hasSystemDeps(deps: Record<string, string> | undefined): boolean {
+  return Boolean(
+    deps?.["dependencies/MoveStdlib/Move.toml"] &&
+      deps?.["dependencies/Sui/Move.toml"]
+  );
+}
+
+function asRecord(value: string | Record<string, string>): Record<string, string> {
+  return typeof value === "string" ? JSON.parse(value) : value;
+}
+
 /** Initialize the wasm module (idempotent). Provide a custom wasm URL if hosting separately. */
 export async function initMoveCompiler(options?: {
   wasm?: string | URL;
@@ -128,17 +288,41 @@ export async function buildMovePackage(
   input: BuildInput
 ): Promise<BuildSuccess | BuildFailure> {
   try {
+    let dependencies = input.dependencies ?? {};
+    let files = { ...input.files };
+    const hasMoveToml = typeof files["Move.toml"] === "string";
+
+    if (input.autoSystemDeps && hasMoveToml) {
+      let moveToml = ensureDefaultAddresses(files["Move.toml"]);
+      if (!hasSystemDeps(dependencies)) {
+        moveToml = ensureSystemDepsInMoveToml(moveToml);
+      }
+      files["Move.toml"] = moveToml;
+    }
+
+    if (input.autoSystemDeps && !hasSystemDeps(dependencies) && hasMoveToml) {
+      const resolved = await resolveMoveToml(
+        files["Move.toml"],
+        files,
+        new GitHubFetcher()
+      );
+      files = asRecord(resolved.files);
+      dependencies = asRecord(resolved.dependencies);
+    } else if (input.autoSystemDeps) {
+      dependencies = injectFallbackSystemDeps(dependencies);
+    }
+
     const mod = await loadWasm(input.wasm);
     const raw =
       input.ansiColor && typeof (mod as any).compile_with_color === "function"
         ? (mod as any).compile_with_color(
-            toJson(input.files),
-            toJson(input.dependencies ?? {}),
+            toJson(files),
+            toJson(dependencies),
             true
           )
         : mod.compile(
-            toJson(input.files),
-            toJson(input.dependencies ?? {})
+            toJson(files),
+            toJson(dependencies)
           );
     const result = ensureCompileResult(raw);
     const ok = result.success();
