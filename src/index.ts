@@ -46,7 +46,11 @@ let wasmReady: Promise<WasmModule> | undefined;
 async function loadWasm(customWasm?: string | URL): Promise<WasmModule> {
   if (!wasmReady) {
     wasmReady = import("./sui_move_wasm.js").then(async (mod) => {
-      await mod.default(customWasm ?? wasmUrl);
+      if (customWasm) {
+        await (mod.default as any)({ module_or_path: customWasm });
+      } else {
+        await mod.default();
+      }
       return mod;
     });
   }
@@ -268,7 +272,7 @@ function injectFallbackSystemDeps(
 function hasSystemDeps(deps: Record<string, string> | undefined): boolean {
   return Boolean(
     deps?.["dependencies/MoveStdlib/Move.toml"] &&
-      deps?.["dependencies/Sui/Move.toml"]
+    deps?.["dependencies/Sui/Move.toml"]
   );
 }
 
@@ -316,14 +320,14 @@ export async function buildMovePackage(
     const raw =
       input.ansiColor && typeof (mod as any).compile_with_color === "function"
         ? (mod as any).compile_with_color(
-            toJson(files),
-            toJson(dependencies),
-            true
-          )
+          toJson(files),
+          toJson(dependencies),
+          true
+        )
         : mod.compile(
-            toJson(files),
-            toJson(dependencies)
-          );
+          toJson(files),
+          toJson(dependencies)
+        );
     const result = ensureCompileResult(raw);
     const ok = result.success();
     const output = result.output();
