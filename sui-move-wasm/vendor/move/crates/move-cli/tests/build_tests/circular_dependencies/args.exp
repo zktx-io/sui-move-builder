@@ -1,2 +1,0 @@
-Command `build -v`:
-Error: Package `Foo` contains a cyclic dependency: dependency `Foo::Bar::Foo` refers back to `Foo`

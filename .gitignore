@@ -10,3 +10,4 @@ dist
 **/pkg
 .pre-commit*
 Cargo.lock
+.DS_Store

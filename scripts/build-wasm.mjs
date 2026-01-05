@@ -8,7 +8,8 @@ const repoRoot = path.resolve(
   ".."
 );
 const cloneDir = path.join(repoRoot, ".sui");
-const localWasmCrate = path.join(repoRoot, "sui-move-wasm");
+const localSourceDir = path.join(repoRoot, "sui-move-wasm");
+const SUI_COMMIT = "1073a8fbf6cfa0d4a4d2bf34b2494a212116089c"; // mainnet-v1.62.1
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -21,18 +22,10 @@ function run(command, args, options = {}) {
   });
 }
 
-async function hasCommand(command) {
-  return new Promise((resolve) => {
-    const child = spawn(command, ["--version"], { stdio: "ignore" });
-    child.on("error", () => resolve(false));
-    child.on("close", (code) => resolve(code === 0));
-  });
-}
-
-async function dirHasContents(dir) {
+async function dirExists(dir) {
   try {
-    const entries = await fs.readdir(dir);
-    return entries.length > 0;
+    await fs.access(dir);
+    return true;
   } catch {
     return false;
   }
@@ -40,55 +33,113 @@ async function dirHasContents(dir) {
 
 async function main() {
   try {
-    if (!(await dirHasContents(cloneDir))) {
-      console.log("Cloning Sui...");
-      await run("git", [
-        "clone",
-        "--depth",
-        "1",
-        "https://github.com/MystenLabs/sui.git",
-        cloneDir,
-      ]);
-      // Bring in Move sources required for build.
-      await run("git", ["submodule", "update", "--init", "--recursive"], {
-        cwd: cloneDir,
-      });
-    } else {
-      console.log(`Reusing existing Sui checkout at ${cloneDir}`);
+    // 1. Ensure .sui is present and at the right version
+    if (!(await dirExists(cloneDir))) {
+      console.log(`Cloning Sui at ${SUI_COMMIT}...`);
+      await run("git", ["init", cloneDir]);
+      await run("git", ["remote", "add", "origin", "https://github.com/MystenLabs/sui.git"], { cwd: cloneDir });
     }
 
-    // Copy our local crate into the workspace.
-    const cratePath = path.join(cloneDir, "crates", "sui-move-wasm");
-    await fs.rm(cratePath, { recursive: true, force: true });
-    await fs.cp(localWasmCrate, cratePath, { recursive: true });
+    console.log(`Fetching and checking out ${SUI_COMMIT}...`);
+    await run("git", ["fetch", "--depth", "1", "origin", SUI_COMMIT], { cwd: cloneDir });
+    await run("git", ["reset", "--hard", SUI_COMMIT], { cwd: cloneDir });
+    
+    // Ensure submodules (Move sources) are present
+    console.log("Updating submodules...");
+    await run("git", ["submodule", "update", "--init", "--recursive"], { cwd: cloneDir });
 
-    // Ensure the workspace knows about it.
-    const workspaceToml = path.join(cloneDir, "Cargo.toml");
-    let cargoToml = await fs.readFile(workspaceToml, "utf8");
-    const membersHeader = "members = [";
-    const idx = cargoToml.indexOf(membersHeader);
-    if (idx !== -1 && !cargoToml.includes('"crates/sui-move-wasm"')) {
-      const insertAt = idx + membersHeader.length;
-      cargoToml =
-        cargoToml.slice(0, insertAt) +
-        '\n  "crates/sui-move-wasm",' +
-        cargoToml.slice(insertAt);
-      await fs.writeFile(workspaceToml, cargoToml);
+    // 2. Prepare our crate within Sui workspace
+    const crateDir = path.join(cloneDir, "crates", "sui-move-wasm");
+    console.log(`Overlaying sui-move-wasm into ${crateDir}...`);
+    await fs.rm(crateDir, { recursive: true, force: true });
+    await fs.mkdir(crateDir, { recursive: true });
+    
+    // Copy our source files (excluding vendor if it exists, though we plan to delete it)
+    const entries = await fs.readdir(localSourceDir);
+    for (const entry of entries) {
+      if (entry === "vendor" || entry === "target" || entry === "pkg") continue;
+      const src = path.join(localSourceDir, entry);
+      const dest = path.join(crateDir, entry);
+      await fs.cp(src, dest, { recursive: true });
     }
 
-    try {
-      await fs.access(path.join(cratePath, "Cargo.toml"));
-    } catch {
-      throw new Error(
-        `Expected crate at ${cratePath} but Cargo.toml is missing. Check the Sui branch/ref.`
-      );
+    // 3. Patch Cargo.toml for paths
+    console.log("Patching Cargo.toml paths...");
+    const cargoTomlPath = path.join(crateDir, "Cargo.toml");
+    let cargoContent = await fs.readFile(cargoTomlPath, "utf8");
+    
+    // Replace vendor paths with relative paths to .sui root's external-crates
+    // From: path = "vendor/move/crates/..."
+    // To:   path = "../../external-crates/move/crates/..."
+    cargoContent = cargoContent.replace(/path = "vendor\/move\//g, 'path = "../../external-crates/move/');
+    
+    // Note: overrides/ folder is copied into the crate, so we keep its relative paths as is.
+
+    await fs.writeFile(cargoTomlPath, cargoContent);
+
+    // 4. Register in Sui workspace and pin problematic dependencies
+    const workspaceTomls = [
+      path.join(cloneDir, "Cargo.toml"),
+      path.join(cloneDir, "external-crates", "move", "Cargo.toml")
+    ];
+
+    for (const workspaceToml of workspaceTomls) {
+      if (!(await dirExists(workspaceToml))) continue;
+      
+      console.log(`Patching workspace at ${workspaceToml}...`);
+      let workspaceContent = await fs.readFile(workspaceToml, "utf8");
+      
+      if (workspaceToml.includes('.sui/Cargo.toml') && !workspaceContent.includes('"crates/sui-move-wasm"')) {
+        console.log("Registering crate in Sui root workspace...");
+        workspaceContent = workspaceContent.replace(
+          'members = [',
+          'members = [\n    "crates/sui-move-wasm",'
+        );
+      }
+      
+      // Pin dependencies to avoid pulling incompatible versions (like getrandom 0.3.4)
+      workspaceContent = workspaceContent.replace(/proptest = "1\.6\.0"/g, 'proptest = "=1.6.0"');
+      workspaceContent = workspaceContent.replace(/rand = "0\.8\.[0-9]"/g, 'rand = "=0.8.5"');
+      workspaceContent = workspaceContent.replace(/insta = { version = "1\.[0-9.]+"/g, (match) => match.includes('1.21.1') ? 'insta = { version = "=1.21.1"' : 'insta = { version = "=1.42.0"');
+      workspaceContent = workspaceContent.replace(/tempfile = "3\.[0-9.]+"/g, 'tempfile = "=3.2.0"');
+      
+      // Add patch for getrandom to force 0.3.3 if 0.3 is required
+      const patchHeader = '[patch.crates-io]';
+      const getrandomPatch = 'getrandom = { git = "https://github.com/rust-random/getrandom", rev = "e51381c" }';
+      
+      if (workspaceContent.includes(patchHeader)) {
+        if (!workspaceContent.includes('getrandom = { git =')) {
+          workspaceContent = workspaceContent.replace(patchHeader, `${patchHeader}\n${getrandomPatch}`);
+        }
+      } else {
+        workspaceContent += `\n${patchHeader}\n${getrandomPatch}\n`;
+      }
+      
+      await fs.writeFile(workspaceToml, workspaceContent);
     }
 
-    // Step 1: generate lockfile (run from crate dir so workspace root is .sui)
-    console.log("Generating Cargo.lock...");
-    await run("cargo", ["generate-lockfile"], { cwd: cratePath });
+    // 4.1 Patch specific Move crates that pull incompatible dependencies for WASM
+    const problematicCrate = path.join(cloneDir, "external-crates", "move", "crates", "move-regex-borrow-graph", "Cargo.toml");
+    if (await dirExists(problematicCrate)) {
+      console.log("Patching move-regex-borrow-graph to remove proptest from main dependencies...");
+      let content = await fs.readFile(problematicCrate, "utf8");
+      // Move proptest to dev-dependencies if not already there
+      if (content.includes('proptest.workspace = true') && !content.includes('[dev-dependencies]')) {
+        content = content.replace('proptest.workspace = true', '');
+        content += '\n[dev-dependencies]\nproptest.workspace = true\n';
+        await fs.writeFile(problematicCrate, content);
+      } else if (content.includes('proptest.workspace = true')) {
+        // If it's in dependencies but [dev-dependencies] exists elsewhere, just remove it from main
+        // (Simple regex to remove it from [dependencies] block)
+        content = content.replace(/proptest\.workspace = true\n/g, '');
+        if (!content.includes('proptest.workspace = true')) {
+          content += '\n[dev-dependencies]\nproptest.workspace = true\n';
+        }
+        await fs.writeFile(problematicCrate, content);
+      }
+    }
 
-    // Step 2: wasm-pack build (from crate dir)
+    // 5. Build wasm
     console.log("Building wasm with wasm-pack...");
     const releaseEnv = {
       ...process.env,
@@ -98,63 +149,42 @@ async function main() {
       CARGO_PROFILE_RELEASE_PANIC: "abort",
       CARGO_PROFILE_RELEASE_STRIP: "symbols",
     };
+    
     await run(
       "wasm-pack",
       ["build", ".", "--target", "web", "--out-dir", "pkg", "--release"],
-      { cwd: cratePath, env: releaseEnv }
+      { cwd: crateDir, env: releaseEnv }
     );
 
-    const wasmPath = path.join(cratePath, "pkg", "sui_move_wasm_bg.wasm");
-    if (await hasCommand("wasm-opt")) {
-      console.log("Optimizing wasm with wasm-opt...");
-      await run(
-        "wasm-opt",
-        [
-          "-Oz",
-          "--strip-debug",
-          "--strip-producers",
-          "--enable-bulk-memory-opt",
-          "-o",
-          wasmPath,
-          wasmPath,
-        ],
-        {
-          cwd: cratePath,
-        }
-      );
-    } else {
-      console.log(
-        "wasm-opt not found; skipping post-build optimization. Install Binaryen to enable it."
-      );
-    }
-
-    // Step 3: copy artifacts to dist
-    const pkgDir = path.join(cratePath, "pkg");
+    // 6. Copy artifacts back
+    const pkgDir = path.join(crateDir, "pkg");
     const distDir = path.join(repoRoot, "dist");
     await fs.mkdir(distDir, { recursive: true });
-    const requiredFiles = ["sui_move_wasm.js", "sui_move_wasm_bg.wasm"];
-    const optionalFiles = ["sui_move_wasm_bg.wasm.d.ts", "sui_move_wasm.d.ts"];
+    
+    const filesToCopy = [
+      "sui_move_wasm.js",
+      "sui_move_wasm_bg.wasm",
+      "sui_move_wasm_bg.wasm.d.ts",
+      "sui_move_wasm.d.ts"
+    ];
 
-    for (const file of [...requiredFiles, ...optionalFiles]) {
-      const from = path.join(pkgDir, file);
-      const to = path.join(distDir, file);
-      await fs.rm(to, { force: true });
+    for (const file of filesToCopy) {
+      const src = path.join(pkgDir, file);
+      const dest = path.join(distDir, file);
       try {
-        await fs.copyFile(from, to);
-      } catch {
-        if (optionalFiles.includes(file)) continue;
-        throw new Error(
-          `Expected ${from} but it was not produced by wasm-pack`
-        );
+        await fs.copyFile(src, dest);
+        console.log(`Copied ${file} to dist/`);
+      } catch (err) {
+        if (file.endsWith(".d.ts")) continue; // Optional
+        throw err;
       }
     }
-    console.log(`Copied wasm artifacts to ${distDir}`);
-  } finally {
-    console.log(`Temp kept at ${cloneDir}`);
+
+    console.log("\nBuild successful!");
+  } catch (error) {
+    console.error("Build failed:", error.message);
+    process.exit(1);
   }
 }
 
-main().catch((error) => {
-  console.error(error.message || error);
-  process.exit(1);
-});
+main();

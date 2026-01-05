@@ -1,4 +1,0 @@
-action
-colors
-geometry
-temperature
