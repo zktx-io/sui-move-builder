@@ -1,7 +1,14 @@
 {
   "name": "@zktx.io/sui-move-builder",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Build Move packages in web or Node.js with dependency fetching and dump outputs.",
+  "keywords": [
+    "sui",
+    "move",
+    "compiler",
+    "builder",
+    "wasm"
+  ],
   "license": "MIT",
   "author": "",
   "repository": {
