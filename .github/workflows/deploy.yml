@@ -1,60 +1,60 @@
 name: Deploy and Publish
 
 on:
-    release:
-        types: [published]
+  release:
+    types: [published]
 
 permissions:
-    id-token: write
-    contents: write
-    actions: read
+  id-token: write
+  contents: write
+  actions: read
 
 jobs:
-    deploy-and-publish:
-        runs-on: ubuntu-latest
+  deploy-and-publish:
+    runs-on: ubuntu-latest
 
-        steps:
-            - uses: actions/checkout@v4
+    steps:
+      - uses: actions/checkout@v4
 
-            - name: Set up Node.js
-              uses: actions/setup-node@v4
-              with:
-                  node-version: "20"
-                  registry-url: "https://registry.npmjs.org"
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
 
-            - name: Set up Rust toolchain
-              uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-            - name: Install wasm-pack
-              uses: jetli/wasm-pack-action@v0.4.0
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
 
-            - name: Install wasm-opt (Binaryen)
-              run: |
-                  BINARYEN_TAG=$(python - <<'PY'
-                  import json
-                  import urllib.request
-                  url = "https://api.github.com/repos/WebAssembly/binaryen/releases/latest"
-                  data = json.load(urllib.request.urlopen(url))
-                  print(data["tag_name"])
-                  PY
-                  )
-                  curl -L "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_TAG}/binaryen-${BINARYEN_TAG}-x86_64-linux.tar.gz" -o /tmp/binaryen.tar.gz
-                  tar -xzf /tmp/binaryen.tar.gz -C /tmp
-                  sudo cp "/tmp/binaryen-${BINARYEN_TAG}/bin/wasm-opt" /usr/local/bin/wasm-opt
-                  sudo chmod +x /usr/local/bin/wasm-opt
-                  wasm-opt --version
+      - name: Install wasm-opt (Binaryen)
+        run: |
+          BINARYEN_TAG=$(python - <<'PY'
+          import json
+          import urllib.request
+          url = "https://api.github.com/repos/WebAssembly/binaryen/releases/latest"
+          data = json.load(urllib.request.urlopen(url))
+          print(data["tag_name"])
+          PY
+          )
+          curl -L "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_TAG}/binaryen-${BINARYEN_TAG}-x86_64-linux.tar.gz" -o /tmp/binaryen.tar.gz
+          tar -xzf /tmp/binaryen.tar.gz -C /tmp
+          sudo cp "/tmp/binaryen-${BINARYEN_TAG}/bin/wasm-opt" /usr/local/bin/wasm-opt
+          sudo chmod +x /usr/local/bin/wasm-opt
+          wasm-opt --version
 
-            - name: Install deps
-              run: npm ci
+      - name: Install deps
+        run: npm ci
 
-            - name: Build package (js + wasm)
-              run: npm run build
+      - name: Build package (js + wasm)
+        run: npm run build
 
-            - name: Publish to npm
-              uses: JS-DevTools/npm-publish@v3
-              with:
-                  access: public
-                  provenance: true
-                  token: ${{ secrets.NPM_TOKEN }}
-                  package: "package.json"
-                  strategy: upgrade
+      - name: Publish to npm
+        uses: JS-DevTools/npm-publish@v3
+        with:
+          access: public
+          provenance: true
+          token: ${{ secrets.NPM_TOKEN }}
+          package: "package.json"
+          strategy: upgrade

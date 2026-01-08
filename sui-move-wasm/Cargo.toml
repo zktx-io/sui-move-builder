@@ -8,7 +8,7 @@ edition = "2024"
 build = "build.rs"
 
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = ["-Oz", "--strip-debug", "--strip-producers", "--enable-bulk-memory-opt"]
+wasm-opt = false
 
 [workspace]
 resolver = "2"
@@ -198,6 +198,7 @@ serde_json = "1.0.64"
 anyhow = "1.0.52"
 move-compiler = { path = "vendor/move/crates/move-compiler" }
 move-core-types = { path = "vendor/move/crates/move-core-types" }
+move-symbol-pool = { path = "vendor/move/crates/move-symbol-pool" }
 vfs = "0.10.0"
 hex = "0.4.3"
 getrandom = { version = "0.2", features = ["js"] }

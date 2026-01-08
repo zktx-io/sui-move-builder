@@ -1,8 +1,6 @@
 import { GitHubFetcher } from "./fetcher.js";
 import { resolve as resolveMoveToml } from "./resolver.js";
 
-type MaybePromise<T> = T | Promise<T>;
-
 export interface BuildInput {
   /** Virtual file system contents. Keys are paths (e.g. "Move.toml", "sources/Module.move"). */
   files: Record<string, string>;
@@ -14,6 +12,8 @@ export interface BuildInput {
   ansiColor?: boolean;
   /** Inject standard Sui system packages when missing (CLI-like behavior). */
   autoSystemDeps?: boolean;
+  /** Network environment (mainnet, testnet, devnet). Defaults to mainnet. */
+  network?: "mainnet" | "testnet" | "devnet";
 }
 
 export interface BuildSuccess {
@@ -33,14 +33,6 @@ export interface BuildFailure {
 
 type WasmModule = typeof import("./sui_move_wasm.js");
 
-const wasmUrl = (() => {
-  try {
-    // Works in ESM builds; CJS bundle falls back to plain string.
-    return new URL("./sui_move_wasm_bg.wasm", import.meta.url);
-  } catch {
-    return "./sui_move_wasm_bg.wasm";
-  }
-})();
 let wasmReady: Promise<WasmModule> | undefined;
 
 async function loadWasm(customWasm?: string | URL): Promise<WasmModule> {
@@ -276,7 +268,9 @@ function hasSystemDeps(deps: Record<string, string> | undefined): boolean {
   );
 }
 
-function asRecord(value: string | Record<string, string>): Record<string, string> {
+function asRecord(
+  value: string | Record<string, string>
+): Record<string, string> {
   return typeof value === "string" ? JSON.parse(value) : value;
 }
 
@@ -308,7 +302,8 @@ export async function buildMovePackage(
       const resolved = await resolveMoveToml(
         files["Move.toml"],
         files,
-        new GitHubFetcher()
+        new GitHubFetcher(),
+        input.network // Pass the network argument here
       );
       files = asRecord(resolved.files);
       dependencies = asRecord(resolved.dependencies);
@@ -320,14 +315,11 @@ export async function buildMovePackage(
     const raw =
       input.ansiColor && typeof (mod as any).compile_with_color === "function"
         ? (mod as any).compile_with_color(
-          toJson(files),
-          toJson(dependencies),
-          true
-        )
-        : mod.compile(
-          toJson(files),
-          toJson(dependencies)
-        );
+            toJson(files),
+            toJson(dependencies),
+            true
+          )
+        : mod.compile(toJson(files), toJson(dependencies));
     const result = ensureCompileResult(raw);
     const ok = result.success();
     const output = result.output();
@@ -388,3 +380,11 @@ export type BuildResult = BuildSuccess | BuildFailure;
 export { resolve, Resolver } from "./resolver.js";
 export { GitHubFetcher, Fetcher } from "./fetcher.js";
 export { parseToml } from "./tomlParser.js";
+
+// Package fetching utilities
+export {
+  fetchPackageFromGitHub,
+  fetchPackagesFromGitHub,
+  parseGitHubUrl,
+  githubUrl,
+} from "./packageFetcher.js";

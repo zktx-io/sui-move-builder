@@ -1,263 +1,351 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Sui Move WASM - dist test</title>
-  <style>
-    :root {
-      color-scheme: light dark;
-      --bg: #f8fafc;
-      --fg: #111827;
-      --panel: #ffffff;
-      --border: #e2e8f0;
-      --button-bg: #111827;
-      --button-bg-hover: #0b1222;
-      --button-border: #0f172a;
-      --button-fg: #ffffff;
-      --log-info: #334155;
-      --log-success: #166534;
-      --log-error: #b91c1c;
-    }
-    @media (prefers-color-scheme: dark) {
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sui Move WASM - dist test</title>
+    <style>
       :root {
-        --bg: #0b0f16;
-        --fg: #e2e8f0;
-        --panel: #111827;
-        --border: #1f2937;
-        --button-bg: #e2e8f0;
-        --button-bg-hover: #cbd5f5;
-        --button-border: #e2e8f0;
-        --button-fg: #0b0f16;
-        --log-info: #94a3b8;
-        --log-success: #22c55e;
-        --log-error: #ef4444;
+        color-scheme: light dark;
+        --bg: #f8fafc;
+        --fg: #111827;
+        --panel: #ffffff;
+        --border: #e2e8f0;
+        --button-bg: #111827;
+        --button-bg-hover: #0b1222;
+        --button-border: #0f172a;
+        --button-fg: #ffffff;
+        --log-info: #334155;
+        --log-success: #166534;
+        --log-error: #b91c1c;
       }
-    }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      max-width: 960px;
-      margin: 32px auto;
-      padding: 0 16px;
-      line-height: 1.5;
-      color: var(--fg);
-      background: var(--bg);
-    }
-    #output {
-      white-space: pre-wrap;
-      background: var(--panel);
-      border: 1px solid var(--border);
-      padding: 12px;
-      margin-top: 12px;
-      font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-      font-size: 13px;
-    }
-    .log-line {
-      display: block;
-      max-width: 100%;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    button {
-      padding: 10px 16px;
-      border: 1px solid var(--button-border);
-      background: var(--button-bg);
-      color: var(--button-fg);
-      border-radius: 6px;
-      cursor: pointer;
-    }
-    button:hover {
-      background: var(--button-bg-hover);
-    }
-    .log-info { color: var(--log-info); }
-    .log-success { color: var(--log-success); }
-    .log-error { color: var(--log-error); }
-  </style>
-</head>
-<body>
-  <h1>Sui Move WASM (dist) test</h1>
-  <div id="version">Loading wasm...</div>
-  <label style="display:inline-flex; align-items:center; gap:8px; margin-right:12px;">
-    <input id="ansiColor" type="checkbox" checked />
-    ANSI color
-  </label>
-  <button id="compileBtn">Compile sample package</button>
-  <pre id="output"></pre>
 
-  <script type="module">
-    import {
-      initMoveCompiler,
-      buildMovePackage,
-      getSuiMoveVersion,
-      getSuiVersion,
-    } from "../dist/index.js";
-
-    const moveToml = `
-[package]
-name = "hello_world"
-version = "0.0.1"
-edition = "2024.beta"
-
-[dependencies]
-
-[addresses]
-hello_world = "0x0"
-`;
-
-    const moveCode = `
-// Copyright (c) Sui Foundation, Inc.
-// SPDX-License-Identifier: Apache-2.0
-
-/// A basic Hello World example for Sui Move, part of the Sui Move intro course:
-/// https://github.com/sui-foundation/sui-move-intro-course
-///
-module hello_world::hello_world;
-
-use std::string;
-use sui::object::{Self, UID};
-use sui::transfer;
-use sui::tx_context::{Self, TxContext};
-
-/// An object that contains an arbitrary string
-public struct HelloWorldObject has key, store {
-    id: UID,
-    /// A string contained in the object
-    text: string::String,
-}
-
-public fun mint(ctx: &mut TxContext) {
-    let object = HelloWorldObject {
-        id: object::new(ctx),
-        text: string::utf8(b"Hello World!"),
-    };
-    transfer::public_transfer(object, tx_context::sender(ctx));
-}
-`;
-
-    function logLine(el, text, className) {
-      const span = document.createElement("span");
-      span.className = className ? `log-line ${className}` : "log-line";
-      span.textContent = text;
-      el.append(span, document.createTextNode("\n"));
-    }
-
-    function appendAnsiText(el, text) {
-      const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
-      const COLOR_MAP = {
-        30: "#000000",
-        31: "#b91c1c",
-        32: "#166534",
-        33: "#b45309",
-        34: "#1d4ed8",
-        35: "#7e22ce",
-        36: "#0f766e",
-        37: "#334155",
-        90: "#64748b",
-        91: "#dc2626",
-        92: "#16a34a",
-        93: "#f59e0b",
-        94: "#2563eb",
-        95: "#a855f7",
-        96: "#14b8a6",
-        97: "#1e293b"
-      };
-      let currentColor = null;
-      let isBold = false;
-      let lastIndex = 0;
-      const matches = text.matchAll(ANSI_REGEX);
-      const flushText = (chunk) => {
-        if (!chunk) return;
-        const span = document.createElement("span");
-        if (currentColor) span.style.color = currentColor;
-        if (isBold) span.style.fontWeight = "600";
-        span.textContent = chunk;
-        el.append(span);
-      };
-      for (const match of matches) {
-        const idx = match.index ?? 0;
-        flushText(text.slice(lastIndex, idx));
-        const codeStr = match[0].slice(2, -1);
-        const codes = codeStr ? codeStr.split(";").map(Number) : [0];
-        for (const code of codes) {
-          if (code === 0) {
-            currentColor = null;
-            isBold = false;
-          } else if (code === 1) {
-            isBold = true;
-          } else if (code === 22) {
-            isBold = false;
-          } else if (code === 39) {
-            currentColor = null;
-          } else if (COLOR_MAP[code]) {
-            currentColor = COLOR_MAP[code];
-          }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0b0f16;
+          --fg: #e2e8f0;
+          --panel: #111827;
+          --border: #1f2937;
+          --button-bg: #e2e8f0;
+          --button-bg-hover: #cbd5f5;
+          --button-border: #e2e8f0;
+          --button-fg: #0b0f16;
+          --log-info: #94a3b8;
+          --log-success: #22c55e;
+          --log-error: #ef4444;
         }
-        lastIndex = idx + match[0].length;
-      }
-      flushText(text.slice(lastIndex));
-    }
-
-    function appendAnsiBlock(el, text) {
-      const lines = text.split("\n");
-      for (let i = 0; i < lines.length; i++) {
-        appendAnsiText(el, lines[i]);
-        el.append(document.createTextNode("\n"));
-      }
-    }
-
-    async function main() {
-      const versionDiv = document.getElementById("version");
-      const output = document.getElementById("output");
-      const compileBtn = document.getElementById("compileBtn");
-
-      try {
-        await initMoveCompiler();
-        const mv = await getSuiMoveVersion();
-        const sv = await getSuiVersion();
-        versionDiv.textContent = `sui-move ${mv} | sui ${sv}`;
-      } catch (error) {
-        versionDiv.textContent = `Failed to init wasm: ${error}`;
-        return;
       }
 
-      compileBtn.addEventListener("click", async () => {
-        output.textContent = "";
-        logLine(output, "Compiling...", "log-info");
-        const start = performance.now();
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        max-width: 960px;
+        margin: 32px auto;
+        padding: 0 16px;
+        line-height: 1.5;
+        color: var(--fg);
+        background: var(--bg);
+      }
+
+      #output {
+        white-space: pre-wrap;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        padding: 12px;
+        margin-top: 12px;
+        font-family:
+          "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono",
+          "Courier New", monospace;
+        font-size: 13px;
+      }
+
+      .log-line {
+        display: block;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      button {
+        padding: 10px 16px;
+        border: 1px solid var(--button-border);
+        background: var(--button-bg);
+        color: var(--button-fg);
+        border-radius: 6px;
+        cursor: pointer;
+      }
+
+      button:hover:not(:disabled) {
+        background: var(--button-bg-hover);
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .log-info {
+        color: var(--log-info);
+      }
+
+      .log-success {
+        color: var(--log-success);
+      }
+
+      .log-error {
+        color: var(--log-error);
+      }
+    </style>
+  </head>
+
+  <body>
+    <h1>Sui Move WASM (dist) test</h1>
+    <div id="version">Loading wasm...</div>
+    <div style="margin: 16px 0">
+      <label style="display: block; margin-bottom: 8px">
+        GitHub Repository URL:
+        <input
+          id="repoUrl"
+          type="text"
+          placeholder="https://github.com/username/repo"
+          style="
+            width: 100%;
+            padding: 8px;
+            margin-top: 4px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            background: var(--panel);
+            color: var(--fg);
+          "
+        />
+      </label>
+      <label
+        style="
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          margin-right: 12px;
+        "
+      >
+        Network:
+        <select
+          id="networkSelect"
+          style="
+            padding: 4px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            background: var(--panel);
+            color: var(--fg);
+          "
+        >
+          <option value="mainnet" selected>Mainnet</option>
+          <option value="testnet">Testnet</option>
+          <option value="devnet">Devnet</option>
+        </select>
+      </label>
+      <label
+        style="
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          margin-right: 12px;
+        "
+      >
+        <input id="ansiColor" type="checkbox" checked />
+        ANSI color
+      </label>
+      <button id="compileBtn" disabled>Build from GitHub</button>
+    </div>
+    <pre id="output"></pre>
+
+    <script type="module">
+      import {
+        initMoveCompiler,
+        buildMovePackage,
+        getSuiMoveVersion,
+        getSuiVersion,
+        fetchPackageFromGitHub,
+      } from "../dist/index.js";
+
+      function logLine(el, text, className) {
+        const span = document.createElement("span");
+        span.className = className ? `log-line ${className}` : "log-line";
+        span.textContent = text;
+        el.append(span, document.createTextNode("\n"));
+      }
+
+      function appendAnsiText(el, text) {
+        const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
+        const COLOR_MAP = {
+          30: "#000000",
+          31: "#b91c1c",
+          32: "#166534",
+          33: "#b45309",
+          34: "#1d4ed8",
+          35: "#7e22ce",
+          36: "#0f766e",
+          37: "#334155",
+          90: "#64748b",
+          91: "#dc2626",
+          92: "#16a34a",
+          93: "#f59e0b",
+          94: "#2563eb",
+          95: "#a855f7",
+          96: "#14b8a6",
+          97: "#1e293b",
+        };
+        let currentColor = null;
+        let isBold = false;
+        let lastIndex = 0;
+        const matches = text.matchAll(ANSI_REGEX);
+        const flushText = (chunk) => {
+          if (!chunk) return;
+          const span = document.createElement("span");
+          if (currentColor) span.style.color = currentColor;
+          if (isBold) span.style.fontWeight = "600";
+          span.textContent = chunk;
+          el.append(span);
+        };
+        for (const match of matches) {
+          const idx = match.index ?? 0;
+          flushText(text.slice(lastIndex, idx));
+          const codeStr = match[0].slice(2, -1);
+          const codes = codeStr ? codeStr.split(";").map(Number) : [0];
+          for (const code of codes) {
+            if (code === 0) {
+              currentColor = null;
+              isBold = false;
+            } else if (code === 1) {
+              isBold = true;
+            } else if (code === 22) {
+              isBold = false;
+            } else if (code === 39) {
+              currentColor = null;
+            } else if (COLOR_MAP[code]) {
+              currentColor = COLOR_MAP[code];
+            }
+          }
+          lastIndex = idx + match[0].length;
+        }
+        flushText(text.slice(lastIndex));
+      }
+
+      function appendAnsiBlock(el, text) {
+        const lines = text.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          appendAnsiText(el, lines[i]);
+          el.append(document.createTextNode("\n"));
+        }
+      }
+
+      async function main() {
+        const versionDiv = document.getElementById("version");
+        const output = document.getElementById("output");
+        const compileBtn = document.getElementById("compileBtn");
+        const repoUrlInput = document.getElementById("repoUrl");
+        const networkSelect = document.getElementById("networkSelect");
+
         try {
-          const files = {
-            "Move.toml": moveToml,
-            "sources/hello_world.move": moveCode,
-          };
+          await initMoveCompiler();
+          const mv = await getSuiMoveVersion();
+          const sv = await getSuiVersion();
+          versionDiv.textContent = `sui-move ${mv} | sui ${sv}`;
+        } catch (error) {
+          versionDiv.textContent = `Failed to init wasm: ${error}`;
+          return;
+        }
 
-          const useAnsi = ansiColor && ansiColor.checked;
-          const result = await buildMovePackage({
-            files,
-            ansiColor: useAnsi,
-            autoSystemDeps: true,
-          });
+        repoUrlInput.addEventListener("input", () => {
+          compileBtn.disabled = !repoUrlInput.value.trim();
+        });
 
-          const end = performance.now();
-          if (!result.success) {
-            appendAnsiBlock(output, result.error);
+        compileBtn.addEventListener("click", async () => {
+          output.textContent = "";
+          const repoUrl = document.getElementById("repoUrl").value.trim();
+          const network = networkSelect.value;
+
+          if (!repoUrl) {
+            logLine(
+              output,
+              "Please enter a GitHub repository URL",
+              "log-error"
+            );
             return;
           }
 
-          logLine(output, `Success! (${(end - start).toFixed(2)}ms)`, "log-success");
-          logLine(output, `Digest: ${result.digest}`, "log-info");
-          logLine(output, `Dependencies: ${JSON.stringify(result.dependencies)}`, "log-info");
-          logLine(output, "Modules (base64):", "log-info");
-          result.modules.forEach((m, i) => {
-            logLine(output, `Module ${i}: ${m}`, "log-info");
-          });
-        } catch (error) {
-          logLine(output, `Runtime error: ${error}`, "log-error");
-        }
-      });
-    }
+          logLine(
+            output,
+            `Fetching package from GitHub: ${repoUrl}`,
+            "log-info"
+          );
 
-    main();
-  </script>
-</body>
+          try {
+            const files = await fetchPackageFromGitHub(repoUrl);
+            logLine(
+              output,
+              `Found ${Object.keys(files).length} file(s)`,
+              "log-success"
+            );
+            Object.keys(files).forEach((path) => {
+              const size = files[path]?.length || 0;
+              logLine(output, `  - ${path} (${size} bytes)`, "log-info");
+            });
+
+            // Check for Move.lock specifically
+            if (files["Move.lock"]) {
+              logLine(
+                output,
+                `✓ Move.lock found (${files["Move.lock"].length} bytes)`,
+                "log-success"
+              );
+            } else {
+              logLine(output, `⚠ Move.lock not found`, "log-info");
+            }
+
+            logLine(output, "\nCompiling...", "log-info");
+            const start = performance.now();
+
+            const useAnsi = document.getElementById("ansiColor").checked;
+            const result = await buildMovePackage({
+              files,
+              ansiColor: useAnsi,
+              autoSystemDeps: true,
+              network: network,
+            });
+
+            const end = performance.now();
+            if (!result.success) {
+              appendAnsiBlock(output, result.error);
+              return;
+            }
+
+            logLine(
+              output,
+              `\nSuccess! (${(end - start).toFixed(2)}ms)`,
+              "log-success"
+            );
+            logLine(output, `Digest: ${result.digest}`, "log-info");
+            logLine(
+              output,
+              `Dependencies: ${JSON.stringify(result.dependencies)}`,
+              "log-info"
+            );
+            logLine(output, "Modules (base64):", "log-info");
+            result.modules.forEach((m, i) => {
+              logLine(
+                output,
+                `Module ${i}: ${m.substring(0, 100)}...`,
+                "log-info"
+              );
+            });
+          } catch (error) {
+            logLine(output, `Error: ${error.message}`, "log-error");
+            console.error(error);
+          }
+        });
+      }
+
+      main();
+    </script>
+  </body>
 </html>

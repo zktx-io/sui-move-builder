@@ -1,14 +1,20 @@
 /** Abstract interface for fetching package content. */
 export class Fetcher {
   /** Fetch a package. Return map of path -> content. */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async fetch(_gitUrl: string, _rev: string, _subdir?: string): Promise<Record<string, string>> {
+  async fetch(
+    _gitUrl: string,
+    _rev: string,
+    _subdir?: string
+  ): Promise<Record<string, string>> {
     throw new Error("Not implemented");
   }
 
   /** Fetch a single file from a repository. */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async fetchFile(_gitUrl: string, _rev: string, _path: string): Promise<string | null> {
+  async fetchFile(
+    _gitUrl: string,
+    _rev: string,
+    _path: string
+  ): Promise<string | null> {
     throw new Error("Not implemented");
   }
 }
@@ -22,7 +28,11 @@ export class GitHubFetcher extends Fetcher {
     this.cache = new Map();
   }
 
-  async fetch(gitUrl: string, rev: string, subdir?: string): Promise<Record<string, string>> {
+  async fetch(
+    gitUrl: string,
+    rev: string,
+    subdir?: string
+  ): Promise<Record<string, string>> {
     const { owner, repo } = this.parseGitUrl(gitUrl);
     if (!owner || !repo) {
       throw new Error(`Invalid git URL: ${gitUrl}`);
@@ -39,7 +49,7 @@ export class GitHubFetcher extends Fetcher {
         throw new Error(`Failed to fetch tree: ${resp.statusText}`);
       }
       treeData = await resp.json();
-    } catch (e) {
+    } catch {
       return {};
     }
 
@@ -58,7 +68,12 @@ export class GitHubFetcher extends Fetcher {
         }
       }
 
-      if (!relativePath.endsWith(".move") && relativePath !== "Move.toml") {
+      if (
+        !relativePath.endsWith(".move") &&
+        relativePath !== "Move.toml" &&
+        relativePath !== "Move.lock" &&
+        !relativePath.match(/^Move\.(mainnet|testnet|devnet)\.toml$/)
+      ) {
         continue;
       }
 
@@ -75,7 +90,11 @@ export class GitHubFetcher extends Fetcher {
     return files;
   }
 
-  async fetchFile(gitUrl: string, rev: string, path: string): Promise<string | null> {
+  async fetchFile(
+    gitUrl: string,
+    rev: string,
+    path: string
+  ): Promise<string | null> {
     const { owner, repo } = this.parseGitUrl(gitUrl);
     if (!owner || !repo) {
       throw new Error(`Invalid git URL: ${gitUrl}`);
@@ -94,12 +113,15 @@ export class GitHubFetcher extends Fetcher {
       const text = await resp.text();
       this.cache.set(url, text);
       return text;
-    } catch (e) {
+    } catch {
       return null;
     }
   }
 
-  private parseGitUrl(url: string): { owner: string | null; repo: string | null } {
+  private parseGitUrl(url: string): {
+    owner: string | null;
+    repo: string | null;
+  } {
     try {
       const urlObj = new URL(url);
       const parts = urlObj.pathname.split("/").filter((p) => p);
@@ -110,7 +132,9 @@ export class GitHubFetcher extends Fetcher {
         }
         return { owner: parts[0], repo };
       }
-    } catch (e) {}
+    } catch {
+      // Invalid URL
+    }
     return { owner: null, repo: null };
   }
 }

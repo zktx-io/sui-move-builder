@@ -65,47 +65,148 @@ function parseInlineTable(value: string): Record<string, any> {
   return result;
 }
 
-export function parseToml(content: string): {
-  package: Record<string, any>;
-  dependencies: Record<string, any>;
-  addresses: Record<string, any>;
-} {
-  const result = {
-    package: {},
-    dependencies: {},
-    addresses: {},
-  } as {
-    package: Record<string, any>;
-    dependencies: Record<string, any>;
-    addresses: Record<string, any>;
-  };
+function parseInlineArray(value: string): any[] {
+  const result: any[] = [];
+  const inner = value.trim().replace(/^\[/, "").replace(/\]$/, "");
+  let current = "";
+  let inQuote = false;
+  let quoteChar = "";
+  let depth = 0; // Track nested braces
+
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+
+    if ((ch === '"' || ch === "'") && (!inQuote || ch === quoteChar)) {
+      inQuote = !inQuote;
+      quoteChar = inQuote ? ch : "";
+    }
+
+    if (!inQuote) {
+      if (ch === "{") depth++;
+      if (ch === "}") depth--;
+      if (ch === "," && depth === 0) {
+        if (current.trim()) {
+          result.push(parseInlineValue(current.trim()));
+        }
+        current = "";
+        continue;
+      }
+    }
+    current += ch;
+  }
+
+  if (current.trim()) {
+    result.push(parseInlineValue(current.trim()));
+  }
+
+  return result;
+}
+
+function parseInlineValue(value: string): any {
+  if (value.startsWith("{")) {
+    return parseInlineTable(value);
+  }
+  return parseScalar(value);
+}
+
+export function parseToml(content: string): any {
+  const result: any = {};
   let section: string | null = null;
+  let isArraySection = false;
   const lines = content.split(/\r?\n/);
+
+  // Helper to get nested value using dot notation path
+  function getNestedValue(obj: any, path: string[]): any {
+    let current = obj;
+    for (const key of path) {
+      if (!(key in current)) {
+        return undefined;
+      }
+      current = current[key];
+    }
+    return current;
+  }
 
   for (const rawLine of lines) {
     const line = stripInlineComment(rawLine).trim();
     if (!line) continue;
+
+    // Check for array sections like [[move.package]]
+    const arraySectionMatch = line.match(/^\[\[([^\]]+)\]\]$/);
+    if (arraySectionMatch) {
+      section = arraySectionMatch[1].trim();
+      isArraySection = true;
+
+      // Parse section path (e.g., "move.package" -> ["move", "package"])
+      const path = section.split(".");
+
+      // Navigate/create nested structure
+      let current = result;
+      for (let i = 0; i < path.length - 1; i++) {
+        const key = path[i];
+        if (!(key in current)) {
+          current[key] = {};
+        }
+        current = current[key];
+      }
+
+      // Last key should be an array
+      const arrayKey = path[path.length - 1];
+      if (!Array.isArray(current[arrayKey])) {
+        current[arrayKey] = [];
+      }
+      // Push new object to array
+      current[arrayKey].push({});
+      continue;
+    }
+
+    // Check for regular sections like [move] or [move.toolchain-version]
     const sectionMatch = line.match(/^\[([^\]]+)\]$/);
     if (sectionMatch) {
       section = sectionMatch[1].trim();
+      isArraySection = false;
       continue;
     }
+
     const eq = line.indexOf("=");
     if (eq === -1 || !section) continue;
 
     const key = line.slice(0, eq).trim();
     const value = line.slice(eq + 1).trim();
 
-    if (section === "package") {
-      result.package[key.replace(/-/g, "_")] = parseScalar(value);
-    } else if (section === "dependencies") {
-      if (value.startsWith("{")) {
-        result.dependencies[key] = parseInlineTable(value);
-      } else {
-        result.dependencies[key] = parseScalar(value);
+    // Parse value
+    let parsedValue: any;
+    if (value.startsWith("{")) {
+      parsedValue = parseInlineTable(value);
+    } else if (value.startsWith("[")) {
+      // Inline array like [{ name = "Sui" }]
+      parsedValue = parseInlineArray(value);
+    } else {
+      parsedValue = parseScalar(value);
+    }
+
+    if (isArraySection) {
+      // Add to last item in array
+      const path = section.split(".");
+      const nested = getNestedValue(result, path);
+      if (Array.isArray(nested) && nested.length > 0) {
+        const lastItem = nested[nested.length - 1];
+        lastItem[key] = parsedValue;
       }
-    } else if (section === "addresses") {
-      result.addresses[key] = parseScalar(value);
+    } else {
+      // Add to nested object
+      const path = section.split(".");
+      // Navigate/create nested structure
+      let current = result;
+      for (const part of path) {
+        if (!(part in current)) {
+          current[part] = {};
+        }
+        current = current[part];
+      }
+      // Special handling for key normalization in "package" section
+      const finalKey = section === "package" ? key.replace(/-/g, "_") : key;
+      current[finalKey] = parsedValue;
     }
   }
 

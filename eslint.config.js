@@ -14,6 +14,16 @@ export default tseslint.config(
         tsconfigRootDir: import.meta.dirname,
       },
     },
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+        },
+      ],
+    },
   },
   {
     files: ["scripts/**/*.mjs"],
@@ -25,6 +35,12 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ["dist"],
+    ignores: [
+      "dist",
+      ".sui",
+      "sui-move-wasm/js",
+      "**/*.d.ts",
+      "tsup.config.ts",
+    ],
   }
 );
