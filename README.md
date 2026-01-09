@@ -44,23 +44,17 @@ module hello_world::hello_world {
 };
 
 // 3) Compile
-const result = await buildMovePackage({
-  files,
-  dependencies: {},
-  autoSystemDeps: true, // Sui CLI-like defaults for std/Sui packages
-});
+const result = await buildMovePackage({ files });
 
 if (result.success) {
-  console.log(result.digest);
-  console.log(result.modules); // Base64-encoded Move modules
+  console.log("Digest:", result.digest);
+  console.log("Modules:", result.modules); // Base64-encoded bytecode
 } else {
-  console.error(result.error);
+  console.error("Build failed:", result.error);
 }
 ```
 
 ## Fetching packages from GitHub
-
-Use the utility functions to fetch Move packages directly from GitHub URLs:
 
 ```ts
 import {
@@ -76,48 +70,24 @@ const files = await fetchPackageFromGitHub(
   "https://github.com/MystenLabs/sui/tree/framework/mainnet/crates/sui-framework/packages/sui-framework"
 );
 
-// files = {
-//   'Move.toml': '...',
-//   'Move.lock': '...',
-//   'sources/object.move': '...',
-//   ...
-// }
-
 // Compile directly
 const result = await buildMovePackage({ files });
 ```
 
-### Fetch multiple packages
+## How it works
 
-```ts
-import { fetchPackagesFromGitHub, githubUrl } from "@zktx.io/sui-move-builder";
-
-const packages = await fetchPackagesFromGitHub({
-  Sui: githubUrl(
-    "MystenLabs/sui",
-    "framework/mainnet",
-    "crates/sui-framework/packages/sui-framework"
-  ),
-  deepbook: githubUrl("MystenLabs/deepbookv3", "main", "packages/deepbook"),
-});
-
-// packages = {
-//   'Sui': { 'Move.toml': '...', ... },
-//   'deepbook': { 'Move.toml': '...', ... }
-// }
-```
-
-## Resolving dependencies from GitHub
-
-The dependency resolver works exactly like Sui CLI:
+Dependencies are automatically resolved from `Move.toml`:
 
 1. **Tries Move.lock first**: If a valid `Move.lock` exists, dependencies are loaded from it (faster, deterministic)
 2. **Falls back to manifests**: If lockfile is missing/invalid, resolves dependencies from `Move.toml` files
 3. **Validates digests**: Checks manifest digests to detect changes
 4. **Handles monorepos**: Converts local dependencies to git dependencies automatically
+5. **Injects system packages**: Automatically adds Sui, MoveStdlib, SuiSystem, and Bridge packages if missing
 
 ```ts
-import { resolve, GitHubFetcher } from "@zktx.io/sui-move-builder";
+import { initMoveCompiler, buildMovePackage } from "@zktx.io/sui-move-builder";
+
+await initMoveCompiler();
 
 const files = {
   "Move.toml": `
@@ -126,55 +96,65 @@ name = "my_package"
 edition = "2024.beta"
 
 [dependencies]
-Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/mainnet" }
 deepbook = { git = "https://github.com/MystenLabs/deepbookv3.git", subdir = "packages/deepbook", rev = "main" }
 `,
-  "Move.lock": "...", // Optional: will be used if valid
   "sources/main.move": "...",
 };
 
-const resolution = await resolve(
-  files["Move.toml"],
+const result = await buildMovePackage({ files });
+
+if (result.success) {
+  console.log("Modules:", result.modules); // Base64-encoded bytecode
+  console.log("Dependencies:", result.dependencies); // Hex-encoded IDs
+  console.log("Digest:", result.digest); // Package digest
+} else {
+  console.error("Build failed:", result.error);
+}
+```
+
+## Dependency caching and reuse
+
+For faster builds when compiling multiple times with the same dependencies, you can resolve dependencies once and reuse them:
+
+```ts
+import { 
+  initMoveCompiler, 
+  resolveDependencies, 
+  buildMovePackage 
+} from "@zktx.io/sui-move-builder";
+
+await initMoveCompiler();
+
+const files = {
+  "Move.toml": `...`,
+  "sources/main.move": "...",
+};
+
+// 1. Resolve dependencies once
+const deps = await resolveDependencies({ files, network: "mainnet" });
+
+// 2. Build multiple times without re-resolving dependencies
+const result1 = await buildMovePackage({
   files,
-  new GitHubFetcher(),
-  "mainnet" // network: 'mainnet' | 'testnet' | 'devnet'
-);
+  network: "mainnet",
+  resolvedDependencies: deps, // Skip dependency resolution
+});
 
-const filesJson = JSON.parse(resolution.files);
-const depsJson = JSON.parse(resolution.dependencies);
+// Modify source code
+files["sources/main.move"] = "// updated code...";
 
-const result = await buildMovePackage({
-  files: filesJson,
-  dependencies: depsJson,
-  autoSystemDeps: true,
+// 3. Build again with cached dependencies (much faster!)
+const result2 = await buildMovePackage({
+  files,
+  network: "mainnet",
+  resolvedDependencies: deps, // Reuse same dependencies
 });
 ```
 
-### How it works
-
-The resolver implements Sui CLI's 3-layer architecture:
-
-1. **Layer 1: Dependency Graph**
-   - Builds a DAG of all packages
-   - Resolves transitive dependencies recursively
-   - Handles version conflicts (first version wins)
-   - Converts local dependencies to git dependencies for monorepos
-
-2. **Layer 2: Address Resolution**
-   - Creates unified address table
-   - Resolves all named addresses across packages
-   - Uses `Move.lock` addresses when available
-
-3. **Layer 3: Compilation Format**
-   - Groups dependencies by package
-   - Each package compiles with its own edition
-   - Prepares format for WASM compiler
-
-`buildMovePackage` returns:
-
-- `success: true | false`
-- on success: `modules` (Base64), `dependencies`, `digest`
-- on failure: `error` with compiler logs
+**Benefits:**
+- ⚡ Faster builds when dependencies haven't changed
+- 🔄 Useful for watch mode or iterative development
+- 💾 Reduce network requests by caching dependency resolution
 
 ## Local test page
 

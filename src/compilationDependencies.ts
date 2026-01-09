@@ -12,6 +12,12 @@ interface PackageConfig {
   flavor: "sui" | "move";
 }
 
+export interface PackageGroupedFormat {
+  name: string;
+  files: Record<string, string>;
+  edition?: string;
+}
+
 type ModuleFormat = "Source" | "Bytecode";
 
 /**
@@ -133,16 +139,8 @@ export class CompilationDependencies {
    */
   toPackageGroupedFormat(
     allPackageFiles: Map<string, Record<string, string>>
-  ): Array<{
-    name: string;
-    files: Record<string, string>;
-    edition?: string;
-  }> {
-    const packageGroups: Array<{
-      name: string;
-      files: Record<string, string>;
-      edition?: string;
-    }> = [];
+  ): Array<PackageGroupedFormat> {
+    const packageGroups: Array<PackageGroupedFormat> = [];
 
     for (const dep of this.dependencies) {
       const pkgFiles = allPackageFiles.get(dep.name) || {};
