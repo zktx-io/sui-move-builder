@@ -375,14 +375,11 @@
               githubToken: githubToken || undefined,
             });
 
-            console.log("Build result:", {
-              modules: result.modules,
-              dependencies: result.dependencies,
-            });
+            console.log("Build result:", result);
 
             const end = performance.now();
-            if (!result.success) {
-              appendAnsiBlock(output, result.error);
+            if ("error" in result) {
+              appendAnsiBlock(output, result.error || "");
               return;
             }
 
@@ -524,8 +521,8 @@
             });
 
             const end = performance.now();
-            if (!result.success) {
-              appendAnsiBlock(output, result.error);
+            if ("error" in result) {
+              appendAnsiBlock(output, result.error || "");
               return;
             }
 

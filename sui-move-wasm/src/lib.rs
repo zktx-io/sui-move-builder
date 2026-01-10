@@ -68,6 +68,8 @@ struct PackageGroup {
     edition: Option<String>,
     #[serde(default)]
     addressMapping: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    publishedIdForOutput: Option<String>,
 }
 
 fn package_version_from_lock(lock_contents: &str, package_name: &str) -> Option<String> {
@@ -346,8 +348,13 @@ fn compile_impl(
         .filter(|name| !name.ends_with("Move.toml") && name.ends_with(".move"))
         .map(|s| Symbol::from(s.as_str()))
         .collect();
-    // Match CLI behavior: bytewise lexicographic sort (BTreeSet).
-    root_targets.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+    // Sort using a key that mimics CLI absolute path ordering: prepend a
+    // pseudo-root to stabilize tie-breakers the same way.
+    root_targets.sort_by(|a, b| {
+        let ka = format!("/vfs/root/{}", a.as_str());
+        let kb = format!("/vfs/root/{}", b.as_str());
+        ka.as_bytes().cmp(kb.as_bytes())
+    });
     log(&format!(
         "📋 Root sources ({}): {:?}",
         root_targets.len(),
@@ -394,6 +401,13 @@ fn compile_impl(
         let mut named_address_map = BTreeMap::<String, NumericalAddress>::new();
         let mut edition = Edition::LEGACY;
         let mut published_at: Option<[u8; 32]> = None;
+        let mut fallback_dep_id: Option<[u8; 32]> = None;
+
+        // Dependency ID for output prefers latest-published-id.
+        let mut dep_id_for_output = pkg_group
+            .publishedIdForOutput
+            .as_ref()
+            .and_then(|id| parse_hex_address_to_bytes(id));
 
         // Prefer address mapping supplied from JS to avoid extra parsing work in WASM.
         if let Some(ref addr_map) = pkg_group.addressMapping {
@@ -403,8 +417,8 @@ fn compile_impl(
                         name.clone(),
                         NumericalAddress::new(bytes, move_compiler::shared::NumberFormat::Hex)
                     );
-                    if name == &pkg_group.name && !dependency_ids.contains(&bytes) {
-                        dependency_ids.push(bytes);
+                    if name == &pkg_group.name && fallback_dep_id.is_none() {
+                        fallback_dep_id = Some(bytes);
                     }
                 }
             }
@@ -435,12 +449,12 @@ fn compile_impl(
                                 && !addr_str.trim_start_matches("0x").chars().all(|c| c == '0')
                             {
                                 if let Some(bytes) = parse_hex_address_to_bytes(addr_str) {
-                                    if !dependency_ids.contains(&bytes) {
+                                    if fallback_dep_id.is_none() {
                                         log(&format!(
                                             "📦 [{}] Using [addresses].{} = {}",
                                             pkg_group.name, pkg_group.name, addr_str
                                         ));
-                                        dependency_ids.push(bytes);
+                                        fallback_dep_id = Some(bytes);
                                         found_address_id = true;
                                     }
                                 }
@@ -449,12 +463,12 @@ fn compile_impl(
 
                         if !found_address_id {
                             if let Some(bytes) = published_at {
-                                if !dependency_ids.contains(&bytes) {
+                                if fallback_dep_id.is_none() {
                                     log(&format!(
                                         "📦 [{}] Using published-at fallback",
                                         pkg_group.name
                                     ));
-                                    dependency_ids.push(bytes);
+                                    fallback_dep_id = Some(bytes);
                                 }
                             }
                         }
@@ -499,8 +513,12 @@ fn compile_impl(
             .map(|s| Symbol::from(s.as_str()))
             .collect();
         let mut dep_files_sorted = dep_files.clone();
-        // Match CLI behavior: bytewise lexicographic sort (BTreeSet).
-        dep_files_sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        // Sort with package-prefixed key to mirror CLI absolute path ordering.
+        dep_files_sorted.sort_by(|a, b| {
+            let ka = format!("/vfs/{}/{}", pkg_group.name, a.as_str());
+            let kb = format!("/vfs/{}/{}", pkg_group.name, b.as_str());
+            ka.as_bytes().cmp(kb.as_bytes())
+        });
         log(&format!(
             "📋 Dep [{}] sources ({}): {:?}",
             pkg_group.name,
@@ -528,6 +546,16 @@ fn compile_impl(
             "📋 Dep [{}] named_address_map: {:?}",
             pkg_group.name, named_address_map
         ));
+
+        // Priority: publishedIdForOutput > addressMapping/Move.toml derived address
+        if dep_id_for_output.is_none() {
+            dep_id_for_output = fallback_dep_id;
+        }
+        if let Some(bytes) = dep_id_for_output {
+            if !dependency_ids.contains(&bytes) {
+                dependency_ids.push(bytes);
+            }
+        }
 
         dep_package_paths.push(PackagePaths {
             name: Some((

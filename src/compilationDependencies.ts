@@ -17,6 +17,8 @@ export interface PackageGroupedFormat {
   files: Record<string, string>;
   edition?: string;
   addressMapping?: Record<string, string>;
+  /** Dependency ID for output (prefer latest published ID) */
+  publishedIdForOutput?: string;
 }
 
 type ModuleFormat = "Source" | "Bytecode";
@@ -45,6 +47,9 @@ interface DependencyInfo {
 
   /** Package edition */
   edition: string;
+
+  /** ID to emit in dependencies list (latest preferred) */
+  publishedIdForOutput?: string;
 }
 
 /**
@@ -102,6 +107,13 @@ export class CompilationDependencies {
       // Use each package's own edition (don't force global edition)
       const effectiveEdition = pkg.manifest.edition || "legacy";
 
+      // Dependency ID for output: latest > original > published-at/address mapping
+      const publishedIdForOutput =
+        pkg.manifest.latestPublishedId ||
+        pkg.manifest.originalId ||
+        pkg.manifest.publishedAt ||
+        pkg.resolvedTable?.[pkgName];
+
       const depInfo: DependencyInfo = {
         name: pkgName,
         isImmediate: immediateDeps.has(pkgName),
@@ -113,6 +125,7 @@ export class CompilationDependencies {
         },
         moduleFormat: sourcePaths.length > 0 ? "Source" : "Bytecode",
         edition: effectiveEdition,
+        publishedIdForOutput,
       };
 
       this.dependencies.push(depInfo);
@@ -187,6 +200,7 @@ export class CompilationDependencies {
         files: groupedFiles,
         edition: dep.edition,
         addressMapping: dep.addressMapping,
+        publishedIdForOutput: dep.publishedIdForOutput,
       });
     }
 
@@ -198,11 +212,11 @@ export class CompilationDependencies {
    */
   private reconstructDependencyMoveToml(
     packageName: string,
-    originalMoveToml: string,
+    originalMoveToml: string | undefined,
     edition: string,
     addresses: Record<string, string>
   ): string {
-    const lines = originalMoveToml.split("\n");
+    const lines = (originalMoveToml || "").split("\n");
     const packageSection: string[] = [];
     const dependenciesSection: string[] = [];
     let inPackage = false;

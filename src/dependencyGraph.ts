@@ -44,6 +44,7 @@ export interface PackageManifest {
   edition?: string;
   publishedAt?: string;
   originalId?: string; // Original published ID (first version)
+  latestPublishedId?: string; // Latest published ID from Move.lock (for logging/output)
   addresses: Record<string, string>;
   dependencies: Record<string, any>;
   devDependencies?: Record<string, any>;

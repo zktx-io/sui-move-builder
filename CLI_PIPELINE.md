@@ -30,7 +30,7 @@ This document maps the Sui CLI build steps to the JS + WASM implementation in th
 ## 6) Output
 
 - **CLI**: Modules (topo-sorted), dependencies (hex IDs), digest.
-- **Here (WASM/Rust)**: Returns `{ modules, dependencies, digest }` with topo-sorted modules. Dependencies now match CLI ordering/content.
+- **Here (WASM/Rust)**: Returns `{ modules, dependencies, digest }` with topo-sorted modules. Dependencies now match CLI ordering/content. Compilation uses the original-published-id for address resolution, while the emitted `dependencies` list prefers `latest-published-id` from Move.lock when available (mirrors CLI logs/JSON).
 
 ## Known Limitations
 

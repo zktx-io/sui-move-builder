@@ -27,17 +27,15 @@ export interface BuildInput {
 }
 
 export interface BuildSuccess {
-  success: true;
   /** Base64-encoded bytecode modules. */
   modules: string[];
   /** Hex-encoded dependency IDs. */
   dependencies: string[];
-  /** Hex-encoded Blake2b-256 package digest. */
-  digest: string;
+  /** Blake2b-256 package digest as byte array (matches Sui CLI JSON). */
+  digest: number[];
 }
 
 export interface BuildFailure {
-  success: false;
   error: string;
 }
 
@@ -66,7 +64,7 @@ function asFailure(err: unknown): BuildFailure {
       : typeof err === "string"
         ? err
         : "Unknown error";
-  return { success: false, error: msg };
+  return { error: msg };
 }
 
 function ensureCompileResult(result: unknown): {
@@ -99,8 +97,19 @@ function ensureCompileResult(result: unknown): {
 }
 
 function parseCompileResult(output: string): BuildSuccess | BuildFailure {
-  const toHex = (bytes: number[]): string =>
-    bytes.map((b) => b.toString(16).padStart(2, "0")).join("");
+  const hexToBytes = (hex: string): number[] => {
+    const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+    const padded = clean.length % 2 === 0 ? clean : `0${clean}`;
+    const bytes: number[] = [];
+    for (let i = 0; i < padded.length; i += 2) {
+      const byte = parseInt(padded.slice(i, i + 2), 16);
+      if (Number.isNaN(byte)) {
+        throw new Error("invalid hex digest");
+      }
+      bytes.push(byte);
+    }
+    return bytes;
+  };
   try {
     const parsed = JSON.parse(output) as {
       modules?: string[];
@@ -110,13 +119,14 @@ function parseCompileResult(output: string): BuildSuccess | BuildFailure {
     if (!parsed.modules || !parsed.dependencies || !parsed.digest) {
       throw new Error("missing fields in compiler output");
     }
-    const digestHex =
-      typeof parsed.digest === "string" ? parsed.digest : toHex(parsed.digest);
+    const digestBytes =
+      typeof parsed.digest === "string"
+        ? hexToBytes(parsed.digest)
+        : Array.from(parsed.digest);
     return {
-      success: true,
       modules: parsed.modules,
       dependencies: parsed.dependencies,
-      digest: digestHex,
+      digest: digestBytes,
     };
   } catch (error) {
     return asFailure(error);

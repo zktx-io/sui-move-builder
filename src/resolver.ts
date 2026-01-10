@@ -175,6 +175,9 @@ export class Resolver {
       moveLockContent,
       chainId
     );
+    const latestPublishedId = publishedAtResult.latestId
+      ? this.normalizeAddress(publishedAtResult.latestId)
+      : undefined;
 
     if (publishedAtResult.error) {
       // suppress noisy warnings
@@ -186,6 +189,7 @@ export class Resolver {
       edition: parsed.package?.edition,
       publishedAt: publishedAtResult.publishedAt,
       originalId: publishedAtResult.originalId,
+      latestPublishedId,
       addresses: parsed.addresses || {},
       dependencies: parsed.dependencies || {},
       devDependencies: parsed["dev-dependencies"],
@@ -473,16 +477,24 @@ export class Resolver {
     moveTomlContent: string,
     moveLockContent: string | undefined,
     chainId: string | undefined
-  ): { publishedAt?: string; originalId?: string; error?: string } {
+  ): {
+    publishedAt?: string;
+    originalId?: string;
+    latestId?: string;
+    error?: string;
+  } {
     const moveToml = parseToml(moveTomlContent);
 
     // Read published-at from Move.toml
     const publishedAtInManifest =
       moveToml.package?.published_at || moveToml.package?.["published-at"];
-    const manifestId =
+    const manifestIdRaw =
       publishedAtInManifest && publishedAtInManifest !== "0x0"
         ? publishedAtInManifest
         : undefined;
+    const manifestId = manifestIdRaw
+      ? this.normalizeAddress(manifestIdRaw)
+      : undefined;
 
     // Read original-id from Move.toml (if specified manually)
     const originalIdInManifest = moveToml.package?.["original-id"];
@@ -498,6 +510,7 @@ export class Resolver {
     // Read published-at and original-id from Move.lock [env.<chain_id>]
     const moveLock = parseToml(moveLockContent) as any;
     let lockId: string | undefined;
+    let lockLatestId: string | undefined;
     let lockOriginalId: string | undefined;
 
     if (moveLock.env) {
@@ -511,16 +524,27 @@ export class Resolver {
 
         // Match by chain-id if available, otherwise use first environment
         if (envChainId === chainId || !envChainId) {
-          const id = latestId || originalId;
-          if (id && id !== "0x0") {
-            lockId = id;
-          }
-          if (originalId && originalId !== "0x0") {
-            lockOriginalId = originalId;
-          }
+          const latest =
+            latestId && latestId !== "0x0"
+              ? this.normalizeAddress(latestId)
+              : undefined;
+          const original =
+            originalId && originalId !== "0x0"
+              ? this.normalizeAddress(originalId)
+              : undefined;
+
+          lockLatestId = latest;
+          // CLI fills address mapping preferring original-published-id.
+          lockOriginalId = original;
+          lockId = latest || original;
           break;
         }
       }
+    }
+
+    // If lock has only latest-published-id (no original), fall back to that for address mapping.
+    if (!lockOriginalId && lockId) {
+      lockOriginalId = lockId;
     }
 
     // Detect conflicts (CLI behavior: lib.rs:195-209)
@@ -532,8 +556,10 @@ export class Resolver {
 
     // Return lock values if available, otherwise manifest
     return {
-      publishedAt: lockId || manifestId,
+      // Address used for mapping: prefer original-published-id, else latest/manifest
+      publishedAt: lockOriginalId || manifestId || lockId,
       originalId: lockOriginalId || originalIdInManifest,
+      latestId: lockLatestId || lockId || manifestId,
     };
   }
 
