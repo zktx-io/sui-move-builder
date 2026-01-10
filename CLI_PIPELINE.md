@@ -10,7 +10,7 @@ This document maps the Sui CLI build steps to the JS + WASM implementation in th
 ## 2) Dependency Resolution
 
 - **CLI**: Builds a dependency graph from `Move.lock` when valid, otherwise from manifests. Injects system packages and applies dev-mode filtering.
-- **Here (JS)**: `resolveMoveToml` (`src/resolver.ts`) builds `DependencyGraph` → `ResolvedGraph` → `CompilationDependencies`. Lockfile support for v0/v3/v4. System deps injected via `ensureSystemDepsInMoveToml`. Git fetch via `GitHubFetcher`.
+- **Here (JS)**: `resolveMoveToml` (`src/resolver.ts`) builds `DependencyGraph` → `ResolvedGraph` → `CompilationDependencies`. Lockfile support for v0/v3/v4. Move.toml is not mutated; system deps are not auto-injected. Git fetch via `GitHubFetcher`.
 
 ## 3) Dependency Inclusion & Serialization
 
@@ -35,3 +35,11 @@ This document maps the Sui CLI build steps to the JS + WASM implementation in th
 ## Known Limitations
 
 - Bytecode-only dependency fallback (.mv) used by the Sui CLI when sources are missing is **not supported** in the WASM path; all deps must be available as source.
+
+## Verification checklist (keep in sync)
+
+- Version conflicts: CLI aborts on same-name/different-rev packages; JS/WASM must mirror this (no silent dedupe).
+- Path sorting: CLI uses `BTreeSet` (bytewise) for `.move` paths; JS must produce identical ordering (no locale-dependent compare).
+- Move.toml usage: CLI only parses for address maps/edition; do **not** mutate or inject TOML content before compilation.
+- Module ordering: Emit exactly the compiler-returned `dependency_order`; avoid extra re-sorts in WASM.
+- Outputs: Dependencies/IDs should pass through from JS; BuildInfo/disassembly artifacts are CLI-only unless intentionally added to WASM.

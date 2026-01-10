@@ -346,8 +346,8 @@ fn compile_impl(
         .filter(|name| !name.ends_with("Move.toml") && name.ends_with(".move"))
         .map(|s| Symbol::from(s.as_str()))
         .collect();
-    // Match CLI behavior: lexicographic sort of root source paths.
-    root_targets.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    // Match CLI behavior: bytewise lexicographic sort (BTreeSet).
+    root_targets.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
     log(&format!(
         "📋 Root sources ({}): {:?}",
         root_targets.len(),
@@ -499,7 +499,8 @@ fn compile_impl(
             .map(|s| Symbol::from(s.as_str()))
             .collect();
         let mut dep_files_sorted = dep_files.clone();
-        dep_files_sorted.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        // Match CLI behavior: bytewise lexicographic sort (BTreeSet).
+        dep_files_sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
         log(&format!(
             "📋 Dep [{}] sources ({}): {:?}",
             pkg_group.name,

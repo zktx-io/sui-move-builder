@@ -132,8 +132,19 @@ export class CompilationDependencies {
       return path.endsWith(".move");
     });
 
-    // Match CLI behavior: deterministic, lexicographic ordering of source files.
-    sourcePaths.sort((a, b) => a.localeCompare(b));
+    // Match CLI behavior: deterministic bytewise lexicographic ordering (like BTreeSet).
+    const encoder = new TextEncoder();
+    const byteCompare = (x: string, y: string): number => {
+      const ax = encoder.encode(x);
+      const ay = encoder.encode(y);
+      const len = Math.min(ax.length, ay.length);
+      for (let i = 0; i < len; i++) {
+        if (ax[i] !== ay[i]) return ax[i] - ay[i];
+      }
+      return ax.length - ay.length;
+    };
+
+    sourcePaths.sort(byteCompare);
 
     return sourcePaths;
   }

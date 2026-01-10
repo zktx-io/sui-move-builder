@@ -123,66 +123,6 @@ function parseCompileResult(output: string): BuildSuccess | BuildFailure {
   }
 }
 
-function ensureSystemDepsInMoveToml(moveToml: string): string {
-  const systemDeps = [
-    {
-      name: "Sui",
-      git: "https://github.com/MystenLabs/sui.git",
-      subdir: "crates/sui-framework/packages/sui-framework",
-      rev: "framework/mainnet",
-    },
-    {
-      name: "MoveStdlib",
-      git: "https://github.com/MystenLabs/sui.git",
-      subdir: "crates/sui-framework/packages/move-stdlib",
-      rev: "framework/mainnet",
-    },
-  ];
-  const lines = moveToml.split(/\r?\n/);
-  const sectionHeader = /^\s*\[[^\]]+\]\s*$/;
-  let depsStart = -1;
-  let depsEnd = lines.length;
-
-  for (let i = 0; i < lines.length; i++) {
-    if (/^\s*\[dependencies\]\s*$/.test(lines[i])) {
-      depsStart = i;
-      for (let j = i + 1; j < lines.length; j++) {
-        if (sectionHeader.test(lines[j])) {
-          depsEnd = j;
-          break;
-        }
-      }
-      break;
-    }
-  }
-
-  const existing = new Set<string>();
-  if (depsStart >= 0) {
-    for (let i = depsStart + 1; i < depsEnd; i++) {
-      const line = lines[i].trim();
-      if (!line || line.startsWith("#")) continue;
-      const match = line.match(/^([A-Za-z0-9_.-]+)\s*=/);
-      if (match) existing.add(match[1]);
-    }
-  }
-
-  const missingLines = systemDeps
-    .filter((dep) => !existing.has(dep.name))
-    .map(
-      (dep) =>
-        `${dep.name} = { git = "${dep.git}", subdir = "${dep.subdir}", rev = "${dep.rev}" }`
-    );
-
-  if (missingLines.length === 0) return moveToml;
-
-  if (depsStart >= 0) {
-    lines.splice(depsEnd, 0, ...missingLines);
-  } else {
-    lines.push("", "[dependencies]", ...missingLines);
-  }
-  return lines.join("\n");
-}
-
 function logDependencyAddresses(depsJson: string): void {
   try {
     const deps = JSON.parse(depsJson) as Array<{
@@ -230,9 +170,7 @@ export async function resolveDependencies(
   input: Omit<BuildInput, "resolvedDependencies">
 ): Promise<ResolvedDependencies> {
   let moveToml = input.files["Move.toml"] || "";
-  if (moveToml) {
-    moveToml = ensureSystemDepsInMoveToml(moveToml);
-  }
+  // CLI does not mutate Move.toml; use as-is.
 
   const inferredRootGit =
     input.rootGit ||

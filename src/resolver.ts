@@ -995,8 +995,7 @@ export class Resolver {
 
     // Add root edges from manifest dependencies to pinned packages (name-based lookup)
     for (const depName of rootPackage.dependencies.keys()) {
-      const depPkg =
-        packageByName.get(depName) || packageById.get(depName);
+      const depPkg = packageByName.get(depName) || packageById.get(depName);
       if (depPkg) {
         const dep = rootPackage.dependencies.get(depName)!;
         graph.addDependency(rootPackage.id.name, depPkg.id.name, dep);
