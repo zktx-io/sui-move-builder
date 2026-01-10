@@ -1,5 +1,6 @@
 import { GitHubFetcher } from "./fetcher.js";
 import { resolve as resolveMoveToml } from "./resolver.js";
+import { parseToml } from "./tomlParser.js";
 
 export interface ResolvedDependencies {
   /** JSON string of resolved files for the root package */
@@ -13,6 +14,8 @@ export interface BuildInput {
   files: Record<string, string>;
   /** Optional custom URL for the wasm binary. Defaults to bundled wasm next to this module. */
   wasm?: string | URL;
+  /** Optional hint for the root package git source (enables resolving local deps from Move.lock). */
+  rootGit?: { git: string; rev: string; subdir?: string };
   /** Optional GitHub token to raise API limits when resolving dependencies. */
   githubToken?: string;
   /** Emit ANSI color codes in diagnostics when available. */
@@ -180,6 +183,38 @@ function ensureSystemDepsInMoveToml(moveToml: string): string {
   return lines.join("\n");
 }
 
+function logDependencyAddresses(depsJson: string): void {
+  try {
+    const deps = JSON.parse(depsJson) as Array<{
+      name: string;
+      files: Record<string, string>;
+      addressMapping?: Record<string, string>;
+    }>;
+    for (const dep of deps) {
+      // Prefer resolved address mapping
+      const addr =
+        dep.addressMapping?.[dep.name] ??
+        (() => {
+          const moveTomlEntry = Object.entries(dep.files).find(([path]) =>
+            path.endsWith("Move.toml")
+          );
+          if (!moveTomlEntry) return undefined;
+          const parsed = parseToml(moveTomlEntry[1]);
+          return (
+            (parsed.addresses && parsed.addresses[dep.name]) ||
+            parsed.package?.published_at ||
+            parsed.package?.["published-at"]
+          );
+        })();
+      if (addr !== undefined) {
+        console.log(`Dependency ${dep.name}: ${addr}`);
+      }
+    }
+  } catch {
+    // Logging is best-effort; ignore errors
+  }
+}
+
 /** Initialize the wasm module (idempotent). Provide a custom wasm URL if hosting separately. */
 export async function initMoveCompiler(options?: {
   wasm?: string | URL;
@@ -199,11 +234,25 @@ export async function resolveDependencies(
     moveToml = ensureSystemDepsInMoveToml(moveToml);
   }
 
+  const inferredRootGit =
+    input.rootGit ||
+    ((input.files as any).__rootGit as
+      | { git: string; rev: string; subdir?: string }
+      | undefined);
+
   const resolved = await resolveMoveToml(
     moveToml,
     { ...input.files, "Move.toml": moveToml },
     new GitHubFetcher(input.githubToken),
-    input.network
+    input.network,
+    inferredRootGit
+      ? {
+          type: "git",
+          git: inferredRootGit.git,
+          rev: inferredRootGit.rev,
+          subdir: inferredRootGit.subdir,
+        }
+      : undefined
   );
 
   return {
@@ -223,27 +272,8 @@ export async function buildMovePackage(
       : await resolveDependencies(input);
 
     const mod = await loadWasm(input.wasm);
-    // resolved.files and resolved.dependencies are already JSON strings
-    // Debug logging
-    console.error(`📋 About to call WASM compiler`);
-    console.error(
-      `📋 resolved.files type: ${typeof resolved.files}, length: ${resolved.files.length}`
-    );
-    console.error(
-      `📋 resolved.dependencies type: ${typeof resolved.dependencies}, length: ${resolved.dependencies.length}`
-    );
-
-    let filesCount = 0;
-    try {
-      filesCount = Object.keys(JSON.parse(resolved.files)).length;
-      console.error(`📋 Parsed files successfully: ${filesCount} files`);
-    } catch (e) {
-      console.error(
-        `📋 ERROR parsing files JSON:`,
-        e instanceof Error ? e.message : e
-      );
-      throw e;
-    }
+    // Log dependency addresses passed to compiler (best-effort)
+    logDependencyAddresses(resolved.dependencies);
 
     const raw =
       input.ansiColor && typeof (mod as any).compile_with_color === "function"
@@ -258,22 +288,10 @@ export async function buildMovePackage(
     const output = result.output();
 
     if (!ok) {
-      console.error(`📋 WASM compiler returned error: ${output}`);
-      console.error(
-        `📋 Files keys: ${Object.keys(JSON.parse(resolved.files)).slice(0, 20).join(", ")}`
-      );
-      console.error(
-        `📋 Dependencies preview: ${resolved.dependencies.substring(0, 500)}`
-      );
       return asFailure(output);
     }
     return parseCompileResult(output);
   } catch (error) {
-    console.error(
-      `📋 EXCEPTION in buildMovePackage:`,
-      error instanceof Error ? error.message : error
-    );
-    console.error(`📋 Stack:`, error instanceof Error ? error.stack : "N/A");
     return asFailure(error);
   }
 }

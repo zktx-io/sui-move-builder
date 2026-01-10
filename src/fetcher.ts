@@ -32,22 +32,6 @@ export class GitHubFetcher extends Fetcher {
     this.cache = new Map();
     this.treeCache = new Map();
     this.token = token;
-
-    // Try to load GitHub token for testing when not provided
-    if (!this.token) {
-      this.loadToken();
-    }
-  }
-
-  private async loadToken() {
-    try {
-      // @ts-ignore - optional import for testing
-      const githubModule = await import("../github.js");
-      this.token = githubModule.GITHUB_TOKEN;
-      console.log("📋 GitHub token loaded for authenticated API access");
-    } catch {
-      // Token not available, continue without auth
-    }
   }
 
   /**
@@ -64,19 +48,20 @@ export class GitHubFetcher extends Fetcher {
       this.rateLimitReset = parseInt(reset, 10) * 1000; // Convert to ms
     }
 
-    if (this.rateLimitRemaining < 5) {
-      const resetTime = new Date(this.rateLimitReset);
-      console.warn(
-        `⚠️  GitHub API rate limit low: ${this.rateLimitRemaining} remaining, resets at ${resetTime.toLocaleTimeString()}`
-      );
-    }
+    // no console noise; rate limiting handled silently
   }
 
   async fetch(
     gitUrl: string,
     rev: string,
-    subdir?: string
+    subdir?: string,
+    context?: string
   ): Promise<Record<string, string>> {
+    // Log fetch with dependency context
+    const ctx = context ? ` | context: ${context}` : "";
+    console.log(
+      `Fetching git ${gitUrl} @ ${rev}${subdir ? ` (subdir: ${subdir})` : ""}${ctx}`
+    );
     const { owner, repo } = this.parseGitUrl(gitUrl);
     if (!owner || !repo) {
       throw new Error(`Invalid git URL: ${gitUrl}`);
@@ -90,7 +75,6 @@ export class GitHubFetcher extends Fetcher {
 
     // Check tree cache first - OPTIMIZATION: Avoid duplicate API calls
     if (this.treeCache.has(treeKey)) {
-      console.log(`📋 Using cached tree for ${treeKey}`);
       treeData = this.treeCache.get(treeKey);
     } else {
       // Retry logic for transient errors (Gateway Timeout, etc.)
@@ -102,9 +86,6 @@ export class GitHubFetcher extends Fetcher {
           if (attempt > 1) {
             // Exponential backoff: 1s, 2s, 4s
             const delay = Math.pow(2, attempt - 1) * 1000;
-            console.log(
-              `📋 Retrying ${owner}/${repo}@${rev} (attempt ${attempt}/${maxRetries}) after ${delay}ms delay...`
-            );
             await new Promise((resolve) => setTimeout(resolve, delay));
           }
 
@@ -139,27 +120,16 @@ export class GitHubFetcher extends Fetcher {
 
           // Cache the tree data
           this.treeCache.set(treeKey, treeData);
-          console.log(
-            `📋 Cached tree for ${treeKey} (${treeData.tree.length} items, ${this.rateLimitRemaining} API calls remaining)`
-          );
           break; // Success, exit retry loop
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
           if (attempt === maxRetries) {
-            console.error(
-              `📋 Error fetching ${owner}/${repo}@${rev} after ${maxRetries} attempts:`,
-              lastError.message
-            );
             return {};
           }
         }
       }
 
       if (lastError) {
-        console.error(
-          `📋 Failed to fetch ${owner}/${repo}@${rev}:`,
-          lastError.message
-        );
         return {};
       }
     }
@@ -222,6 +192,14 @@ export class GitHubFetcher extends Fetcher {
         }
       }
     }
+
+    // Log fetch result summary
+    console.log(
+      `Fetched ${Object.keys(files).length} files` +
+        (context ? ` for ${context}` : "") +
+        ` from ${gitUrl} @ ${rev}` +
+        (subdir ? ` (subdir: ${subdir})` : "")
+    );
 
     return files;
   }

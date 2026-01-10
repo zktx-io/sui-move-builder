@@ -98,7 +98,22 @@ export async function fetchPackageFromGitHub(
 
   const gitUrl = `https://github.com/${parsed.owner}/${parsed.repo}.git`;
 
-  const files = await fetcher.fetch(gitUrl, parsed.ref, parsed.subdir);
+  const files = await fetcher.fetch(
+    gitUrl,
+    parsed.ref,
+    parsed.subdir,
+    `root:${parsed.owner}/${parsed.repo}`
+  );
+
+  // Attach root git metadata (non-enumerable) for downstream relative path resolution
+  Object.defineProperty(files, "__rootGit", {
+    value: {
+      git: gitUrl,
+      rev: parsed.ref,
+      subdir: parsed.subdir,
+    },
+    enumerable: false,
+  });
 
   // Filter out Move.lock if requested
   if (!includeLock && files["Move.lock"]) {

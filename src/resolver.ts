@@ -15,7 +15,6 @@ import {
   Dependency,
   PackageManifest,
   DependencySource,
-  ParsedLockfile,
   LockfileDependencyInfo,
 } from "./dependencyGraph.js";
 import { ResolvedGraph } from "./resolvedGraph.js";
@@ -24,6 +23,7 @@ import { CompilationDependencies } from "./compilationDependencies.js";
 export class Resolver {
   private fetcher: Fetcher;
   private network: "mainnet" | "testnet" | "devnet";
+  private rootSource: DependencySource | null;
 
   // Track visited dependencies by git source to avoid duplicates
   private visited: Set<string> = new Set();
@@ -35,12 +35,16 @@ export class Resolver {
   // Store fetched package files: packageName -> files
   private packageFiles: Map<string, Record<string, string>> = new Map();
 
+  private lockfileVersion: number | undefined;
+
   constructor(
     fetcher: Fetcher,
-    network: "mainnet" | "testnet" | "devnet" = "mainnet"
+    network: "mainnet" | "testnet" | "devnet" = "mainnet",
+    rootSource: DependencySource | null = null
   ) {
     this.fetcher = fetcher;
     this.network = network;
+    this.rootSource = rootSource;
   }
 
   /**
@@ -71,7 +75,7 @@ export class Resolver {
     // Build root package
     const rootPackage = await this.buildPackage(
       rootPackageName,
-      null,
+      this.rootSource,
       rootMoveToml,
       rootFiles
     );
@@ -90,9 +94,6 @@ export class Resolver {
       "0x0000000000000000000000000000000000000000000000000000000000000000"
     ) {
       if (rootPackage.manifest.originalId) {
-        console.log(
-          `📋 Replacing root package 0x0 address with original-published-id: ${rootPackage.manifest.originalId}`
-        );
         rootPackage.manifest.addresses[rootPackageName] = this.normalizeAddress(
           rootPackage.manifest.originalId
         );
@@ -108,33 +109,13 @@ export class Resolver {
       rootPackage,
       rootFiles
     );
-    console.log("📋 Loaded from lockfile:", loadedFromLockfile);
+    const missingDeps = Array.from(rootPackage.dependencies.keys()).filter(
+      (name) => !depGraph.getPackage(name)
+    );
 
-    if (!loadedFromLockfile) {
-      console.log("📋 Falling back to manifest-based resolution");
-      console.log(
-        "📋 Root package dependencies from manifest:",
-        Object.keys(rootPackage.manifest.dependencies || {})
-      );
-      console.log(
-        "📋 Root package dependencies Map size:",
-        rootPackage.dependencies.size
-      );
-      console.log(
-        "📋 Root package dependencies Map keys:",
-        Array.from(rootPackage.dependencies.keys())
-      );
+    if (!loadedFromLockfile || missingDeps.length > 0) {
       // Fallback: Recursively resolve all dependencies from manifests
-      try {
-        await this.buildDependencyGraph(depGraph, rootPackage);
-        console.log(
-          "📋 After buildDependencyGraph, packages:",
-          depGraph.getAllPackages().map((p) => p?.name)
-        );
-      } catch (err) {
-        console.error("📋 Error in buildDependencyGraph:", err.message);
-        throw err;
-      }
+      await this.buildDependencyGraph(depGraph, rootPackage);
     }
 
     // Check for cycles
@@ -152,14 +133,13 @@ export class Resolver {
     await compilationDeps.compute(this.packageFiles);
 
     // === Convert to Compiler Input Format ===
+    // Rebuild root Move.toml with unified addresses (matches CLI named_address_map)
     const updatedRootToml = this.reconstructMoveToml(
       rootParsed,
       resolvedGraph.getUnifiedAddressTable(),
       true,
       globalEdition
     );
-
-    console.log("📋 Reconstructed root Move.toml:\n" + updatedRootToml);
 
     const updatedRootFiles = { ...rootFiles };
     delete updatedRootFiles["Move.lock"];
@@ -168,12 +148,6 @@ export class Resolver {
     // Use new package-grouped format for per-package edition support
     const packageGroups = compilationDeps.toPackageGroupedFormat(
       this.packageFiles
-    );
-
-    console.log("📋 Number of dependency packages:", packageGroups.length);
-    console.log(
-      "📋 Dependency package names:",
-      packageGroups.map((p) => p.name).join(", ")
     );
 
     return {
@@ -203,7 +177,7 @@ export class Resolver {
     );
 
     if (publishedAtResult.error) {
-      console.warn(`⚠️  ${name}: ${publishedAtResult.error}`);
+      // suppress noisy warnings
     }
 
     const manifest: PackageManifest = {
@@ -218,11 +192,22 @@ export class Resolver {
     };
 
     // Ensure package has an address entry for its own name.
-    // If published-at is known, use it; otherwise default to 0x0 as placeholder.
-    if (!manifest.addresses[manifest.name]) {
-      manifest.addresses[manifest.name] = manifest.publishedAt
+    // If published-at is known, prefer it even if an address exists or is 0x0.
+    const normalizedPublished =
+      manifest.publishedAt && manifest.publishedAt !== "0x0"
         ? this.normalizeAddress(manifest.publishedAt)
-        : "0x0";
+        : undefined;
+    const currentAddr = manifest.addresses[manifest.name];
+    const normalizedCurrent = currentAddr
+      ? this.normalizeAddress(currentAddr)
+      : undefined;
+
+    if (normalizedPublished) {
+      manifest.addresses[manifest.name] = normalizedPublished;
+    } else if (!normalizedCurrent) {
+      manifest.addresses[manifest.name] = "0x0";
+    } else {
+      manifest.addresses[manifest.name] = normalizedCurrent;
     }
 
     const dependencies = new Map<string, Dependency>();
@@ -314,15 +299,7 @@ export class Resolver {
     graph: DependencyGraph,
     pkg: Package
   ): Promise<void> {
-    console.log(
-      `📋 buildDependencyGraph for ${pkg.id.name}, deps count:`,
-      pkg.dependencies.size
-    );
     for (const [depName, dep] of pkg.dependencies.entries()) {
-      console.log(
-        `📋 Processing dependency: ${depName}, source type:`,
-        dep.source.type
-      );
       // Convert local dependencies to git dependencies using parent's git info
       if (dep.source.type === "local") {
         if (pkg.id.source.type === "git" && dep.source.local) {
@@ -375,16 +352,11 @@ export class Resolver {
       }
 
       // Fetch dependency files
-      console.log(
-        `📋 Fetching ${depName} from ${dep.source.git} @ ${dep.source.rev} (subdir: ${subdir})`
-      );
       const files = await this.fetcher.fetch(
         dep.source.git!,
         dep.source.rev!,
-        subdir
-      );
-      console.log(
-        `📋 Fetched ${Object.keys(files).length} files for ${depName}`
+        subdir,
+        `${pkg.id.name} -> ${depName}`
       );
 
       // Find Move.toml
@@ -410,10 +382,8 @@ export class Resolver {
       }
 
       if (!moveTomlContent) {
-        console.log(`📋 No Move.toml found for ${depName}, skipping`);
         continue;
       }
-      console.log(`📋 Found Move.toml for ${depName}`);
 
       // Build package
       const depPackage = await this.buildPackage(
@@ -424,31 +394,32 @@ export class Resolver {
       );
 
       // Check if we already have a package with this name (version conflict)
-      const existingSource = this.packageNameCache.get(
-        depPackage.manifest.name
-      );
-      if (existingSource) {
-        // Find existing package and add edge to it
-        const existingPkg = this.findPackageBySource(graph, existingSource);
-        if (existingPkg) {
-          graph.addDependency(pkg.id.name, existingPkg.id.name, dep);
+      // For lockfile v4+, package IDs are already unique (Sui, Sui_1...), so skip name-based dedupe.
+      if (!this.lockfileVersion || this.lockfileVersion < 4) {
+        const existingSource = this.packageNameCache.get(
+          depPackage.manifest.name
+        );
+        if (existingSource) {
+          // CLI behavior: same package name with different source is an error.
+          const describe = (src: DependencySource) => JSON.stringify(src);
+          throw new Error(
+            [
+              `Conflicting versions of package '${depPackage.manifest.name}' found`,
+              `Existing: ${describe(existingSource)}`,
+              `New: ${describe(dep.source)}`,
+              `When resolving dependencies for '${pkg.id.name}' -> '${depName}'`,
+            ].join("\n")
+          );
         }
-        continue; // Skip adding this version
+        // Remember this package name's source for legacy lockfile handling
+        this.packageNameCache.set(depPackage.manifest.name, dep.source);
       }
-
-      // Remember this package name's source
-      this.packageNameCache.set(depPackage.manifest.name, dep.source);
 
       // published-at is already resolved in buildPackage via resolvePublishedAt
       // But we need to update addresses table if publishedAt exists
       if (depPackage.manifest.publishedAt) {
-        console.log(
-          `📋 Setting ${depPackage.manifest.name} address from published-at: ${depPackage.manifest.publishedAt}`
-        );
         depPackage.manifest.addresses[depPackage.manifest.name] =
           this.normalizeAddress(depPackage.manifest.publishedAt);
-      } else {
-        console.log(`📋 No published-at for ${depPackage.manifest.name}`);
       }
 
       // Use edition only from Move.toml (Move.lock editions are unreliable)
@@ -479,15 +450,14 @@ export class Resolver {
    * These are the actual chain identifiers used by Sui networks
    */
   private getChainIdForNetwork(network: string): string | undefined {
-    // Chain IDs are managed by Sui and can be queried via RPC
-    // For now, we use common environment names that match Move.lock [env] keys
+    // Known chain IDs (as seen in Move.lock [env.<chain_id>])
     const chainIdMap: Record<string, string> = {
-      mainnet: "mainnet",
-      testnet: "testnet",
-      devnet: "devnet",
+      mainnet: "35834a8a",
+      testnet: "4c78adac",
+      devnet: "2", // devnet chain id is not stable; use placeholder
       localnet: "localnet",
     };
-    return chainIdMap[network];
+    return chainIdMap[network] || network;
   }
 
   /**
@@ -532,7 +502,7 @@ export class Resolver {
 
     if (moveLock.env) {
       // Find environment matching chain_id
-      for (const [envName, envData] of Object.entries(
+      for (const [, envData] of Object.entries(
         moveLock.env as Record<string, any>
       )) {
         const latestId = envData["latest-published-id"];
@@ -649,19 +619,13 @@ export class Resolver {
     }
 
     const lockfile = parseToml(moveLockContent) as any;
+    this.lockfileVersion = lockfile.move?.version;
 
     // Support both version 3 ([[move.package]]) and version 4 (pinned) formats
     const lockfileVersion = lockfile.move?.version;
-    console.log("📋 Move.lock version:", lockfileVersion);
-
     if (lockfileVersion === 3) {
       // Version 3 format: Use [[move.package]] array
-      return await this.loadFromLockfileV3(
-        graph,
-        lockfile,
-        rootPackage,
-        rootFiles
-      );
+      return await this.loadFromLockfileV3(graph, lockfile, rootPackage);
     } else if (lockfileVersion && lockfileVersion >= 4) {
       // Version 4+ format: Use pinned section
       return await this.loadFromLockfileV4(graph, lockfile, rootFiles);
@@ -686,12 +650,16 @@ export class Resolver {
     }
 
     // Lockfile order: use move.dependencies if present, otherwise package listing order
-    const lockfileOrder =
-      (Array.isArray(lockfile.move?.dependencies)
-        ? lockfile.move.dependencies
-            .map((d: any) => d.name || d.id || d)
-            .filter(Boolean)
-        : null) || packages.map((p: any) => p.name || p.id).filter(Boolean);
+    const depsArray = Array.isArray(lockfile.move?.dependencies)
+      ? lockfile.move.dependencies
+          .map((d: any) => d.name || d.id || d)
+          .filter(Boolean)
+      : [];
+    const pkgArray = packages.map((p: any) => p.name || p.id).filter(Boolean);
+    const lockfileOrder = [
+      ...depsArray,
+      ...pkgArray.filter((p: string) => !depsArray.includes(p)),
+    ];
 
     const packageById = new Map<string, Package>();
     const packageByName = new Map<string, Package>();
@@ -700,21 +668,38 @@ export class Resolver {
     for (const pkgInfo of packages) {
       const pkgId = pkgInfo.id || pkgInfo.name;
       const source = pkgInfo.source;
-      if (!pkgId || !source || !source.git || !source.rev) {
+      if (!pkgId || !source) {
         continue;
       }
 
-      const depSource: DependencySource = {
-        type: "git",
-        git: source.git,
-        rev: source.rev,
-        subdir: source.subdir,
-      };
+      let depSource: DependencySource | null = null;
+      if (source.git && source.rev) {
+        depSource = {
+          type: "git",
+          git: source.git,
+          rev: source.rev,
+          subdir: source.subdir,
+        };
+      } else if (source.local && this.rootSource?.type === "git") {
+        const resolvedSubdir = this.resolveRelativePath(
+          this.rootSource.subdir || "",
+          source.local
+        );
+        depSource = {
+          type: "git",
+          git: this.rootSource.git!,
+          rev: this.rootSource.rev!,
+          subdir: resolvedSubdir,
+        };
+      } else {
+        continue;
+      }
 
       const files = await this.fetcher.fetch(
         depSource.git!,
         depSource.rev!,
-        depSource.subdir
+        depSource.subdir,
+        `lockfile:${pkgId}`
       );
       if (Object.keys(files).length === 0) continue;
 
@@ -770,19 +755,22 @@ export class Resolver {
   private async loadFromLockfileV3(
     graph: DependencyGraph,
     lockfile: any,
-    rootPackage: Package,
-    rootFiles: Record<string, string>
+    rootPackage: Package
   ): Promise<boolean> {
     const packages = lockfile.move?.package;
     if (!packages || !Array.isArray(packages)) {
-      console.log("📋 No move.package array found in lockfile v3");
       return false;
     }
 
-    console.log("📋 Loading from lockfile v3, packages:", packages.length);
-
     const packageById = new Map<string, Package>();
+    const pkgInfoById = new Map<string, any>();
     const lockfileOrder: string[] = [];
+
+    for (const pkgInfo of packages) {
+      if (pkgInfo.id) {
+        pkgInfoById.set(pkgInfo.id, pkgInfo);
+      }
+    }
 
     // First pass: Fetch and create all packages
     for (const pkgInfo of packages) {
@@ -792,40 +780,44 @@ export class Resolver {
       // Track the order from [[move.package]] array - this is the order we need to preserve
       lockfileOrder.push(pkgId);
 
-      if (!source || !source.git) {
-        console.log(`📋 Skipping ${pkgId}: no git source`);
+      // Resolve source: prefer git, or convert local to root git if hint available
+      let depSource: DependencySource | null = null;
+      if (source?.git && source.rev) {
+        depSource = {
+          type: "git",
+          git: source.git,
+          rev: source.rev,
+          subdir: source.subdir,
+        };
+      } else if (source?.local && this.rootSource?.type === "git") {
+        const resolvedSubdir = this.resolveRelativePath(
+          this.rootSource.subdir || "",
+          source.local
+        );
+        depSource = {
+          type: "git",
+          git: this.rootSource.git!,
+          rev: this.rootSource.rev!,
+          subdir: resolvedSubdir,
+        };
+      } else {
         continue;
       }
-
-      const depSource: DependencySource = {
-        type: "git",
-        git: source.git,
-        rev: source.rev,
-        subdir: source.subdir,
-      };
-
-      console.log(
-        `📋 Fetching ${pkgId} from lockfile v3:`,
-        source.git,
-        "@",
-        source.rev
-      );
 
       // Fetch package files
       const files = await this.fetcher.fetch(
         source.git,
         source.rev,
-        source.subdir
+        source.subdir,
+        `lockfile:${pkgId}`
       );
       if (Object.keys(files).length === 0) {
-        console.log(`📋 No files fetched for ${pkgId}`);
         continue;
       }
 
       // Find Move.toml
       const moveToml = files["Move.toml"];
       if (!moveToml) {
-        console.log(`📋 No Move.toml for ${pkgId}`);
         continue;
       }
 
@@ -834,15 +826,9 @@ export class Resolver {
       packageById.set(pkgId, pkg);
       this.packageFiles.set(pkg.manifest.name, files);
       graph.addPackage(pkg);
-
-      console.log(`📋 Added package ${pkgId} (${pkg.manifest.name}) to graph`);
     }
 
     // Set lockfile order from [[move.package]] array (this is the order from BuildInfo.yaml)
-    console.log(
-      "📋 Setting lockfile order from [[move.package]]:",
-      lockfileOrder
-    );
     graph.setLockfileOrder(lockfileOrder);
 
     // Second pass: Add dependency edges using lockfile dependencies
@@ -854,12 +840,45 @@ export class Resolver {
       const deps = pkgInfo.dependencies;
       if (!deps || !Array.isArray(deps)) continue;
 
-      console.log(`📋 Processing dependencies for ${pkgId}:`, deps.length);
-
       for (const depInfo of deps) {
         const depId = depInfo.id;
-        const depName = depInfo.name;
-        const depPkg = packageById.get(depId);
+        let depPkg = packageById.get(depId);
+
+        // If dependency package not yet built (e.g., local source), try to build it now using parent context
+        if (!depPkg) {
+          const depPkgInfo = pkgInfoById.get(depId);
+          if (depPkgInfo?.source?.local && pkg.id.source.type === "git") {
+            const resolvedSubdir = this.resolveRelativePath(
+              pkg.id.source.subdir || "",
+              depPkgInfo.source.local
+            );
+            const depSource: DependencySource = {
+              type: "git",
+              git: pkg.id.source.git!,
+              rev: pkg.id.source.rev!,
+              subdir: resolvedSubdir,
+            };
+            const files = await this.fetcher.fetch(
+              depSource.git!,
+              depSource.rev!,
+              depSource.subdir,
+              `lockfile:${depId}`
+            );
+            const moveToml = files["Move.toml"];
+            if (moveToml) {
+              const built = await this.buildPackage(
+                depId,
+                depSource,
+                moveToml,
+                files
+              );
+              packageById.set(depId, built);
+              this.packageFiles.set(built.manifest.name, files);
+              graph.addPackage(built);
+              depPkg = built;
+            }
+          }
+        }
 
         if (depPkg) {
           // Create a dependency object
@@ -867,29 +886,19 @@ export class Resolver {
             source: depPkg.id.source,
           };
           graph.addDependency(pkg.id.name, depPkg.id.name, dep);
-          console.log(`📋 Added edge: ${pkg.id.name} -> ${depPkg.id.name}`);
-        } else {
-          console.log(`📋 Dependency ${depId} not found for ${pkgId}`);
         }
       }
     }
 
-    // Also add root package dependencies
+    // Also add root package dependencies from Move.toml
     for (const depName of rootPackage.dependencies.keys()) {
       const depPkg = packageById.get(depName);
       if (depPkg) {
         const dep = rootPackage.dependencies.get(depName)!;
         graph.addDependency(rootPackage.id.name, depPkg.id.name, dep);
-        console.log(
-          `📋 Added root edge: ${rootPackage.id.name} -> ${depPkg.id.name}`
-        );
       }
     }
 
-    console.log(
-      "📋 Lockfile v3 loading complete, packages in graph:",
-      graph.getAllPackages().length
-    );
     return true;
   }
 
@@ -899,7 +908,7 @@ export class Resolver {
   private async loadFromLockfileV4(
     graph: DependencyGraph,
     lockfile: any,
-    rootFiles: Record<string, string>
+    _rootFiles: Record<string, string>
   ): Promise<boolean> {
     // Check if lockfile has pinned dependencies for this network
     const pinnedPackages = lockfile.pinned?.[this.network];
@@ -918,9 +927,12 @@ export class Resolver {
 
     // Build graph from pinned packages
     const packageById = new Map<string, Package>();
+    const packageByName = new Map<string, Package>();
+    const lockfileOrder: string[] = [];
 
     // First pass: Create all packages
     for (const [pkgId, pin] of Object.entries(pinnedPackages)) {
+      lockfileOrder.push(pkgId);
       const source = this.lockfileSourceToDependencySource((pin as any).source);
       if (!source) {
         continue;
@@ -949,12 +961,18 @@ export class Resolver {
       // Build package
       const pkg = await this.buildPackage(pkgId, source, moveToml, files);
       packageById.set(pkgId, pkg);
+      packageByName.set(pkg.manifest.name, pkg);
       this.packageFiles.set(pkg.manifest.name, files);
 
       // Add to graph (if not root)
       if (source.type !== "local" || !("root" in (pin as any).source)) {
         graph.addPackage(pkg);
       }
+    }
+
+    // Preserve lockfile order
+    if (lockfileOrder.length > 0) {
+      graph.setLockfileOrder(lockfileOrder);
     }
 
     // Second pass: Add dependency edges
@@ -972,6 +990,16 @@ export class Resolver {
             }
           }
         }
+      }
+    }
+
+    // Add root edges from manifest dependencies to pinned packages (name-based lookup)
+    for (const depName of rootPackage.dependencies.keys()) {
+      const depPkg =
+        packageByName.get(depName) || packageById.get(depName);
+      if (depPkg) {
+        const dep = rootPackage.dependencies.get(depName)!;
+        graph.addDependency(rootPackage.id.name, depPkg.id.name, dep);
       }
     }
 
@@ -1014,7 +1042,12 @@ export class Resolver {
   ): Promise<Record<string, string> | null> {
     if (source.type === "git" && source.git && source.rev) {
       try {
-        return await this.fetcher.fetch(source.git, source.rev, source.subdir);
+        return await this.fetcher.fetch(
+          source.git,
+          source.rev,
+          source.subdir,
+          "lockfile:dependency"
+        );
       } catch {
         return null;
       }
@@ -1113,8 +1146,9 @@ export async function resolve(
   rootMoveTomlContent: string,
   rootSourceFiles: Record<string, string>,
   fetcher: Fetcher,
-  network: "mainnet" | "testnet" | "devnet" = "mainnet"
+  network: "mainnet" | "testnet" | "devnet" = "mainnet",
+  rootSource?: DependencySource
 ): Promise<{ files: string; dependencies: string }> {
-  const resolver = new Resolver(fetcher, network);
+  const resolver = new Resolver(fetcher, network, rootSource || null);
   return resolver.resolve(rootMoveTomlContent, rootSourceFiles);
 }

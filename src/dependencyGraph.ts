@@ -103,7 +103,12 @@ export class DependencyGraph {
   private graph: Map<string, Set<string>> = new Map();
 
   // Packages that should always be included (system packages)
-  private alwaysDeps: Set<string> = new Set(["Sui", "MoveStdlib"]);
+  private alwaysDeps: Set<string> = new Set([
+    "Sui",
+    "MoveStdlib",
+    "SuiSystem",
+    "Bridge",
+  ]);
 
   // Root package name
   private root: string;
@@ -198,19 +203,11 @@ export class DependencyGraph {
   topologicalOrder(): string[] {
     // If we don't have lockfile order (e.g., Move.lock v0 or missing), fall back to DFS ordering.
     if (!this.lockfileOrder.length) {
-      console.log("🔄 Lockfile order missing; falling back to DFS order");
       const dfsOrder = this.topologicalOrderDFS();
-      // DFS order includes root at the end; filter out root and return dependencies
-      const filtered = dfsOrder.filter((n) => n !== this.root);
-      console.log("🔄 Final dependency order (DFS):", filtered);
-      return filtered;
+      return dfsOrder.filter((n) => n !== this.root);
     }
 
-    // CRITICAL: Return Move.lock order, NOT alphabetical order!
-    // The [[move.package]] array order in Move.lock IS the dependency order.
-
-    console.log("🔄 Getting dependency order (from Move.lock)");
-    console.log("🔄 Lockfile order:", this.lockfileOrder);
+    // Return Move.lock order for reachable packages only
 
     // Get all packages that are reachable from root (i.e., actually used)
     const reachable = new Set<string>();
@@ -231,22 +228,13 @@ export class DependencyGraph {
 
     // Start from root to find all reachable packages
     dfs(this.root);
-    console.log("🔄 Reachable packages:", Array.from(reachable));
-
-    // Filter lockfileOrder to only include reachable packages (excluding root)
-    // PRESERVE THE ORIGINAL ORDER FROM MOVE.LOCK!
     const result: string[] = [];
     for (const pkgName of this.lockfileOrder) {
       if (pkgName === this.root) continue; // Skip root package
       if (reachable.has(pkgName)) {
         result.push(pkgName);
-        console.log(`🔄 Including ${pkgName} (Move.lock order, reachable)`);
-      } else {
-        console.log(`🔄 Skipping ${pkgName} (not reachable/used)`);
       }
     }
-
-    console.log("🔄 Final dependency order (Move.lock):", result);
     return result;
   }
 

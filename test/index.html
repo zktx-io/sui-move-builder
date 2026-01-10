@@ -313,11 +313,14 @@
           return;
         }
 
-        repoUrlInput.addEventListener("input", () => {
+        const updateButtons = () => {
           const hasUrl = !!repoUrlInput.value.trim();
           compileBtn.disabled = !hasUrl;
           resolveDepsBtn.disabled = !hasUrl;
-        });
+        };
+
+        repoUrlInput.addEventListener("input", updateButtons);
+        updateButtons();
 
         // Original build button (without caching)
         compileBtn.addEventListener("click", async () => {
@@ -370,6 +373,11 @@
               ansiColor: useAnsi,
               network: network,
               githubToken: githubToken || undefined,
+            });
+
+            console.log("Build result:", {
+              modules: result.modules,
+              dependencies: result.dependencies,
             });
 
             const end = performance.now();

@@ -16,6 +16,7 @@ export interface PackageGroupedFormat {
   name: string;
   files: Record<string, string>;
   edition?: string;
+  addressMapping?: Record<string, string>;
 }
 
 type ModuleFormat = "Source" | "Bytecode";
@@ -77,7 +78,9 @@ export class CompilationDependencies {
 
     // Get all packages in Move.lock order
     const packageOrder = this.resolvedGraph.topologicalOrder();
-    console.log("📋 Package order (Move.lock):", packageOrder);
+    // System packages that we exclude when not explicitly needed.
+    // Matches observed CLI outputs where Bridge/SuiSystem IDs are omitted.
+    const filteredSystemDeps = new Set(["Bridge", "SuiSystem"]);
 
     // Build DependencyInfo for each package (excluding root)
     for (const pkgName of packageOrder) {
@@ -87,6 +90,11 @@ export class CompilationDependencies {
 
       const pkg = this.resolvedGraph.getPackage(pkgName);
       if (!pkg) continue;
+
+      // Skip unused system packages that the CLI does not surface in dependency IDs.
+      if (filteredSystemDeps.has(pkgName)) {
+        continue;
+      }
 
       const files = packageFiles.get(pkgName) || {};
       const sourcePaths = this.extractSourcePaths(pkgName, files);
@@ -118,19 +126,14 @@ export class CompilationDependencies {
     packageName: string,
     files: Record<string, string>
   ): string[] {
-    const sourcePaths: string[] = [];
+    const sourcePaths = Object.keys(files).filter((path) => {
+      if (path.endsWith("Move.toml") || path.endsWith("Move.lock"))
+        return false;
+      return path.endsWith(".move");
+    });
 
-    for (const path of Object.keys(files)) {
-      // Skip Move.toml and Move.lock
-      if (path.endsWith("Move.toml") || path.endsWith("Move.lock")) {
-        continue;
-      }
-
-      // Only include .move files
-      if (path.endsWith(".move")) {
-        sourcePaths.push(path);
-      }
-    }
+    // Match CLI behavior: deterministic, lexicographic ordering of source files.
+    sourcePaths.sort((a, b) => a.localeCompare(b));
 
     return sourcePaths;
   }
@@ -145,9 +148,6 @@ export class CompilationDependencies {
 
     for (const dep of this.dependencies) {
       const pkgFiles = allPackageFiles.get(dep.name) || {};
-      console.log(
-        `📋 Package ${dep.name}: ${Object.keys(pkgFiles).length} files`
-      );
       const groupedFiles: Record<string, string> = {};
 
       for (const [path, content] of Object.entries(pkgFiles)) {
@@ -158,20 +158,14 @@ export class CompilationDependencies {
 
         const depPath = `dependencies/${dep.name}/${path}`;
 
-        // For Move.toml, reconstruct with package's own edition
         if (path.endsWith("Move.toml")) {
-          const reconstructed = this.reconstructDependencyMoveToml(
+          // Reconstruct Move.toml with unified addresses and edition
+          groupedFiles[depPath] = this.reconstructDependencyMoveToml(
             dep.name,
             content,
             dep.edition,
             dep.addressMapping
           );
-          if (dep.name === "deepbook" || dep.name === "token") {
-            console.log(
-              `📋 Reconstructed ${dep.name} Move.toml:\n${reconstructed}`
-            );
-          }
-          groupedFiles[depPath] = reconstructed;
         } else {
           groupedFiles[depPath] = content;
         }
@@ -181,6 +175,7 @@ export class CompilationDependencies {
         name: dep.name,
         files: groupedFiles,
         edition: dep.edition,
+        addressMapping: dep.addressMapping,
       });
     }
 
@@ -188,7 +183,7 @@ export class CompilationDependencies {
   }
 
   /**
-   * Reconstruct a dependency's Move.toml with its own edition and unified addresses
+   * Reconstruct a dependency's Move.toml with unified addresses and edition
    */
   private reconstructDependencyMoveToml(
     packageName: string,
@@ -196,48 +191,34 @@ export class CompilationDependencies {
     edition: string,
     addresses: Record<string, string>
   ): string {
-    // Parse original to get package info and dependencies
     const lines = originalMoveToml.split("\n");
     const packageSection: string[] = [];
     const dependenciesSection: string[] = [];
-
     let inPackage = false;
     let inDependencies = false;
 
     for (const line of lines) {
       const trimmed = line.trim();
-
       if (trimmed.startsWith("[package]")) {
         inPackage = true;
         inDependencies = false;
         continue;
       }
-
       if (trimmed.startsWith("[dependencies]")) {
         inPackage = false;
         inDependencies = true;
         continue;
       }
-
       if (trimmed.startsWith("[")) {
         inPackage = false;
         inDependencies = false;
         continue;
       }
-
-      if (inPackage && trimmed) {
-        packageSection.push(line);
-      }
-
-      if (inDependencies && trimmed) {
-        dependenciesSection.push(line);
-      }
+      if (inPackage && trimmed) packageSection.push(line);
+      if (inDependencies && trimmed) dependenciesSection.push(line);
     }
 
-    // Reconstruct Move.toml with correct edition
     let result = "[package]\n";
-
-    // Add package fields, ensuring edition is set correctly
     let hasName = false;
     let hasVersion = false;
 
@@ -249,60 +230,24 @@ export class CompilationDependencies {
         result += line + "\n";
         hasVersion = true;
       } else if (line.includes("edition =")) {
-        // Skip original edition, we'll add our own
-        continue;
-      } else if (line.includes("published-at =")) {
-        // Skip original published-at, we'll add our own if needed
-        continue;
+        continue; // we will add edition below
       } else {
         result += line + "\n";
       }
     }
-
-    // Add defaults if missing
-    if (!hasName) {
-      result += `name = "${packageName}"\n`;
-    }
-    if (!hasVersion) {
-      result += 'version = "0.0.0"\n';
-    }
-
-    // Add edition
+    if (!hasName) result += `name = "${packageName}"\n`;
+    if (!hasVersion) result += 'version = "0.0.0"\n';
     result += `edition = "${edition}"\n`;
 
-    // Add published-at if the package has it
-    const pkg = this.resolvedGraph.getPackage(packageName);
-    if (pkg?.manifest.publishedAt) {
-      result += `published-at = "${pkg.manifest.publishedAt}"\n`;
-    }
-
-    // Add dependencies section
     result += "\n[dependencies]\n";
     for (const line of dependenciesSection) {
       result += line + "\n";
     }
 
-    // Add addresses section with unified addresses
     result += "\n[addresses]\n";
     for (const [name, addr] of Object.entries(addresses)) {
-      // Skip 0x0 addresses for the package's own name (they are unassigned)
-      // This matches Sui CLI behavior where 0x0 means "to be determined at publish time"
-      if (name === packageName) {
-        const normalized = addr.startsWith("0x") ? addr.slice(2) : addr;
-        if (normalized.match(/^0+$/)) {
-          continue; // Skip 0x0 addresses
-        }
-      }
       result += `${name} = "${addr}"\n`;
     }
-
     return result;
-  }
-
-  /**
-   * Get the unified address table from resolved graph
-   */
-  getUnifiedAddressTable(): Record<string, string> {
-    return this.resolvedGraph.getUnifiedAddressTable();
   }
 }

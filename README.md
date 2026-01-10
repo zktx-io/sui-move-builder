@@ -8,7 +8,7 @@ Build Move packages in web or Node.js with Sui CLI-compatible dependency resolut
 - ✅ **Lockfile Support**: Reads `Move.lock` for faster, deterministic builds
 - ✅ **Per-Package Editions**: Each package can use its own Move edition (legacy, 2024.alpha, 2024.beta)
 - ✅ **Monorepo Support**: Handles local dependencies in monorepo structures
-- ✅ **Version Conflict Resolution**: Automatically resolves dependency version conflicts
+- ✅ **Version Conflict Detection**: Matches Sui CLI behavior for conflicting dependency versions
 - ✅ **Browser & Node.js**: Works in both environments with WASM-based compilation
 - ✅ **GitHub Integration**: Fetches dependencies directly from git repositories
 - ✅ **GitHub Token Support**: Optional token to raise rate limits (API calls only; raw fetch remains CORS-safe)
@@ -169,6 +169,10 @@ const result2 = await buildMovePackage({
 - ⚡ Faster builds when dependencies haven't changed
 - 🔄 Useful for watch mode or iterative development
 - 💾 Reduce network requests by caching dependency resolution
+
+## Limitations
+
+- Dependencies are always compiled from source. Bytecode-only deps (.mv fallback used by the Sui CLI when sources are missing) are not supported in the wasm path.
 
 ## Local test page
 

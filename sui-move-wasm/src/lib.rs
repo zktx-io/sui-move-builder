@@ -1,13 +1,21 @@
+use base64::{Engine as _, engine::general_purpose};
 use blake2::digest::{Update, VariableOutput};
 use blake2::Blake2bVar;
 use move_compiler::{Compiler, editions::{Flavor, Edition}, shared::{NumericalAddress, PackageConfig, PackagePaths}};
-use move_core_types::account_address::AccountAddress;
-use std::collections::BTreeMap;
+use move_core_types::{account_address::AccountAddress, language_storage::ModuleId};
+use move_symbol_pool::Symbol;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use vfs::{impls::memory::MemoryFS, VfsPath};
 use wasm_bindgen::prelude::*;
-use serde::{Deserialize, Serialize};
-use base64::{Engine as _, engine::general_purpose};
-use move_symbol_pool::Symbol;
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console, js_name = log)]
+    fn console_log(s: &str);
+}
 
 #[wasm_bindgen]
 pub struct MoveCompilerResult {
@@ -58,6 +66,8 @@ struct PackageGroup {
     files: BTreeMap<String, String>,
     #[serde(default)]
     edition: Option<String>,
+    #[serde(default)]
+    addressMapping: Option<BTreeMap<String, String>>,
 }
 
 fn package_version_from_lock(lock_contents: &str, package_name: &str) -> Option<String> {
@@ -93,6 +103,13 @@ fn append_git_revision(version: String) -> String {
     } else {
         version
     }
+}
+
+fn log(msg: &str) {
+    #[cfg(all(target_arch = "wasm32", debug_assertions))]
+    console_log(msg);
+    #[cfg(all(not(target_arch = "wasm32"), debug_assertions))]
+    eprintln!("{}", msg);
 }
 
 #[wasm_bindgen]
@@ -155,7 +172,10 @@ fn parse_edition(edition_str: &str) -> Edition {
         "2024" | "2024.alpha" => Edition::E2024_ALPHA,
         "2024.beta" => Edition::E2024_BETA,
         _ => {
-            eprintln!("Warning: Unknown edition '{}', defaulting to legacy", edition_str);
+            log(&format!(
+                "Warning: Unknown edition '{}', defaulting to legacy",
+                edition_str
+            ));
             Edition::LEGACY
         }
     }
@@ -288,7 +308,10 @@ fn compile_impl(
             if let Some(ref pkg) = toml_data.package {
                 if let Some(ref edition_str) = pkg.edition {
                     root_edition = parse_edition(edition_str);
-                    eprintln!("📋 Root package edition: {} -> {:?}", edition_str, root_edition);
+                    log(&format!(
+                        "📋 Root package edition: {} -> {:?}",
+                        edition_str, root_edition
+                    ));
                 }
                 if let Some(ref published_at) = pkg.published_at {
                     root_published_at = parse_hex_address_to_bytes(published_at);
@@ -318,11 +341,34 @@ fn compile_impl(
         }
     }
 
-    let root_targets: Vec<Symbol> = files
+    let mut root_targets: Vec<Symbol> = files
         .keys()
         .filter(|name| !name.ends_with("Move.toml") && name.ends_with(".move"))
         .map(|s| Symbol::from(s.as_str()))
         .collect();
+    // Match CLI behavior: lexicographic sort of root source paths.
+    root_targets.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    log(&format!(
+        "📋 Root sources ({}): {:?}",
+        root_targets.len(),
+        root_targets
+            .iter()
+            .map(|s| s.as_str().to_string())
+            .collect::<Vec<_>>()
+    ));
+    let mut root_dirs = BTreeSet::<String>::new();
+    for s in &root_targets {
+        if let Some(parent) = Path::new(s.as_str()).parent() {
+            if let Some(dir) = parent.to_str() {
+                root_dirs.insert(dir.to_string());
+            }
+        }
+    }
+    log(&format!(
+        "📁 Root source dirs ({}): {:?}",
+        root_dirs.len(),
+        root_dirs
+    ));
 
     let target_package = PackagePaths {
         name: Some((
@@ -335,7 +381,8 @@ fn compile_impl(
             },
         )),
         paths: root_targets,
-        named_address_map: root_named_address_map,
+        // Clone so we can log the map after constructing PackagePaths.
+        named_address_map: root_named_address_map.clone(),
     };
 
     // Build PackagePaths for dependencies
@@ -348,70 +395,88 @@ fn compile_impl(
         let mut edition = Edition::LEGACY;
         let mut published_at: Option<[u8; 32]> = None;
 
-        // Find Move.toml in this package
-        let toml_key = pkg_group.files.keys()
-            .find(|k| k.ends_with("Move.toml"))
-            .cloned();
-
-        if let Some(toml_key) = toml_key {
-            if let Some(move_toml_content) = pkg_group.files.get(&toml_key) {
-                if let Ok(toml_data) = toml::from_str::<MoveToml>(move_toml_content) {
-                    if let Some(ref pkg) = toml_data.package {
-                        if let Some(ref edition_str) = pkg.edition {
-                            edition = parse_edition(edition_str);
-                        }
-                        if let Some(ref pa) = pkg.published_at {
-                            published_at = parse_hex_address_to_bytes(pa);
-                        }
+        // Prefer address mapping supplied from JS to avoid extra parsing work in WASM.
+        if let Some(ref addr_map) = pkg_group.addressMapping {
+            for (name, addr_str) in addr_map {
+                if let Some(bytes) = parse_hex_address_to_bytes(addr_str) {
+                    named_address_map.insert(
+                        name.clone(),
+                        NumericalAddress::new(bytes, move_compiler::shared::NumberFormat::Hex)
+                    );
+                    if name == &pkg_group.name && !dependency_ids.contains(&bytes) {
+                        dependency_ids.push(bytes);
                     }
+                }
+            }
+        } else {
+            // Fallback: parse Move.toml if mapping not provided
+            let toml_key = pkg_group
+                .files
+                .keys()
+                .find(|k| k.ends_with("Move.toml"))
+                .cloned();
 
-                    // Check [addresses] section for package's own address (priority over published-at)
-                    let mut found_address_id = false;
-                    // Use PackageGroup's name to look up the address
-                    if let Some(addr_str) = toml_data.addresses.get(&pkg_group.name) {
-                        // Skip 0x0 addresses
-                        if addr_str != "0x0" && !addr_str.trim_start_matches("0x").chars().all(|c| c == '0') {
-                            if let Some(bytes) = parse_hex_address_to_bytes(addr_str) {
-                                if !dependency_ids.contains(&bytes) {
-                                    eprintln!("📦 [{}] Using [addresses].{} = {}", pkg_group.name, pkg_group.name, addr_str);
-                                    dependency_ids.push(bytes);
-                                    found_address_id = true;
-                                }
+            if let Some(toml_key) = toml_key {
+                if let Some(move_toml_content) = pkg_group.files.get(&toml_key) {
+                    if let Ok(toml_data) = toml::from_str::<MoveToml>(move_toml_content) {
+                        if let Some(ref pkg) = toml_data.package {
+                            if let Some(ref edition_str) = pkg.edition {
+                                edition = parse_edition(edition_str);
+                            }
+                            if let Some(ref pa) = pkg.published_at {
+                                published_at = parse_hex_address_to_bytes(pa);
                             }
                         }
-                    }
 
-                    // Fallback to published-at if no valid address found in [addresses]
-                    if !found_address_id {
-                        if let Some(bytes) = published_at {
-                            if !dependency_ids.contains(&bytes) {
-                                if let Some(ref pkg) = toml_data.package {
-                                    if let Some(ref pa) = pkg.published_at {
-                                        eprintln!("📦 [{}] Using published-at = {}", pkg_group.name, pa);
+                        // Check [addresses] section for package's own address (priority over published-at)
+                        let mut found_address_id = false;
+                        if let Some(addr_str) = toml_data.addresses.get(&pkg_group.name) {
+                            if addr_str != "0x0"
+                                && !addr_str.trim_start_matches("0x").chars().all(|c| c == '0')
+                            {
+                                if let Some(bytes) = parse_hex_address_to_bytes(addr_str) {
+                                    if !dependency_ids.contains(&bytes) {
+                                        log(&format!(
+                                            "📦 [{}] Using [addresses].{} = {}",
+                                            pkg_group.name, pkg_group.name, addr_str
+                                        ));
+                                        dependency_ids.push(bytes);
+                                        found_address_id = true;
                                     }
                                 }
-                                dependency_ids.push(bytes);
                             }
                         }
-                    }
 
-                    for (name, addr_str) in toml_data.addresses {
-                        let addr_str_clean = addr_str.trim_start_matches("0x");
-                        let addr_str_normalized = if addr_str_clean.len() % 2 != 0 {
-                            format!("0{}", addr_str_clean)
-                        } else {
-                            addr_str_clean.to_string()
-                        };
+                        if !found_address_id {
+                            if let Some(bytes) = published_at {
+                                if !dependency_ids.contains(&bytes) {
+                                    log(&format!(
+                                        "📦 [{}] Using published-at fallback",
+                                        pkg_group.name
+                                    ));
+                                    dependency_ids.push(bytes);
+                                }
+                            }
+                        }
 
-                        if let Ok(bytes) = hex::decode(&addr_str_normalized) {
-                            if bytes.len() <= 32 {
-                                let mut addr_bytes = [0u8; 32];
-                                let start = 32 - bytes.len();
-                                addr_bytes[start..].copy_from_slice(&bytes);
-                                named_address_map.insert(
-                                    name.clone(),
-                                    NumericalAddress::new(addr_bytes, move_compiler::shared::NumberFormat::Hex)
-                                );
+                        for (name, addr_str) in toml_data.addresses {
+                            let addr_str_clean = addr_str.trim_start_matches("0x");
+                            let addr_str_normalized = if addr_str_clean.len() % 2 != 0 {
+                                format!("0{}", addr_str_clean)
+                            } else {
+                                addr_str_clean.to_string()
+                            };
+
+                            if let Ok(bytes) = hex::decode(&addr_str_normalized) {
+                                if bytes.len() <= 32 {
+                                    let mut addr_bytes = [0u8; 32];
+                                    let start = 32 - bytes.len();
+                                    addr_bytes[start..].copy_from_slice(&bytes);
+                                    named_address_map.insert(
+                                        name.clone(),
+                                        NumericalAddress::new(addr_bytes, move_compiler::shared::NumberFormat::Hex)
+                                    );
+                                }
                             }
                         }
                     }
@@ -422,7 +487,10 @@ fn compile_impl(
         // Use explicitly provided edition if available
         if let Some(ref edition_str) = pkg_group.edition {
             edition = parse_edition(edition_str);
-            eprintln!("📋 Dependency '{}' override edition: {} -> {:?}", pkg_group.name, edition_str, edition);
+            log(&format!(
+                "📋 Dependency '{}' override edition: {} -> {:?}",
+                pkg_group.name, edition_str, edition
+            ));
         }
 
         let dep_files: Vec<Symbol> = pkg_group.files
@@ -430,6 +498,35 @@ fn compile_impl(
             .filter(|name| !name.ends_with("Move.toml") && name.ends_with(".move"))
             .map(|s| Symbol::from(s.as_str()))
             .collect();
+        let mut dep_files_sorted = dep_files.clone();
+        dep_files_sorted.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        log(&format!(
+            "📋 Dep [{}] sources ({}): {:?}",
+            pkg_group.name,
+            dep_files_sorted.len(),
+            dep_files_sorted
+                .iter()
+                .map(|s| s.as_str().to_string())
+                .collect::<Vec<_>>()
+        ));
+        let mut dep_dirs = BTreeSet::<String>::new();
+        for s in &dep_files_sorted {
+            if let Some(parent) = Path::new(s.as_str()).parent() {
+                if let Some(dir) = parent.to_str() {
+                    dep_dirs.insert(dir.to_string());
+                }
+            }
+        }
+        log(&format!(
+            "📁 Dep [{}] source dirs ({}): {:?}",
+            pkg_group.name,
+            dep_dirs.len(),
+            dep_dirs
+        ));
+        log(&format!(
+            "📋 Dep [{}] named_address_map: {:?}",
+            pkg_group.name, named_address_map
+        ));
 
         dep_package_paths.push(PackagePaths {
             name: Some((
@@ -445,6 +542,10 @@ fn compile_impl(
             named_address_map,
         });
     }
+    log(&format!(
+        "📋 Root named_address_map: {:?}",
+        root_named_address_map
+    ));
 
     // Build compiler with from_package_paths
     let compiler = match Compiler::from_package_paths(
@@ -469,23 +570,44 @@ fn compile_impl(
 
     match res {
         Ok((units, _warnings)) => {
+            // Build module list with IDs
+            let mut module_infos: Vec<(ModuleId, move_compiler::compiled_unit::NamedCompiledModule)> =
+                Vec::new();
+            for unit in units {
+                let id = unit.named_module.module.self_id();
+                module_infos.push((id, unit.named_module));
+            }
+
+            let fmt_id = |id: &ModuleId| {
+                format!(
+                    "{}::{}",
+                    id.address().to_canonical_string(true),
+                    id.name()
+                )
+            };
+
+            log("📋 Modules (raw order):");
+            for (i, (id, _)) in module_infos.iter().enumerate() {
+                log(&format!("  [{:02}] {}", i, fmt_id(id)));
+            }
+
+            // Preserve compiler-returned order (matches CLI's dependency_order output).
             let mut modules = vec![];
             let mut module_bytes = vec![];
-
-            for unit in units {
-                let bytes = unit.named_module.serialize();
+            for (idx, (id, module)) in module_infos.iter().enumerate() {
+                let bytes = module.serialize();
                 module_bytes.push(bytes.clone());
                 modules.push(general_purpose::STANDARD.encode(&bytes));
+                let digest = blake2b256(&bytes);
+                log(&format!(
+                    "  compiler order [{:02}] {} digest {}",
+                    idx,
+                    fmt_id(id),
+                    hex::encode(digest)
+                ));
             }
 
-            // Add root package's published-at if exists
-            if let Some(bytes) = root_published_at {
-                if !dependency_ids.contains(&bytes) {
-                    dependency_ids.push(bytes);
-                }
-            }
-
-            // dependency_ids is already a Vec, no need to convert
+            // Use dependency IDs exactly as provided by JS (package graph order).
             let dependency_ids_vec = dependency_ids;
             let mut components: Vec<Vec<u8>> = vec![];
             for bytes in &module_bytes {
