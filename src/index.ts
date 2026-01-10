@@ -13,6 +13,8 @@ export interface BuildInput {
   files: Record<string, string>;
   /** Optional custom URL for the wasm binary. Defaults to bundled wasm next to this module. */
   wasm?: string | URL;
+  /** Optional GitHub token to raise API limits when resolving dependencies. */
+  githubToken?: string;
   /** Emit ANSI color codes in diagnostics when available. */
   ansiColor?: boolean;
   /** Network environment (mainnet, testnet, devnet). Defaults to mainnet. */
@@ -185,7 +187,7 @@ export async function initMoveCompiler(options?: {
   await loadWasm(options?.wasm);
 }
 
-/** 
+/**
  * Resolve dependencies for a Move package without compiling.
  * This function can be used to resolve dependencies once and reuse them across multiple builds.
  */
@@ -200,7 +202,7 @@ export async function resolveDependencies(
   const resolved = await resolveMoveToml(
     moveToml,
     { ...input.files, "Move.toml": moveToml },
-    new GitHubFetcher(),
+    new GitHubFetcher(input.githubToken),
     input.network
   );
 
@@ -222,23 +224,56 @@ export async function buildMovePackage(
 
     const mod = await loadWasm(input.wasm);
     // resolved.files and resolved.dependencies are already JSON strings
+    // Debug logging
+    console.error(`📋 About to call WASM compiler`);
+    console.error(
+      `📋 resolved.files type: ${typeof resolved.files}, length: ${resolved.files.length}`
+    );
+    console.error(
+      `📋 resolved.dependencies type: ${typeof resolved.dependencies}, length: ${resolved.dependencies.length}`
+    );
+
+    let filesCount = 0;
+    try {
+      filesCount = Object.keys(JSON.parse(resolved.files)).length;
+      console.error(`📋 Parsed files successfully: ${filesCount} files`);
+    } catch (e) {
+      console.error(
+        `📋 ERROR parsing files JSON:`,
+        e instanceof Error ? e.message : e
+      );
+      throw e;
+    }
+
     const raw =
       input.ansiColor && typeof (mod as any).compile_with_color === "function"
         ? (mod as any).compile_with_color(
-          resolved.files,
-          resolved.dependencies,
-          true
-        )
+            resolved.files,
+            resolved.dependencies,
+            true
+          )
         : mod.compile(resolved.files, resolved.dependencies);
     const result = ensureCompileResult(raw);
     const ok = result.success();
     const output = result.output();
 
     if (!ok) {
+      console.error(`📋 WASM compiler returned error: ${output}`);
+      console.error(
+        `📋 Files keys: ${Object.keys(JSON.parse(resolved.files)).slice(0, 20).join(", ")}`
+      );
+      console.error(
+        `📋 Dependencies preview: ${resolved.dependencies.substring(0, 500)}`
+      );
       return asFailure(output);
     }
     return parseCompileResult(output);
   } catch (error) {
+    console.error(
+      `📋 EXCEPTION in buildMovePackage:`,
+      error instanceof Error ? error.message : error
+    );
+    console.error(`📋 Stack:`, error instanceof Error ? error.stack : "N/A");
     return asFailure(error);
   }
 }

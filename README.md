@@ -11,6 +11,7 @@ Build Move packages in web or Node.js with Sui CLI-compatible dependency resolut
 - ✅ **Version Conflict Resolution**: Automatically resolves dependency version conflicts
 - ✅ **Browser & Node.js**: Works in both environments with WASM-based compilation
 - ✅ **GitHub Integration**: Fetches dependencies directly from git repositories
+- ✅ **GitHub Token Support**: Optional token to raise rate limits (API calls only; raw fetch remains CORS-safe)
 
 ## Install
 
@@ -44,7 +45,11 @@ module hello_world::hello_world {
 };
 
 // 3) Compile
-const result = await buildMovePackage({ files });
+const result = await buildMovePackage({
+  files,
+  // optional: bump GitHub API limits during dependency resolution
+  githubToken: process.env.GITHUB_TOKEN,
+});
 
 if (result.success) {
   console.log("Digest:", result.digest);
@@ -67,11 +72,17 @@ await initMoveCompiler();
 
 // Fetch a package from GitHub URL
 const files = await fetchPackageFromGitHub(
-  "https://github.com/MystenLabs/sui/tree/framework/mainnet/crates/sui-framework/packages/sui-framework"
+  "https://github.com/MystenLabs/sui/tree/framework/mainnet/crates/sui-framework/packages/sui-framework",
+  {
+    githubToken: process.env.GITHUB_TOKEN, // optional
+  }
 );
 
 // Compile directly
-const result = await buildMovePackage({ files });
+const result = await buildMovePackage({
+  files,
+  githubToken: process.env.GITHUB_TOKEN, // optional
+});
 ```
 
 ## How it works
@@ -117,10 +128,10 @@ if (result.success) {
 For faster builds when compiling multiple times with the same dependencies, you can resolve dependencies once and reuse them:
 
 ```ts
-import { 
-  initMoveCompiler, 
-  resolveDependencies, 
-  buildMovePackage 
+import {
+  initMoveCompiler,
+  resolveDependencies,
+  buildMovePackage,
 } from "@zktx.io/sui-move-builder";
 
 await initMoveCompiler();
@@ -137,6 +148,7 @@ const deps = await resolveDependencies({ files, network: "mainnet" });
 const result1 = await buildMovePackage({
   files,
   network: "mainnet",
+  githubToken: process.env.GITHUB_TOKEN, // optional
   resolvedDependencies: deps, // Skip dependency resolution
 });
 
@@ -147,11 +159,13 @@ files["sources/main.move"] = "// updated code...";
 const result2 = await buildMovePackage({
   files,
   network: "mainnet",
+  githubToken: process.env.GITHUB_TOKEN, // optional
   resolvedDependencies: deps, // Reuse same dependencies
 });
 ```
 
 **Benefits:**
+
 - ⚡ Faster builds when dependencies haven't changed
 - 🔄 Useful for watch mode or iterative development
 - 💾 Reduce network requests by caching dependency resolution

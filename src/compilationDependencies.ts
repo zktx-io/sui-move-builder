@@ -75,11 +75,12 @@ export class CompilationDependencies {
       this.rootPackageName
     );
 
-    // Get all packages in topological order (dependencies before dependents)
-    const topoOrder = this.resolvedGraph.topologicalOrder();
+    // Get all packages in Move.lock order
+    const packageOrder = this.resolvedGraph.topologicalOrder();
+    console.log("📋 Package order (Move.lock):", packageOrder);
 
     // Build DependencyInfo for each package (excluding root)
-    for (const pkgName of topoOrder) {
+    for (const pkgName of packageOrder) {
       if (pkgName === this.rootPackageName) {
         continue; // Skip root, it's not a dependency
       }
@@ -144,6 +145,9 @@ export class CompilationDependencies {
 
     for (const dep of this.dependencies) {
       const pkgFiles = allPackageFiles.get(dep.name) || {};
+      console.log(
+        `📋 Package ${dep.name}: ${Object.keys(pkgFiles).length} files`
+      );
       const groupedFiles: Record<string, string> = {};
 
       for (const [path, content] of Object.entries(pkgFiles)) {
@@ -162,6 +166,11 @@ export class CompilationDependencies {
             dep.edition,
             dep.addressMapping
           );
+          if (dep.name === "deepbook" || dep.name === "token") {
+            console.log(
+              `📋 Reconstructed ${dep.name} Move.toml:\n${reconstructed}`
+            );
+          }
           groupedFiles[depPath] = reconstructed;
         } else {
           groupedFiles[depPath] = content;
@@ -242,6 +251,9 @@ export class CompilationDependencies {
       } else if (line.includes("edition =")) {
         // Skip original edition, we'll add our own
         continue;
+      } else if (line.includes("published-at =")) {
+        // Skip original published-at, we'll add our own if needed
+        continue;
       } else {
         result += line + "\n";
       }
@@ -258,6 +270,12 @@ export class CompilationDependencies {
     // Add edition
     result += `edition = "${edition}"\n`;
 
+    // Add published-at if the package has it
+    const pkg = this.resolvedGraph.getPackage(packageName);
+    if (pkg?.manifest.publishedAt) {
+      result += `published-at = "${pkg.manifest.publishedAt}"\n`;
+    }
+
     // Add dependencies section
     result += "\n[dependencies]\n";
     for (const line of dependenciesSection) {
@@ -267,6 +285,14 @@ export class CompilationDependencies {
     // Add addresses section with unified addresses
     result += "\n[addresses]\n";
     for (const [name, addr] of Object.entries(addresses)) {
+      // Skip 0x0 addresses for the package's own name (they are unassigned)
+      // This matches Sui CLI behavior where 0x0 means "to be determined at publish time"
+      if (name === packageName) {
+        const normalized = addr.startsWith("0x") ? addr.slice(2) : addr;
+        if (normalized.match(/^0+$/)) {
+          continue; // Skip 0x0 addresses
+        }
+      }
       result += `${name} = "${addr}"\n`;
     }
 

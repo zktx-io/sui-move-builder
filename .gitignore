@@ -11,3 +11,4 @@ dist
 .pre-commit*
 Cargo.lock
 .DS_Store
+.github_token

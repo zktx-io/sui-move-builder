@@ -113,7 +113,40 @@ export function parseToml(content: string): any {
   const result: any = {};
   let section: string | null = null;
   let isArraySection = false;
-  const lines = content.split(/\r?\n/);
+  const rawLines = content.split(/\r?\n/);
+
+  // Merge multi-line arrays
+  const lines: string[] = [];
+  let i = 0;
+  while (i < rawLines.length) {
+    const line = stripInlineComment(rawLines[i]);
+    // Check if this line starts a multi-line array
+    if (
+      line.match(/=\s*\[\s*$/) ||
+      (line.includes("=") && line.includes("[") && !line.includes("]"))
+    ) {
+      let merged = line;
+      i++;
+      // Keep merging until we find the closing ]
+      while (i < rawLines.length && !merged.includes("]")) {
+        merged += " " + stripInlineComment(rawLines[i]).trim();
+        i++;
+      }
+      // If we stopped before finding ], add the current line (which should have ])
+      if (
+        i < rawLines.length &&
+        merged.includes("[") &&
+        !merged.includes("]")
+      ) {
+        merged += " " + stripInlineComment(rawLines[i]).trim();
+        i++;
+      }
+      lines.push(merged);
+    } else {
+      lines.push(line);
+      i++;
+    }
+  }
 
   // Helper to get nested value using dot notation path
   function getNestedValue(obj: any, path: string[]): any {

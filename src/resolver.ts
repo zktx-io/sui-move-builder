@@ -81,6 +81,24 @@ export class Resolver {
       rootPackage.manifest.edition = rootEdition;
     }
 
+    // Sui CLI behavior: If root package address is 0x0 and original-published-id exists,
+    // replace the 0x0 address with original-published-id in the addresses table
+    const rootAddr = rootPackage.manifest.addresses[rootPackageName];
+    const normalizedRootAddr = this.normalizeAddress(rootAddr || "");
+    if (
+      normalizedRootAddr ===
+      "0x0000000000000000000000000000000000000000000000000000000000000000"
+    ) {
+      if (rootPackage.manifest.originalId) {
+        console.log(
+          `📋 Replacing root package 0x0 address with original-published-id: ${rootPackage.manifest.originalId}`
+        );
+        rootPackage.manifest.addresses[rootPackageName] = this.normalizeAddress(
+          rootPackage.manifest.originalId
+        );
+      }
+    }
+
     depGraph.addPackage(rootPackage);
     this.packageFiles.set(rootPackageName, rootFiles);
 
@@ -90,10 +108,33 @@ export class Resolver {
       rootPackage,
       rootFiles
     );
+    console.log("📋 Loaded from lockfile:", loadedFromLockfile);
 
     if (!loadedFromLockfile) {
+      console.log("📋 Falling back to manifest-based resolution");
+      console.log(
+        "📋 Root package dependencies from manifest:",
+        Object.keys(rootPackage.manifest.dependencies || {})
+      );
+      console.log(
+        "📋 Root package dependencies Map size:",
+        rootPackage.dependencies.size
+      );
+      console.log(
+        "📋 Root package dependencies Map keys:",
+        Array.from(rootPackage.dependencies.keys())
+      );
       // Fallback: Recursively resolve all dependencies from manifests
-      await this.buildDependencyGraph(depGraph, rootPackage);
+      try {
+        await this.buildDependencyGraph(depGraph, rootPackage);
+        console.log(
+          "📋 After buildDependencyGraph, packages:",
+          depGraph.getAllPackages().map((p) => p?.name)
+        );
+      } catch (err) {
+        console.error("📋 Error in buildDependencyGraph:", err.message);
+        throw err;
+      }
     }
 
     // Check for cycles
@@ -118,6 +159,8 @@ export class Resolver {
       globalEdition
     );
 
+    console.log("📋 Reconstructed root Move.toml:\n" + updatedRootToml);
+
     const updatedRootFiles = { ...rootFiles };
     delete updatedRootFiles["Move.lock"];
     updatedRootFiles["Move.toml"] = updatedRootToml;
@@ -125,6 +168,12 @@ export class Resolver {
     // Use new package-grouped format for per-package edition support
     const packageGroups = compilationDeps.toPackageGroupedFormat(
       this.packageFiles
+    );
+
+    console.log("📋 Number of dependency packages:", packageGroups.length);
+    console.log(
+      "📋 Dependency package names:",
+      packageGroups.map((p) => p.name).join(", ")
     );
 
     return {
@@ -140,19 +189,41 @@ export class Resolver {
     name: string,
     source: DependencySource | null,
     moveTomlContent: string,
-    _files: Record<string, string>
+    files: Record<string, string>
   ): Promise<Package> {
     const parsed = parseToml(moveTomlContent);
+
+    // Resolve published-at and original-id using CLI logic (Move.lock [env] + Move.toml)
+    const moveLockContent = files["Move.lock"];
+    const chainId = this.getChainIdForNetwork(this.network);
+    const publishedAtResult = this.resolvePublishedAt(
+      moveTomlContent,
+      moveLockContent,
+      chainId
+    );
+
+    if (publishedAtResult.error) {
+      console.warn(`⚠️  ${name}: ${publishedAtResult.error}`);
+    }
 
     const manifest: PackageManifest = {
       name: parsed.package?.name || name,
       version: parsed.package?.version || "0.0.0",
       edition: parsed.package?.edition,
-      publishedAt: parsed.package?.published_at,
+      publishedAt: publishedAtResult.publishedAt,
+      originalId: publishedAtResult.originalId,
       addresses: parsed.addresses || {},
       dependencies: parsed.dependencies || {},
       devDependencies: parsed["dev-dependencies"],
     };
+
+    // Ensure package has an address entry for its own name.
+    // If published-at is known, use it; otherwise default to 0x0 as placeholder.
+    if (!manifest.addresses[manifest.name]) {
+      manifest.addresses[manifest.name] = manifest.publishedAt
+        ? this.normalizeAddress(manifest.publishedAt)
+        : "0x0";
+    }
 
     const dependencies = new Map<string, Dependency>();
     if (manifest.dependencies) {
@@ -180,31 +251,60 @@ export class Resolver {
 
   /**
    * Parse dependency info from Move.toml
+   * Supports: git, local, addr-subst, rename-from (new package manager)
    */
   private parseDependencyInfo(depInfo: any): Dependency | null {
     if (!depInfo) return null;
 
+    const dep: Dependency = {
+      source: { type: "local" }, // Will be overwritten
+    };
+
+    // Parse source
     if (depInfo.git && depInfo.rev) {
-      return {
-        source: {
-          type: "git",
-          git: depInfo.git,
-          rev: depInfo.rev,
-          subdir: depInfo.subdir,
-        },
+      dep.source = {
+        type: "git",
+        git: depInfo.git,
+        rev: depInfo.rev,
+        subdir: depInfo.subdir,
       };
+    } else if (depInfo.local) {
+      dep.source = {
+        type: "local",
+        local: depInfo.local,
+      };
+    } else {
+      return null; // No valid source
     }
 
-    if (depInfo.local) {
-      return {
-        source: {
-          type: "local",
-          local: depInfo.local,
-        },
-      };
+    // Parse address substitutions/renames (new package manager feature)
+    // addr-subst = { SomeAddress = "0x123", OtherAddress = "AnotherName" }
+    if (depInfo["addr-subst"] || depInfo.addr_subst) {
+      const substTable = depInfo["addr-subst"] || depInfo.addr_subst;
+      const subst: Record<
+        string,
+        import("./dependencyGraph.js").SubstOrRename
+      > = {};
+
+      for (const [addrName, value] of Object.entries(substTable)) {
+        if (typeof value === "string") {
+          // Check if it's an address (starts with 0x) or a name
+          if (value.startsWith("0x") || /^[0-9a-fA-F]+$/.test(value)) {
+            // It's an address assignment
+            subst[addrName] = { type: "assign", address: value };
+          } else {
+            // It's a rename-from
+            subst[addrName] = { type: "renameFrom", name: value };
+          }
+        }
+      }
+
+      if (Object.keys(subst).length > 0) {
+        dep.subst = subst;
+      }
     }
 
-    return null;
+    return dep;
   }
 
   /**
@@ -214,7 +314,15 @@ export class Resolver {
     graph: DependencyGraph,
     pkg: Package
   ): Promise<void> {
+    console.log(
+      `📋 buildDependencyGraph for ${pkg.id.name}, deps count:`,
+      pkg.dependencies.size
+    );
     for (const [depName, dep] of pkg.dependencies.entries()) {
+      console.log(
+        `📋 Processing dependency: ${depName}, source type:`,
+        dep.source.type
+      );
       // Convert local dependencies to git dependencies using parent's git info
       if (dep.source.type === "local") {
         if (pkg.id.source.type === "git" && dep.source.local) {
@@ -267,10 +375,16 @@ export class Resolver {
       }
 
       // Fetch dependency files
+      console.log(
+        `📋 Fetching ${depName} from ${dep.source.git} @ ${dep.source.rev} (subdir: ${subdir})`
+      );
       const files = await this.fetcher.fetch(
         dep.source.git!,
         dep.source.rev!,
         subdir
+      );
+      console.log(
+        `📋 Fetched ${Object.keys(files).length} files for ${depName}`
       );
 
       // Find Move.toml
@@ -296,8 +410,10 @@ export class Resolver {
       }
 
       if (!moveTomlContent) {
+        console.log(`📋 No Move.toml found for ${depName}, skipping`);
         continue;
       }
+      console.log(`📋 Found Move.toml for ${depName}`);
 
       // Build package
       const depPackage = await this.buildPackage(
@@ -323,41 +439,28 @@ export class Resolver {
       // Remember this package name's source
       this.packageNameCache.set(depPackage.manifest.name, dep.source);
 
-      // Update manifest with published-at from Move.lock if available
-      const moveLockContent = files["Move.lock"];
-      if (moveLockContent) {
-        const moveLock = parseToml(moveLockContent) as any;
-        if (moveLock.env?.[this.network]) {
-          const publishedId =
-            moveLock.env[this.network]["latest-published-id"] ||
-            moveLock.env[this.network]["original-published-id"];
-          if (publishedId) {
-            depPackage.manifest.publishedAt = publishedId;
-            depPackage.manifest.addresses[depPackage.manifest.name] =
-              this.normalizeAddress(publishedId);
-          }
-        }
-
-        // Use edition only from Move.toml (Move.lock editions are unreliable)
-        // If Move.toml doesn't specify edition, default to 'legacy' for safety
-        if (!depPackage.manifest.edition) {
-          depPackage.manifest.edition = "legacy";
-        }
+      // published-at is already resolved in buildPackage via resolvePublishedAt
+      // But we need to update addresses table if publishedAt exists
+      if (depPackage.manifest.publishedAt) {
+        console.log(
+          `📋 Setting ${depPackage.manifest.name} address from published-at: ${depPackage.manifest.publishedAt}`
+        );
+        depPackage.manifest.addresses[depPackage.manifest.name] =
+          this.normalizeAddress(depPackage.manifest.publishedAt);
+      } else {
+        console.log(`📋 No published-at for ${depPackage.manifest.name}`);
       }
 
-      // If no published-at found, use known system package addresses
-      if (!depPackage.manifest.publishedAt) {
-        const systemPackages: Record<string, string> = {
-          Sui: "0x2",
-          MoveStdlib: "0x1",
-          SuiSystem: "0x3",
-          Bridge: "0xb",
-        };
-
-        if (systemPackages[depName]) {
-          depPackage.manifest.publishedAt = systemPackages[depName];
-        }
+      // Use edition only from Move.toml (Move.lock editions are unreliable)
+      // If Move.toml doesn't specify edition, default to 'legacy' for safety
+      if (!depPackage.manifest.edition) {
+        depPackage.manifest.edition = "legacy";
       }
+
+      // CLI behavior: Dependency IDs are extracted from:
+      // 1. [addresses] section with package's own name (if not 0x0)
+      // 2. published-at field from [package] section (resolved via resolvePublishedAt)
+      // No hardcoded fallback - WASM code handles extraction
 
       // Add to graph
       graph.addPackage(depPackage);
@@ -369,6 +472,99 @@ export class Resolver {
       // Recursively resolve this package's dependencies
       await this.buildDependencyGraph(graph, depPackage);
     }
+  }
+
+  /**
+   * Get chain ID for network (following Sui conventions)
+   * These are the actual chain identifiers used by Sui networks
+   */
+  private getChainIdForNetwork(network: string): string | undefined {
+    // Chain IDs are managed by Sui and can be queried via RPC
+    // For now, we use common environment names that match Move.lock [env] keys
+    const chainIdMap: Record<string, string> = {
+      mainnet: "mainnet",
+      testnet: "testnet",
+      devnet: "devnet",
+      localnet: "localnet",
+    };
+    return chainIdMap[network];
+  }
+
+  /**
+   * Resolve published-at and original-id following CLI logic from sui-package-management/lib.rs
+   *
+   * Priority:
+   * 1. Move.lock [env.<chain_id>].latest-published-id (if chain_id provided)
+   * 2. Move.toml [package].published-at
+   * 3. Detect conflicts between Move.lock and Move.toml
+   * 4. Track original-id for package upgrade chains
+   */
+  private resolvePublishedAt(
+    moveTomlContent: string,
+    moveLockContent: string | undefined,
+    chainId: string | undefined
+  ): { publishedAt?: string; originalId?: string; error?: string } {
+    const moveToml = parseToml(moveTomlContent);
+
+    // Read published-at from Move.toml
+    const publishedAtInManifest =
+      moveToml.package?.published_at || moveToml.package?.["published-at"];
+    const manifestId =
+      publishedAtInManifest && publishedAtInManifest !== "0x0"
+        ? publishedAtInManifest
+        : undefined;
+
+    // Read original-id from Move.toml (if specified manually)
+    const originalIdInManifest = moveToml.package?.["original-id"];
+
+    // If no Move.lock or no chain_id, return manifest values
+    if (!moveLockContent || !chainId) {
+      return {
+        publishedAt: manifestId,
+        originalId: originalIdInManifest,
+      };
+    }
+
+    // Read published-at and original-id from Move.lock [env.<chain_id>]
+    const moveLock = parseToml(moveLockContent) as any;
+    let lockId: string | undefined;
+    let lockOriginalId: string | undefined;
+
+    if (moveLock.env) {
+      // Find environment matching chain_id
+      for (const [envName, envData] of Object.entries(
+        moveLock.env as Record<string, any>
+      )) {
+        const latestId = envData["latest-published-id"];
+        const originalId = envData["original-published-id"];
+        const envChainId = envData["chain-id"];
+
+        // Match by chain-id if available, otherwise use first environment
+        if (envChainId === chainId || !envChainId) {
+          const id = latestId || originalId;
+          if (id && id !== "0x0") {
+            lockId = id;
+          }
+          if (originalId && originalId !== "0x0") {
+            lockOriginalId = originalId;
+          }
+          break;
+        }
+      }
+    }
+
+    // Detect conflicts (CLI behavior: lib.rs:195-209)
+    if (lockId && manifestId && lockId !== manifestId) {
+      return {
+        error: `Conflicting 'published-at' addresses between Move.toml (${manifestId}) and Move.lock (${lockId})`,
+      };
+    }
+
+    // Return lock values if available, otherwise manifest
+    return {
+      publishedAt: lockId || manifestId,
+      originalId: lockOriginalId || originalIdInManifest,
+    };
   }
 
   /**
@@ -452,8 +648,259 @@ export class Resolver {
       return false;
     }
 
-    const lockfile = parseToml(moveLockContent) as ParsedLockfile;
+    const lockfile = parseToml(moveLockContent) as any;
 
+    // Support both version 3 ([[move.package]]) and version 4 (pinned) formats
+    const lockfileVersion = lockfile.move?.version;
+    console.log("📋 Move.lock version:", lockfileVersion);
+
+    if (lockfileVersion === 3) {
+      // Version 3 format: Use [[move.package]] array
+      return await this.loadFromLockfileV3(
+        graph,
+        lockfile,
+        rootPackage,
+        rootFiles
+      );
+    } else if (lockfileVersion && lockfileVersion >= 4) {
+      // Version 4+ format: Use pinned section
+      return await this.loadFromLockfileV4(graph, lockfile, rootFiles);
+    } else {
+      // Legacy versions (v0/v1/v2) - best-effort support following CLI layout
+      return await this.loadFromLockfileV0(graph, lockfile, rootPackage);
+    }
+  }
+
+  /**
+   * Load from Move.lock legacy formats (v0/v1/v2)
+   * These formats use [[move.package]] and move.dependencies without versioned schema.
+   */
+  private async loadFromLockfileV0(
+    graph: DependencyGraph,
+    lockfile: any,
+    rootPackage: Package
+  ): Promise<boolean> {
+    const packages = lockfile.move?.package;
+    if (!packages || !Array.isArray(packages)) {
+      return false;
+    }
+
+    // Lockfile order: use move.dependencies if present, otherwise package listing order
+    const lockfileOrder =
+      (Array.isArray(lockfile.move?.dependencies)
+        ? lockfile.move.dependencies
+            .map((d: any) => d.name || d.id || d)
+            .filter(Boolean)
+        : null) || packages.map((p: any) => p.name || p.id).filter(Boolean);
+
+    const packageById = new Map<string, Package>();
+    const packageByName = new Map<string, Package>();
+
+    // First pass: fetch and build packages
+    for (const pkgInfo of packages) {
+      const pkgId = pkgInfo.id || pkgInfo.name;
+      const source = pkgInfo.source;
+      if (!pkgId || !source || !source.git || !source.rev) {
+        continue;
+      }
+
+      const depSource: DependencySource = {
+        type: "git",
+        git: source.git,
+        rev: source.rev,
+        subdir: source.subdir,
+      };
+
+      const files = await this.fetcher.fetch(
+        depSource.git!,
+        depSource.rev!,
+        depSource.subdir
+      );
+      if (Object.keys(files).length === 0) continue;
+
+      const moveToml = files["Move.toml"];
+      if (!moveToml) continue;
+
+      const pkg = await this.buildPackage(pkgId, depSource, moveToml, files);
+      packageById.set(pkgId, pkg);
+      packageByName.set(pkg.manifest.name, pkg);
+      this.packageFiles.set(pkg.manifest.name, files);
+      graph.addPackage(pkg);
+    }
+
+    if (lockfileOrder.length) {
+      graph.setLockfileOrder(lockfileOrder);
+    }
+
+    // Second pass: add edges based on lockfile dependencies inside each package
+    for (const pkgInfo of packages) {
+      const pkgId = pkgInfo.id || pkgInfo.name;
+      const pkg = packageById.get(pkgId);
+      if (!pkg) continue;
+
+      const deps = pkgInfo.dependencies;
+      if (deps && Array.isArray(deps)) {
+        for (const depInfo of deps) {
+          const depId = depInfo.id || depInfo.name;
+          const depPkg =
+            packageById.get(depId) || packageByName.get(depId as string);
+          if (depPkg) {
+            const dep: Dependency = { source: depPkg.id.source };
+            graph.addDependency(pkg.id.name, depPkg.id.name, dep);
+          }
+        }
+      }
+    }
+
+    // Root edges from manifest dependencies
+    for (const depName of rootPackage.dependencies.keys()) {
+      const depPkg = packageByName.get(depName);
+      if (depPkg) {
+        const dep = rootPackage.dependencies.get(depName)!;
+        graph.addDependency(rootPackage.id.name, depPkg.id.name, dep);
+      }
+    }
+
+    return packageById.size > 0;
+  }
+
+  /**
+   * Load from Move.lock version 3 format ([[move.package]] array)
+   */
+  private async loadFromLockfileV3(
+    graph: DependencyGraph,
+    lockfile: any,
+    rootPackage: Package,
+    rootFiles: Record<string, string>
+  ): Promise<boolean> {
+    const packages = lockfile.move?.package;
+    if (!packages || !Array.isArray(packages)) {
+      console.log("📋 No move.package array found in lockfile v3");
+      return false;
+    }
+
+    console.log("📋 Loading from lockfile v3, packages:", packages.length);
+
+    const packageById = new Map<string, Package>();
+    const lockfileOrder: string[] = [];
+
+    // First pass: Fetch and create all packages
+    for (const pkgInfo of packages) {
+      const pkgId = pkgInfo.id;
+      const source = pkgInfo.source;
+
+      // Track the order from [[move.package]] array - this is the order we need to preserve
+      lockfileOrder.push(pkgId);
+
+      if (!source || !source.git) {
+        console.log(`📋 Skipping ${pkgId}: no git source`);
+        continue;
+      }
+
+      const depSource: DependencySource = {
+        type: "git",
+        git: source.git,
+        rev: source.rev,
+        subdir: source.subdir,
+      };
+
+      console.log(
+        `📋 Fetching ${pkgId} from lockfile v3:`,
+        source.git,
+        "@",
+        source.rev
+      );
+
+      // Fetch package files
+      const files = await this.fetcher.fetch(
+        source.git,
+        source.rev,
+        source.subdir
+      );
+      if (Object.keys(files).length === 0) {
+        console.log(`📋 No files fetched for ${pkgId}`);
+        continue;
+      }
+
+      // Find Move.toml
+      const moveToml = files["Move.toml"];
+      if (!moveToml) {
+        console.log(`📋 No Move.toml for ${pkgId}`);
+        continue;
+      }
+
+      // Build package
+      const pkg = await this.buildPackage(pkgId, depSource, moveToml, files);
+      packageById.set(pkgId, pkg);
+      this.packageFiles.set(pkg.manifest.name, files);
+      graph.addPackage(pkg);
+
+      console.log(`📋 Added package ${pkgId} (${pkg.manifest.name}) to graph`);
+    }
+
+    // Set lockfile order from [[move.package]] array (this is the order from BuildInfo.yaml)
+    console.log(
+      "📋 Setting lockfile order from [[move.package]]:",
+      lockfileOrder
+    );
+    graph.setLockfileOrder(lockfileOrder);
+
+    // Second pass: Add dependency edges using lockfile dependencies
+    for (const pkgInfo of packages) {
+      const pkgId = pkgInfo.id;
+      const pkg = packageById.get(pkgId);
+      if (!pkg) continue;
+
+      const deps = pkgInfo.dependencies;
+      if (!deps || !Array.isArray(deps)) continue;
+
+      console.log(`📋 Processing dependencies for ${pkgId}:`, deps.length);
+
+      for (const depInfo of deps) {
+        const depId = depInfo.id;
+        const depName = depInfo.name;
+        const depPkg = packageById.get(depId);
+
+        if (depPkg) {
+          // Create a dependency object
+          const dep: Dependency = {
+            source: depPkg.id.source,
+          };
+          graph.addDependency(pkg.id.name, depPkg.id.name, dep);
+          console.log(`📋 Added edge: ${pkg.id.name} -> ${depPkg.id.name}`);
+        } else {
+          console.log(`📋 Dependency ${depId} not found for ${pkgId}`);
+        }
+      }
+    }
+
+    // Also add root package dependencies
+    for (const depName of rootPackage.dependencies.keys()) {
+      const depPkg = packageById.get(depName);
+      if (depPkg) {
+        const dep = rootPackage.dependencies.get(depName)!;
+        graph.addDependency(rootPackage.id.name, depPkg.id.name, dep);
+        console.log(
+          `📋 Added root edge: ${rootPackage.id.name} -> ${depPkg.id.name}`
+        );
+      }
+    }
+
+    console.log(
+      "📋 Lockfile v3 loading complete, packages in graph:",
+      graph.getAllPackages().length
+    );
+    return true;
+  }
+
+  /**
+   * Load from Move.lock version 4+ format (pinned section)
+   */
+  private async loadFromLockfileV4(
+    graph: DependencyGraph,
+    lockfile: any,
+    rootFiles: Record<string, string>
+  ): Promise<boolean> {
     // Check if lockfile has pinned dependencies for this network
     const pinnedPackages = lockfile.pinned?.[this.network];
     if (!pinnedPackages) {
@@ -474,7 +921,7 @@ export class Resolver {
 
     // First pass: Create all packages
     for (const [pkgId, pin] of Object.entries(pinnedPackages)) {
-      const source = this.lockfileSourceToDependencySource(pin.source);
+      const source = this.lockfileSourceToDependencySource((pin as any).source);
       if (!source) {
         continue;
       }
@@ -492,9 +939,9 @@ export class Resolver {
       }
 
       // Validate manifest digest if available
-      if (pin["manifest-digest"]) {
+      if ((pin as any)["manifest-digest"]) {
         const currentDigest = await this.computeManifestDigest(moveToml);
-        if (currentDigest !== pin["manifest-digest"]) {
+        if (currentDigest !== (pin as any)["manifest-digest"]) {
           return false;
         }
       }
@@ -505,7 +952,7 @@ export class Resolver {
       this.packageFiles.set(pkg.manifest.name, files);
 
       // Add to graph (if not root)
-      if (source.type !== "local" || !("root" in pin.source)) {
+      if (source.type !== "local" || !("root" in (pin as any).source)) {
         graph.addPackage(pkg);
       }
     }
@@ -515,9 +962,9 @@ export class Resolver {
       const pkg = packageById.get(pkgId);
       if (!pkg) continue;
 
-      if (pin.deps) {
-        for (const [depName, depId] of Object.entries(pin.deps)) {
-          const depPkg = packageById.get(depId);
+      if ((pin as any).deps) {
+        for (const [depName, depId] of Object.entries((pin as any).deps)) {
+          const depPkg = packageById.get(depId as string);
           if (depPkg) {
             const dep = pkg.dependencies.get(depName);
             if (dep) {

@@ -81,6 +81,8 @@ export async function fetchPackageFromGitHub(
   options?: {
     /** Custom fetcher instance (default: GitHubFetcher) */
     fetcher?: GitHubFetcher;
+    /** Optional GitHub token to raise API limits (used when fetcher not provided). */
+    githubToken?: string;
     /** Include Move.lock file (default: true) */
     includeLock?: boolean;
   }
@@ -91,7 +93,7 @@ export async function fetchPackageFromGitHub(
     throw new Error(`Invalid GitHub URL: ${url}`);
   }
 
-  const fetcher = options?.fetcher || new GitHubFetcher();
+  const fetcher = options?.fetcher || new GitHubFetcher(options?.githubToken);
   const includeLock = options?.includeLock !== false;
 
   const gitUrl = `https://github.com/${parsed.owner}/${parsed.repo}.git`;
@@ -131,6 +133,7 @@ export async function fetchPackagesFromGitHub(
   urls: string[] | Record<string, string>,
   options?: {
     fetcher?: GitHubFetcher;
+    githubToken?: string;
     includeLock?: boolean;
   }
 ): Promise<Record<string, Record<string, string>>> {

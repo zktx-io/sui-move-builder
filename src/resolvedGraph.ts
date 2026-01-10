@@ -39,8 +39,10 @@ export class ResolvedGraph {
    * This creates a unified address mapping that all packages will use
    */
   async resolve(): Promise<void> {
-    // Step 1: Collect all address definitions from all packages in topological order
-    const topoOrder = this.graph.topologicalOrder();
+    // Step 1: Collect all address definitions from root + dependencies in topological order
+    // dependencyGraph.topologicalOrder() intentionally skips root, so prepend it.
+    const rootName = this.graph.getRootName();
+    const topoOrder = [rootName, ...this.graph.topologicalOrder()];
 
     // Step 2: Build unified address table
     // Process in reverse topological order (dependencies first)

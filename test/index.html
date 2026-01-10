@@ -1,111 +1,114 @@
 <!doctype html>
 <html lang="en">
-
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Sui Move WASM - dist test</title>
-  <style>
-    :root {
-      color-scheme: light dark;
-      --bg: #f8fafc;
-      --fg: #111827;
-      --panel: #ffffff;
-      --border: #e2e8f0;
-      --button-bg: #111827;
-      --button-bg-hover: #0b1222;
-      --button-border: #0f172a;
-      --button-fg: #ffffff;
-      --log-info: #334155;
-      --log-success: #166534;
-      --log-error: #b91c1c;
-    }
-
-    @media (prefers-color-scheme: dark) {
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sui Move WASM - dist test</title>
+    <style>
       :root {
-        --bg: #0b0f16;
-        --fg: #e2e8f0;
-        --panel: #111827;
-        --border: #1f2937;
-        --button-bg: #e2e8f0;
-        --button-bg-hover: #cbd5f5;
-        --button-border: #e2e8f0;
-        --button-fg: #0b0f16;
-        --log-info: #94a3b8;
-        --log-success: #22c55e;
-        --log-error: #ef4444;
+        color-scheme: light dark;
+        --bg: #f8fafc;
+        --fg: #111827;
+        --panel: #ffffff;
+        --border: #e2e8f0;
+        --button-bg: #111827;
+        --button-bg-hover: #0b1222;
+        --button-border: #0f172a;
+        --button-fg: #ffffff;
+        --log-info: #334155;
+        --log-success: #166534;
+        --log-error: #b91c1c;
       }
-    }
 
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      max-width: 960px;
-      margin: 32px auto;
-      padding: 0 16px;
-      line-height: 1.5;
-      color: var(--fg);
-      background: var(--bg);
-    }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0b0f16;
+          --fg: #e2e8f0;
+          --panel: #111827;
+          --border: #1f2937;
+          --button-bg: #e2e8f0;
+          --button-bg-hover: #cbd5f5;
+          --button-border: #e2e8f0;
+          --button-fg: #0b0f16;
+          --log-info: #94a3b8;
+          --log-success: #22c55e;
+          --log-error: #ef4444;
+        }
+      }
 
-    #output {
-      white-space: pre-wrap;
-      background: var(--panel);
-      border: 1px solid var(--border);
-      padding: 12px;
-      margin-top: 12px;
-      font-family:
-        "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono",
-        "Courier New", monospace;
-      font-size: 13px;
-    }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        max-width: 960px;
+        margin: 32px auto;
+        padding: 0 16px;
+        line-height: 1.5;
+        color: var(--fg);
+        background: var(--bg);
+      }
 
-    .log-line {
-      display: block;
-      max-width: 100%;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
+      #output {
+        white-space: pre-wrap;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        padding: 12px;
+        margin-top: 12px;
+        font-family:
+          "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono",
+          "Courier New", monospace;
+        font-size: 13px;
+      }
 
-    button {
-      padding: 10px 16px;
-      border: 1px solid var(--button-border);
-      background: var(--button-bg);
-      color: var(--button-fg);
-      border-radius: 6px;
-      cursor: pointer;
-    }
+      .log-line {
+        display: block;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
 
-    button:hover:not(:disabled) {
-      background: var(--button-bg-hover);
-    }
+      button {
+        padding: 10px 16px;
+        border: 1px solid var(--button-border);
+        background: var(--button-bg);
+        color: var(--button-fg);
+        border-radius: 6px;
+        cursor: pointer;
+      }
 
-    button:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
+      button:hover:not(:disabled) {
+        background: var(--button-bg-hover);
+      }
 
-    .log-info {
-      color: var(--log-info);
-    }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
 
-    .log-success {
-      color: var(--log-success);
-    }
+      .log-info {
+        color: var(--log-info);
+      }
 
-    .log-error {
-      color: var(--log-error);
-    }
-  </style>
-</head>
+      .log-success {
+        color: var(--log-success);
+      }
 
-<body>
-  <h1>Sui Move WASM (dist) test</h1>
-  <div id="version">Loading wasm...</div>
-  <div style="margin: 16px 0">
-    <label style="display: block; margin-bottom: 8px">
-      GitHub Repository URL:
-      <input id="repoUrl" type="text" placeholder="https://github.com/username/repo" style="
+      .log-error {
+        color: var(--log-error);
+      }
+    </style>
+  </head>
+
+  <body>
+    <h1>Sui Move WASM (dist) test</h1>
+    <div id="version">Loading wasm...</div>
+    <div style="margin: 16px 0">
+      <label style="display: block; margin-bottom: 8px">
+        GitHub Repository URL:
+        <input
+          id="repoUrl"
+          type="text"
+          placeholder="https://github.com/username/repo"
+          style="
             width: 100%;
             padding: 8px;
             margin-top: 4px;
@@ -113,405 +116,444 @@
             border-radius: 4px;
             background: var(--panel);
             color: var(--fg);
-          " />
-    </label>
-    <label style="
+          "
+        />
+      </label>
+      <label
+        style="
           display: inline-flex;
           align-items: center;
           gap: 8px;
           margin-right: 12px;
-        ">
-      Network:
-      <select id="networkSelect" style="
+        "
+      >
+        Network:
+        <select
+          id="networkSelect"
+          style="
             padding: 4px;
             border: 1px solid var(--border);
             border-radius: 4px;
             background: var(--panel);
             color: var(--fg);
-          ">
-        <option value="mainnet" selected>Mainnet</option>
-        <option value="testnet">Testnet</option>
-        <option value="devnet">Devnet</option>
-      </select>
-    </label>
-    <label style="
+          "
+        >
+          <option value="mainnet" selected>Mainnet</option>
+          <option value="testnet">Testnet</option>
+          <option value="devnet">Devnet</option>
+        </select>
+      </label>
+      <label
+        style="
           display: inline-flex;
           align-items: center;
           gap: 8px;
           margin-right: 12px;
-        ">
-      <input id="ansiColor" type="checkbox" checked />
-      ANSI color
-    </label>
-  </div>
-  <div style="margin: 16px 0; display: flex; gap: 8px; flex-wrap: wrap">
-    <button id="compileBtn" disabled>Build from GitHub</button>
-    <button id="resolveDepsBtn" disabled style="background: #1e40af; border-color: #1e40af">
-      Resolve Dependencies
-    </button>
-    <button id="buildWithDepsBtn" disabled style="background: #15803d; border-color: #15803d">
-      Build with Cached Deps
-    </button>
-  </div>
-  <div id="depsStatus" style="margin: 8px 0; font-size: 14px; color: var(--log-info)"></div>
-  <pre id="output"></pre>
+        "
+      >
+        <input id="ansiColor" type="checkbox" checked />
+        ANSI color
+      </label>
+    </div>
+    <div style="margin: 16px 0; display: flex; gap: 8px; flex-wrap: wrap">
+      <button id="compileBtn" disabled>Build from GitHub</button>
+      <button
+        id="resolveDepsBtn"
+        disabled
+        style="background: #1e40af; border-color: #1e40af"
+      >
+        Resolve Dependencies
+      </button>
+      <button
+        id="buildWithDepsBtn"
+        disabled
+        style="background: #15803d; border-color: #15803d"
+      >
+        Build with Cached Deps
+      </button>
+    </div>
+    <div
+      id="depsStatus"
+      style="margin: 8px 0; font-size: 14px; color: var(--log-info)"
+    ></div>
+    <pre id="output"></pre>
 
-  <script type="module">
-    import {
-      initMoveCompiler,
-      buildMovePackage,
-      resolveDependencies,
-      getSuiMoveVersion,
-      getSuiVersion,
-      fetchPackageFromGitHub,
-    } from "../dist/index.js";
+    <script type="module">
+      import {
+        initMoveCompiler,
+        buildMovePackage,
+        resolveDependencies,
+        getSuiMoveVersion,
+        getSuiVersion,
+        fetchPackageFromGitHub,
+      } from "../dist/index.js";
 
-    function logLine(el, text, className) {
-      const span = document.createElement("span");
-      span.className = className ? `log-line ${className}` : "log-line";
-      span.textContent = text;
-      el.append(span, document.createTextNode("\n"));
-    }
-
-    function appendAnsiText(el, text) {
-      const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
-      const COLOR_MAP = {
-        30: "#000000",
-        31: "#b91c1c",
-        32: "#166534",
-        33: "#b45309",
-        34: "#1d4ed8",
-        35: "#7e22ce",
-        36: "#0f766e",
-        37: "#334155",
-        90: "#64748b",
-        91: "#dc2626",
-        92: "#16a34a",
-        93: "#f59e0b",
-        94: "#2563eb",
-        95: "#a855f7",
-        96: "#14b8a6",
-        97: "#1e293b",
-      };
-      let currentColor = null;
-      let isBold = false;
-      let lastIndex = 0;
-      const matches = text.matchAll(ANSI_REGEX);
-      const flushText = (chunk) => {
-        if (!chunk) return;
+      function logLine(el, text, className) {
         const span = document.createElement("span");
-        if (currentColor) span.style.color = currentColor;
-        if (isBold) span.style.fontWeight = "600";
-        span.textContent = chunk;
-        el.append(span);
-      };
-      for (const match of matches) {
-        const idx = match.index ?? 0;
-        flushText(text.slice(lastIndex, idx));
-        const codeStr = match[0].slice(2, -1);
-        const codes = codeStr ? codeStr.split(";").map(Number) : [0];
-        for (const code of codes) {
-          if (code === 0) {
-            currentColor = null;
-            isBold = false;
-          } else if (code === 1) {
-            isBold = true;
-          } else if (code === 22) {
-            isBold = false;
-          } else if (code === 39) {
-            currentColor = null;
-          } else if (COLOR_MAP[code]) {
-            currentColor = COLOR_MAP[code];
+        span.className = className ? `log-line ${className}` : "log-line";
+        span.textContent = text;
+        el.append(span, document.createTextNode("\n"));
+      }
+
+      function appendAnsiText(el, text) {
+        const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
+        const COLOR_MAP = {
+          30: "#000000",
+          31: "#b91c1c",
+          32: "#166534",
+          33: "#b45309",
+          34: "#1d4ed8",
+          35: "#7e22ce",
+          36: "#0f766e",
+          37: "#334155",
+          90: "#64748b",
+          91: "#dc2626",
+          92: "#16a34a",
+          93: "#f59e0b",
+          94: "#2563eb",
+          95: "#a855f7",
+          96: "#14b8a6",
+          97: "#1e293b",
+        };
+        let currentColor = null;
+        let isBold = false;
+        let lastIndex = 0;
+        const matches = text.matchAll(ANSI_REGEX);
+        const flushText = (chunk) => {
+          if (!chunk) return;
+          const span = document.createElement("span");
+          if (currentColor) span.style.color = currentColor;
+          if (isBold) span.style.fontWeight = "600";
+          span.textContent = chunk;
+          el.append(span);
+        };
+        for (const match of matches) {
+          const idx = match.index ?? 0;
+          flushText(text.slice(lastIndex, idx));
+          const codeStr = match[0].slice(2, -1);
+          const codes = codeStr ? codeStr.split(";").map(Number) : [0];
+          for (const code of codes) {
+            if (code === 0) {
+              currentColor = null;
+              isBold = false;
+            } else if (code === 1) {
+              isBold = true;
+            } else if (code === 22) {
+              isBold = false;
+            } else if (code === 39) {
+              currentColor = null;
+            } else if (COLOR_MAP[code]) {
+              currentColor = COLOR_MAP[code];
+            }
+          }
+          lastIndex = idx + match[0].length;
+        }
+        flushText(text.slice(lastIndex));
+      }
+
+      function appendAnsiBlock(el, text) {
+        const lines = text.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          appendAnsiText(el, lines[i]);
+          el.append(document.createTextNode("\n"));
+        }
+      }
+
+      async function main() {
+        const versionDiv = document.getElementById("version");
+        const output = document.getElementById("output");
+        const compileBtn = document.getElementById("compileBtn");
+        const resolveDepsBtn = document.getElementById("resolveDepsBtn");
+        const buildWithDepsBtn = document.getElementById("buildWithDepsBtn");
+        const depsStatus = document.getElementById("depsStatus");
+        const repoUrlInput = document.getElementById("repoUrl");
+        const networkSelect = document.getElementById("networkSelect");
+        // Try environment-provided token first (window.GITHUB_TOKEN or window.process.env.GITHUB_TOKEN)
+        const envGithubToken =
+          (typeof window !== "undefined" &&
+            (window.GITHUB_TOKEN ||
+              (window.process &&
+                window.process.env &&
+                window.process.env.GITHUB_TOKEN))) ||
+          null;
+        // Fallback: try reading a local token file (.github_token). Missing/empty -> no token.
+        async function loadTokenFromFile() {
+          try {
+            const resp = await fetch("./.github_token", { cache: "no-store" });
+            if (!resp.ok) return null;
+            const text = (await resp.text()).trim();
+            return text || null;
+          } catch {
+            return null;
           }
         }
-        lastIndex = idx + match[0].length;
-      }
-      flushText(text.slice(lastIndex));
-    }
+        const githubToken = envGithubToken || (await loadTokenFromFile());
 
-    function appendAnsiBlock(el, text) {
-      const lines = text.split("\n");
-      for (let i = 0; i < lines.length; i++) {
-        appendAnsiText(el, lines[i]);
-        el.append(document.createTextNode("\n"));
-      }
-    }
+        let cachedDependencies = null;
+        let cachedFiles = null;
 
-    async function main() {
-      const versionDiv = document.getElementById("version");
-      const output = document.getElementById("output");
-      const compileBtn = document.getElementById("compileBtn");
-      const resolveDepsBtn = document.getElementById("resolveDepsBtn");
-      const buildWithDepsBtn = document.getElementById("buildWithDepsBtn");
-      const depsStatus = document.getElementById("depsStatus");
-      const repoUrlInput = document.getElementById("repoUrl");
-      const networkSelect = document.getElementById("networkSelect");
-
-      let cachedDependencies = null;
-      let cachedFiles = null;
-
-      function updateDepsStatus() {
-        if (cachedDependencies) {
-          depsStatus.textContent = "✓ Dependencies cached and ready to reuse";
-          depsStatus.style.color = "var(--log-success)";
-          buildWithDepsBtn.disabled = !cachedFiles;
-        } else {
-          depsStatus.textContent = "";
-          buildWithDepsBtn.disabled = true;
-        }
-      }
-
-      try {
-        await initMoveCompiler();
-        const mv = await getSuiMoveVersion();
-        const sv = await getSuiVersion();
-        versionDiv.textContent = `sui-move ${mv} | sui ${sv}`;
-      } catch (error) {
-        versionDiv.textContent = `Failed to init wasm: ${error}`;
-        return;
-      }
-
-      repoUrlInput.addEventListener("input", () => {
-        const hasUrl = !!repoUrlInput.value.trim();
-        compileBtn.disabled = !hasUrl;
-        resolveDepsBtn.disabled = !hasUrl;
-      });
-
-      // Original build button (without caching)
-      compileBtn.addEventListener("click", async () => {
-        output.textContent = "";
-        const repoUrl = document.getElementById("repoUrl").value.trim();
-        const network = networkSelect.value;
-
-        if (!repoUrl) {
-          logLine(
-            output,
-            "Please enter a GitHub repository URL",
-            "log-error"
-          );
-          return;
-        }
-
-        logLine(
-          output,
-          `Fetching package from GitHub: ${repoUrl}`,
-          "log-info"
-        );
-
-        try {
-          const files = await fetchPackageFromGitHub(repoUrl);
-
-          logLine(
-            output,
-            `Found ${Object.keys(files).length} file(s)`,
-            "log-success"
-          );
-
-          if (files["Move.lock"]) {
-            logLine(
-              output,
-              `✓ Move.lock found (${files["Move.lock"].length} bytes)`,
-              "log-success"
-            );
+        function updateDepsStatus() {
+          if (cachedDependencies) {
+            depsStatus.textContent = "✓ Dependencies cached and ready to reuse";
+            depsStatus.style.color = "var(--log-success)";
+            buildWithDepsBtn.disabled = !cachedFiles;
           } else {
-            logLine(output, `⚠ Move.lock not found`, "log-info");
+            depsStatus.textContent = "";
+            buildWithDepsBtn.disabled = true;
           }
-
-          logLine(output, "\nBuilding...", "log-info");
-          const start = performance.now();
-
-          const useAnsi = document.getElementById("ansiColor").checked;
-          const result = await buildMovePackage({
-            files,
-            ansiColor: useAnsi,
-            network: network,
-          });
-
-          const end = performance.now();
-          if (!result.success) {
-            appendAnsiBlock(output, result.error);
-            return;
-          }
-
-          logLine(
-            output,
-            `\n✓ Build Success! (${(end - start).toFixed(2)}ms)`,
-            "log-success"
-          );
-          logLine(output, `Digest: ${result.digest}`, "log-info");
-          logLine(
-            output,
-            `Dependencies: ${JSON.stringify(result.dependencies)}`,
-            "log-info"
-          );
-          logLine(output, "Modules (base64):", "log-info");
-          result.modules.forEach((m, i) => {
-            logLine(
-              output,
-              `Module ${i}: ${m.substring(0, 100)}...`,
-              "log-info"
-            );
-          });
-        } catch (error) {
-          logLine(output, `Error: ${error.message}`, "log-error");
-          console.error(error);
         }
-      });
 
-      // Resolve dependencies button
-      resolveDepsBtn.addEventListener("click", async () => {
-        output.textContent = "";
-        const repoUrl = document.getElementById("repoUrl").value.trim();
-        const network = networkSelect.value;
-
-        if (!repoUrl) {
-          logLine(
-            output,
-            "Please enter a GitHub repository URL",
-            "log-error"
-          );
+        try {
+          await initMoveCompiler();
+          const mv = await getSuiMoveVersion();
+          const sv = await getSuiVersion();
+          versionDiv.textContent = `sui-move ${mv} | sui ${sv}`;
+        } catch (error) {
+          versionDiv.textContent = `Failed to init wasm: ${error}`;
           return;
         }
 
-        logLine(
-          output,
-          `Fetching package from GitHub: ${repoUrl}`,
-          "log-info"
-        );
+        repoUrlInput.addEventListener("input", () => {
+          const hasUrl = !!repoUrlInput.value.trim();
+          compileBtn.disabled = !hasUrl;
+          resolveDepsBtn.disabled = !hasUrl;
+        });
 
-        try {
-          const files = await fetchPackageFromGitHub(repoUrl);
-
-          logLine(
-            output,
-            `Found ${Object.keys(files).length} file(s)`,
-            "log-success"
-          );
-
-          if (files["Move.lock"]) {
-            logLine(
-              output,
-              `✓ Move.lock found (${files["Move.lock"].length} bytes)`,
-              "log-success"
-            );
-          } else {
-            logLine(output, `⚠ Move.lock not found`, "log-info");
-          }
-
-          logLine(output, "\nResolving dependencies...", "log-info");
-          const start = performance.now();
-
-          const useAnsi = document.getElementById("ansiColor").checked;
-          const deps = await resolveDependencies({
-            files,
-            ansiColor: useAnsi,
-            network: network,
-          });
-
-          const end = performance.now();
-
-          cachedDependencies = deps;
-          cachedFiles = files;
-          updateDepsStatus();
-
-          logLine(
-            output,
-            `\n✓ Dependencies Resolved! (${(end - start).toFixed(2)}ms)`,
-            "log-success"
-          );
-          logLine(
-            output,
-            `Files size: ${deps.files.length} bytes`,
-            "log-info"
-          );
-          logLine(
-            output,
-            `Dependencies size: ${deps.dependencies.length} bytes`,
-            "log-info"
-          );
-          logLine(
-            output,
-            "\n💡 Now you can click 'Build with Cached Deps' to compile without re-resolving dependencies",
-            "log-info"
-          );
-        } catch (error) {
-          logLine(output, `Error: ${error.message}`, "log-error");
-          console.error(error);
-        }
-      });
-
-      // Build with cached dependencies button
-      buildWithDepsBtn.addEventListener("click", async () => {
-        output.textContent = "";
-
-        if (!cachedDependencies || !cachedFiles) {
-          logLine(
-            output,
-            "No cached dependencies. Please resolve dependencies first.",
-            "log-error"
-          );
-          return;
-        }
-
-        logLine(
-          output,
-          "Building with cached dependencies...",
-          "log-info"
-        );
-
-        try {
-          const start = performance.now();
-
-          const useAnsi = document.getElementById("ansiColor").checked;
+        // Original build button (without caching)
+        compileBtn.addEventListener("click", async () => {
+          output.textContent = "";
+          const repoUrl = document.getElementById("repoUrl").value.trim();
           const network = networkSelect.value;
-          const result = await buildMovePackage({
-            files: cachedFiles,
-            ansiColor: useAnsi,
-            network: network,
-            resolvedDependencies: cachedDependencies,
-          });
 
-          const end = performance.now();
-          if (!result.success) {
-            appendAnsiBlock(output, result.error);
+          if (!repoUrl) {
+            logLine(
+              output,
+              "Please enter a GitHub repository URL",
+              "log-error"
+            );
             return;
           }
 
           logLine(
             output,
-            `\n✓ Build Success with Cached Deps! (${(end - start).toFixed(2)}ms)`,
-            "log-success"
-          );
-          logLine(
-            output,
-            "⚡ Dependency resolution was skipped!",
-            "log-success"
-          );
-          logLine(output, `Digest: ${result.digest}`, "log-info");
-          logLine(
-            output,
-            `Dependencies: ${JSON.stringify(result.dependencies)}`,
+            `Fetching package from GitHub: ${repoUrl}`,
             "log-info"
           );
-          logLine(output, "Modules (base64):", "log-info");
-          result.modules.forEach((m, i) => {
+
+          try {
+            const files = await fetchPackageFromGitHub(repoUrl, {
+              githubToken: githubToken || undefined,
+            });
+
             logLine(
               output,
-              `Module ${i}: ${m.substring(0, 100)}...`,
+              `Found ${Object.keys(files).length} file(s)`,
+              "log-success"
+            );
+
+            if (files["Move.lock"]) {
+              logLine(
+                output,
+                `✓ Move.lock found (${files["Move.lock"].length} bytes)`,
+                "log-success"
+              );
+            } else {
+              logLine(output, `⚠ Move.lock not found`, "log-info");
+            }
+
+            logLine(output, "\nBuilding...", "log-info");
+            const start = performance.now();
+
+            const useAnsi = document.getElementById("ansiColor").checked;
+            const result = await buildMovePackage({
+              files,
+              ansiColor: useAnsi,
+              network: network,
+              githubToken: githubToken || undefined,
+            });
+
+            const end = performance.now();
+            if (!result.success) {
+              appendAnsiBlock(output, result.error);
+              return;
+            }
+
+            logLine(
+              output,
+              `\n✓ Build Success! (${(end - start).toFixed(2)}ms)`,
+              "log-success"
+            );
+            logLine(output, `Digest: ${result.digest}`, "log-info");
+            logLine(output, "Dependencies", "log-info");
+            result.dependencies.forEach((d, i) => {
+              logLine(output, `dependency ${i}: ${d}`, "log-info");
+            });
+            logLine(output, "Modules (base64):", "log-info");
+            result.modules.forEach((m, i) => {
+              logLine(
+                output,
+                `Module ${i}: ${m.substring(0, 100)}...`,
+                "log-info"
+              );
+            });
+          } catch (error) {
+            logLine(output, `Error: ${error.message}`, "log-error");
+            console.error(error);
+          }
+        });
+
+        // Resolve dependencies button
+        resolveDepsBtn.addEventListener("click", async () => {
+          output.textContent = "";
+          const repoUrl = document.getElementById("repoUrl").value.trim();
+          const network = networkSelect.value;
+
+          if (!repoUrl) {
+            logLine(
+              output,
+              "Please enter a GitHub repository URL",
+              "log-error"
+            );
+            return;
+          }
+
+          logLine(
+            output,
+            `Fetching package from GitHub: ${repoUrl}`,
+            "log-info"
+          );
+
+          try {
+            const files = await fetchPackageFromGitHub(repoUrl, {
+              githubToken: githubToken || undefined,
+            });
+
+            logLine(
+              output,
+              `Found ${Object.keys(files).length} file(s)`,
+              "log-success"
+            );
+
+            if (files["Move.lock"]) {
+              logLine(
+                output,
+                `✓ Move.lock found (${files["Move.lock"].length} bytes)`,
+                "log-success"
+              );
+            } else {
+              logLine(output, `⚠ Move.lock not found`, "log-info");
+            }
+
+            logLine(output, "\nResolving dependencies...", "log-info");
+            const start = performance.now();
+
+            const useAnsi = document.getElementById("ansiColor").checked;
+            const deps = await resolveDependencies({
+              files,
+              ansiColor: useAnsi,
+              network: network,
+              githubToken: githubToken || undefined,
+            });
+
+            const end = performance.now();
+
+            cachedDependencies = deps;
+            cachedFiles = files;
+            updateDepsStatus();
+
+            logLine(
+              output,
+              `\n✓ Dependencies Resolved! (${(end - start).toFixed(2)}ms)`,
+              "log-success"
+            );
+            logLine(
+              output,
+              `Files size: ${deps.files.length} bytes`,
               "log-info"
             );
-          });
-        } catch (error) {
-          logLine(output, `Error: ${error.message}`, "log-error");
-          console.error(error);
-        }
-      });
+            logLine(
+              output,
+              `Dependencies size: ${deps.dependencies.length} bytes`,
+              "log-info"
+            );
+            logLine(
+              output,
+              "\n💡 Now you can click 'Build with Cached Deps' to compile without re-resolving dependencies",
+              "log-info"
+            );
+          } catch (error) {
+            logLine(output, `Error: ${error.message}`, "log-error");
+            console.error(error);
+          }
+        });
 
-      updateDepsStatus();
-    }
+        // Build with cached dependencies button
+        buildWithDepsBtn.addEventListener("click", async () => {
+          output.textContent = "";
 
-    main();
-  </script>
-</body>
+          if (!cachedDependencies || !cachedFiles) {
+            logLine(
+              output,
+              "No cached dependencies. Please resolve dependencies first.",
+              "log-error"
+            );
+            return;
+          }
 
+          logLine(output, "Building with cached dependencies...", "log-info");
+
+          try {
+            const start = performance.now();
+
+            const useAnsi = document.getElementById("ansiColor").checked;
+            const network = networkSelect.value;
+            const result = await buildMovePackage({
+              files: cachedFiles,
+              ansiColor: useAnsi,
+              network: network,
+              resolvedDependencies: cachedDependencies,
+              githubToken: githubToken || undefined,
+            });
+
+            const end = performance.now();
+            if (!result.success) {
+              appendAnsiBlock(output, result.error);
+              return;
+            }
+
+            logLine(
+              output,
+              `\n✓ Build Success with Cached Deps! (${(end - start).toFixed(2)}ms)`,
+              "log-success"
+            );
+            logLine(
+              output,
+              "⚡ Dependency resolution was skipped!",
+              "log-success"
+            );
+            logLine(output, `Digest: ${result.digest}`, "log-info");
+            logLine(output, "Dependencies", "log-info");
+            result.dependencies.forEach((d, i) => {
+              logLine(output, `dependency ${i}: ${d}`, "log-info");
+            });
+            logLine(output, "Modules (base64):", "log-info");
+            result.modules.forEach((m, i) => {
+              logLine(
+                output,
+                `Module ${i}: ${m.substring(0, 100)}...`,
+                "log-info"
+              );
+            });
+          } catch (error) {
+            logLine(output, `Error: ${error.message}`, "log-error");
+            console.error(error);
+          }
+        });
+
+        updateDepsStatus();
+      }
+
+      main();
+    </script>
+  </body>
 </html>

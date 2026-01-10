@@ -340,7 +340,8 @@ fn compile_impl(
 
     // Build PackagePaths for dependencies
     let mut dep_package_paths = Vec::new();
-    let mut dependency_ids = std::collections::BTreeSet::new();
+    // Use Vec instead of BTreeSet to preserve insertion order (matches Sui CLI behavior)
+    let mut dependency_ids: Vec<[u8; 32]> = Vec::new();
 
     for pkg_group in &dep_packages {
         let mut named_address_map = BTreeMap::<String, NumericalAddress>::new();
@@ -358,12 +359,38 @@ fn compile_impl(
                     if let Some(ref pkg) = toml_data.package {
                         if let Some(ref edition_str) = pkg.edition {
                             edition = parse_edition(edition_str);
-                            eprintln!("📋 Dependency '{}' edition: {} -> {:?}", pkg_group.name, edition_str, edition);
                         }
                         if let Some(ref pa) = pkg.published_at {
                             published_at = parse_hex_address_to_bytes(pa);
-                            if let Some(bytes) = published_at {
-                                dependency_ids.insert(bytes);
+                        }
+                    }
+
+                    // Check [addresses] section for package's own address (priority over published-at)
+                    let mut found_address_id = false;
+                    // Use PackageGroup's name to look up the address
+                    if let Some(addr_str) = toml_data.addresses.get(&pkg_group.name) {
+                        // Skip 0x0 addresses
+                        if addr_str != "0x0" && !addr_str.trim_start_matches("0x").chars().all(|c| c == '0') {
+                            if let Some(bytes) = parse_hex_address_to_bytes(addr_str) {
+                                if !dependency_ids.contains(&bytes) {
+                                    eprintln!("📦 [{}] Using [addresses].{} = {}", pkg_group.name, pkg_group.name, addr_str);
+                                    dependency_ids.push(bytes);
+                                    found_address_id = true;
+                                }
+                            }
+                        }
+                    }
+
+                    // Fallback to published-at if no valid address found in [addresses]
+                    if !found_address_id {
+                        if let Some(bytes) = published_at {
+                            if !dependency_ids.contains(&bytes) {
+                                if let Some(ref pkg) = toml_data.package {
+                                    if let Some(ref pa) = pkg.published_at {
+                                        eprintln!("📦 [{}] Using published-at = {}", pkg_group.name, pa);
+                                    }
+                                }
+                                dependency_ids.push(bytes);
                             }
                         }
                     }
@@ -453,10 +480,13 @@ fn compile_impl(
 
             // Add root package's published-at if exists
             if let Some(bytes) = root_published_at {
-                dependency_ids.insert(bytes);
+                if !dependency_ids.contains(&bytes) {
+                    dependency_ids.push(bytes);
+                }
             }
 
-            let dependency_ids_vec: Vec<[u8; 32]> = dependency_ids.iter().copied().collect();
+            // dependency_ids is already a Vec, no need to convert
+            let dependency_ids_vec = dependency_ids;
             let mut components: Vec<Vec<u8>> = vec![];
             for bytes in &module_bytes {
                 let digest = blake2b256(bytes);

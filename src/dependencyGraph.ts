@@ -20,10 +20,14 @@ export interface DependencySource {
   address?: string;
 }
 
+export type SubstOrRename =
+  | { type: "assign"; address: string }
+  | { type: "renameFrom"; name: string };
+
 export interface Dependency {
   source: DependencySource;
   digest?: string;
-  subst?: Record<string, string>; // address substitutions
+  subst?: Record<string, SubstOrRename>; // address substitutions/renames
 }
 
 export interface Package {
@@ -39,6 +43,7 @@ export interface PackageManifest {
   version?: string;
   edition?: string;
   publishedAt?: string;
+  originalId?: string; // Original published ID (first version)
   addresses: Record<string, string>;
   dependencies: Record<string, any>;
   devDependencies?: Record<string, any>;
@@ -103,8 +108,18 @@ export class DependencyGraph {
   // Root package name
   private root: string;
 
+  // Lockfile package order (for DFS ordering to match Sui CLI)
+  private lockfileOrder: string[] = [];
+
   constructor(rootPackageName: string) {
     this.root = rootPackageName;
+  }
+
+  /**
+   * Set lockfile package order (from Move.lock [[move.package]] order)
+   */
+  setLockfileOrder(order: string[]): void {
+    this.lockfileOrder = order;
   }
 
   /**
@@ -175,10 +190,70 @@ export class DependencyGraph {
   }
 
   /**
-   * Perform topological sort on the dependency graph
-   * Returns packages in reverse dependency order (dependencies before dependents)
+   * Get packages in dependency order from Move.lock
+   *
+   * CRITICAL: This MUST return the exact order from Move.lock's [[move.package]] array!
+   * DO NOT sort alphabetically! See CRITICAL_RULES.md
    */
   topologicalOrder(): string[] {
+    // If we don't have lockfile order (e.g., Move.lock v0 or missing), fall back to DFS ordering.
+    if (!this.lockfileOrder.length) {
+      console.log("🔄 Lockfile order missing; falling back to DFS order");
+      const dfsOrder = this.topologicalOrderDFS();
+      // DFS order includes root at the end; filter out root and return dependencies
+      const filtered = dfsOrder.filter((n) => n !== this.root);
+      console.log("🔄 Final dependency order (DFS):", filtered);
+      return filtered;
+    }
+
+    // CRITICAL: Return Move.lock order, NOT alphabetical order!
+    // The [[move.package]] array order in Move.lock IS the dependency order.
+
+    console.log("🔄 Getting dependency order (from Move.lock)");
+    console.log("🔄 Lockfile order:", this.lockfileOrder);
+
+    // Get all packages that are reachable from root (i.e., actually used)
+    const reachable = new Set<string>();
+    const visited = new Set<string>();
+
+    const dfs = (name: string) => {
+      if (visited.has(name)) return;
+      visited.add(name);
+      reachable.add(name);
+
+      const deps = this.graph.get(name);
+      if (deps) {
+        for (const dep of deps) {
+          dfs(dep);
+        }
+      }
+    };
+
+    // Start from root to find all reachable packages
+    dfs(this.root);
+    console.log("🔄 Reachable packages:", Array.from(reachable));
+
+    // Filter lockfileOrder to only include reachable packages (excluding root)
+    // PRESERVE THE ORIGINAL ORDER FROM MOVE.LOCK!
+    const result: string[] = [];
+    for (const pkgName of this.lockfileOrder) {
+      if (pkgName === this.root) continue; // Skip root package
+      if (reachable.has(pkgName)) {
+        result.push(pkgName);
+        console.log(`🔄 Including ${pkgName} (Move.lock order, reachable)`);
+      } else {
+        console.log(`🔄 Skipping ${pkgName} (not reachable/used)`);
+      }
+    }
+
+    console.log("🔄 Final dependency order (Move.lock):", result);
+    return result;
+  }
+
+  /**
+   * DFS-based topological sort (fallback)
+   */
+  private topologicalOrderDFS(): string[] {
     const visited = new Set<string>();
     const result: string[] = [];
 
@@ -188,7 +263,7 @@ export class DependencyGraph {
 
       const deps = this.graph.get(name);
       if (deps) {
-        for (const dep of deps) {
+        for (const dep of Array.from(deps)) {
           visit(dep);
         }
       }
@@ -199,7 +274,7 @@ export class DependencyGraph {
     // Start from root
     visit(this.root);
 
-    // Visit any unvisited packages (shouldn't happen in a proper DAG)
+    // Visit any unvisited packages
     for (const name of this.packageTable.keys()) {
       visit(name);
     }
