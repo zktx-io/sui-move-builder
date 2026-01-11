@@ -149,7 +149,6 @@ move-binary-format = { path = "vendor/move/crates/move-binary-format" }
 move-trace-format = { path = "vendor/move/crates/move-trace-format" }
 move-borrow-graph = { path = "vendor/move/crates/move-borrow-graph" }
 move-bytecode-source-map = { path = "vendor/move/crates/move-bytecode-source-map" }
-move-bytecode-utils = { path = "vendor/move/crates/move-bytecode-utils" }
 move-bytecode-verifier = { path = "vendor/move/crates/move-bytecode-verifier" }
 move-bytecode-verifier-analyzer = { path = "vendor/move/crates/move-bytecode-verifier-analyzer" }
 move-bytecode-verifier-meter = { path = "vendor/move/crates/move-bytecode-verifier-meter" }
@@ -158,6 +157,7 @@ move-cli = { path = "vendor/move/crates/move-cli" }
 move-command-line-common = { path = "vendor/move/crates/move-command-line-common" }
 move-compiler = { path = "vendor/move/crates/move-compiler" }
 move-core-types = { path = "vendor/move/crates/move-core-types" }
+move-bytecode-utils = { path = "vendor/move/crates/move-bytecode-utils" }
 move-coverage = { path = "vendor/move/crates/move-coverage" }
 move-decompiler = { path = "vendor/move/crates/move-decompiler" }
 move-disassembler = { path = "vendor/move/crates/move-disassembler" }
@@ -199,6 +199,7 @@ anyhow = "1.0.52"
 move-compiler = { path = "vendor/move/crates/move-compiler" }
 move-core-types = { path = "vendor/move/crates/move-core-types" }
 move-symbol-pool = { path = "vendor/move/crates/move-symbol-pool" }
+move-bytecode-utils = { path = "vendor/move/crates/move-bytecode-utils" }
 vfs = "0.10.0"
 hex = "0.4.3"
 getrandom = { version = "0.2", features = ["js"] }

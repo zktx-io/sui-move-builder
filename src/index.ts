@@ -157,7 +157,6 @@ function logDependencyAddresses(depsJson: string): void {
           );
         })();
       if (addr !== undefined) {
-        console.log(`Dependency ${dep.name}: ${addr}`);
       }
     }
   } catch {

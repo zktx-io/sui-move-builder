@@ -1,21 +1,14 @@
 use base64::{Engine as _, engine::general_purpose};
 use blake2::digest::{Update, VariableOutput};
 use blake2::Blake2bVar;
+use move_bytecode_utils::Modules;
 use move_compiler::{Compiler, editions::{Flavor, Edition}, shared::{NumericalAddress, PackageConfig, PackagePaths}};
 use move_core_types::{account_address::AccountAddress, language_storage::ModuleId};
 use move_symbol_pool::Symbol;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::collections::BTreeMap;
 use vfs::{impls::memory::MemoryFS, VfsPath};
 use wasm_bindgen::prelude::*;
-
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = console, js_name = log)]
-    fn console_log(s: &str);
-}
 
 #[wasm_bindgen]
 pub struct MoveCompilerResult {
@@ -107,12 +100,8 @@ fn append_git_revision(version: String) -> String {
     }
 }
 
-fn log(msg: &str) {
-    #[cfg(all(target_arch = "wasm32", debug_assertions))]
-    console_log(msg);
-    #[cfg(all(not(target_arch = "wasm32"), debug_assertions))]
-    eprintln!("{}", msg);
-}
+#[allow(unused_variables)]
+fn log(_msg: &str) {}
 
 #[wasm_bindgen]
 pub fn sui_move_version() -> String {
@@ -173,13 +162,7 @@ fn parse_edition(edition_str: &str) -> Edition {
         "legacy" => Edition::LEGACY,
         "2024" | "2024.alpha" => Edition::E2024_ALPHA,
         "2024.beta" => Edition::E2024_BETA,
-        _ => {
-            log(&format!(
-                "Warning: Unknown edition '{}', defaulting to legacy",
-                edition_str
-            ));
-            Edition::LEGACY
-        }
+        _ => Edition::LEGACY,
     }
 }
 
@@ -310,10 +293,6 @@ fn compile_impl(
             if let Some(ref pkg) = toml_data.package {
                 if let Some(ref edition_str) = pkg.edition {
                     root_edition = parse_edition(edition_str);
-                    log(&format!(
-                        "📋 Root package edition: {} -> {:?}",
-                        edition_str, root_edition
-                    ));
                 }
                 if let Some(ref published_at) = pkg.published_at {
                     root_published_at = parse_hex_address_to_bytes(published_at);
@@ -348,33 +327,20 @@ fn compile_impl(
         .filter(|name| !name.ends_with("Move.toml") && name.ends_with(".move"))
         .map(|s| Symbol::from(s.as_str()))
         .collect();
-    // Sort using a key that mimics CLI absolute path ordering: prepend a
-    // pseudo-root to stabilize tie-breakers the same way.
+    // Sort to mimic CLI: sources/* before tests/*, then lexical.
     root_targets.sort_by(|a, b| {
-        let ka = format!("/vfs/root/{}", a.as_str());
-        let kb = format!("/vfs/root/{}", b.as_str());
-        ka.as_bytes().cmp(kb.as_bytes())
+        let pa = a.as_str();
+        let pb = b.as_str();
+        let wa = pa.starts_with("tests/") as u8;
+        let wb = pb.starts_with("tests/") as u8;
+        (wa, pa.as_bytes()).cmp(&(wb, pb.as_bytes()))
     });
     log(&format!(
-        "📋 Root sources ({}): {:?}",
-        root_targets.len(),
+        "ROOT_INPUT: {:?}",
         root_targets
             .iter()
             .map(|s| s.as_str().to_string())
             .collect::<Vec<_>>()
-    ));
-    let mut root_dirs = BTreeSet::<String>::new();
-    for s in &root_targets {
-        if let Some(parent) = Path::new(s.as_str()).parent() {
-            if let Some(dir) = parent.to_str() {
-                root_dirs.insert(dir.to_string());
-            }
-        }
-    }
-    log(&format!(
-        "📁 Root source dirs ({}): {:?}",
-        root_dirs.len(),
-        root_dirs
     ));
 
     let target_package = PackagePaths {
@@ -450,10 +416,6 @@ fn compile_impl(
                             {
                                 if let Some(bytes) = parse_hex_address_to_bytes(addr_str) {
                                     if fallback_dep_id.is_none() {
-                                        log(&format!(
-                                            "📦 [{}] Using [addresses].{} = {}",
-                                            pkg_group.name, pkg_group.name, addr_str
-                                        ));
                                         fallback_dep_id = Some(bytes);
                                         found_address_id = true;
                                     }
@@ -464,10 +426,6 @@ fn compile_impl(
                         if !found_address_id {
                             if let Some(bytes) = published_at {
                                 if fallback_dep_id.is_none() {
-                                    log(&format!(
-                                        "📦 [{}] Using published-at fallback",
-                                        pkg_group.name
-                                    ));
                                     fallback_dep_id = Some(bytes);
                                 }
                             }
@@ -501,10 +459,6 @@ fn compile_impl(
         // Use explicitly provided edition if available
         if let Some(ref edition_str) = pkg_group.edition {
             edition = parse_edition(edition_str);
-            log(&format!(
-                "📋 Dependency '{}' override edition: {} -> {:?}",
-                pkg_group.name, edition_str, edition
-            ));
         }
 
         let dep_files: Vec<Symbol> = pkg_group.files
@@ -513,40 +467,14 @@ fn compile_impl(
             .map(|s| Symbol::from(s.as_str()))
             .collect();
         let mut dep_files_sorted = dep_files.clone();
-        // Sort with package-prefixed key to mirror CLI absolute path ordering.
+        // Sort with package-prefixed key; put tests/ after sources/ lexically.
         dep_files_sorted.sort_by(|a, b| {
-            let ka = format!("/vfs/{}/{}", pkg_group.name, a.as_str());
-            let kb = format!("/vfs/{}/{}", pkg_group.name, b.as_str());
-            ka.as_bytes().cmp(kb.as_bytes())
+            let pa = a.as_str();
+            let pb = b.as_str();
+            let wa = pa.starts_with("tests/") as u8;
+            let wb = pb.starts_with("tests/") as u8;
+            (wa, pa.as_bytes()).cmp(&(wb, pb.as_bytes()))
         });
-        log(&format!(
-            "📋 Dep [{}] sources ({}): {:?}",
-            pkg_group.name,
-            dep_files_sorted.len(),
-            dep_files_sorted
-                .iter()
-                .map(|s| s.as_str().to_string())
-                .collect::<Vec<_>>()
-        ));
-        let mut dep_dirs = BTreeSet::<String>::new();
-        for s in &dep_files_sorted {
-            if let Some(parent) = Path::new(s.as_str()).parent() {
-                if let Some(dir) = parent.to_str() {
-                    dep_dirs.insert(dir.to_string());
-                }
-            }
-        }
-        log(&format!(
-            "📁 Dep [{}] source dirs ({}): {:?}",
-            pkg_group.name,
-            dep_dirs.len(),
-            dep_dirs
-        ));
-        log(&format!(
-            "📋 Dep [{}] named_address_map: {:?}",
-            pkg_group.name, named_address_map
-        ));
-
         // Priority: publishedIdForOutput > addressMapping/Move.toml derived address
         if dep_id_for_output.is_none() {
             dep_id_for_output = fallback_dep_id;
@@ -571,11 +499,6 @@ fn compile_impl(
             named_address_map,
         });
     }
-    log(&format!(
-        "📋 Root named_address_map: {:?}",
-        root_named_address_map
-    ));
-
     // Build compiler with from_package_paths
     let compiler = match Compiler::from_package_paths(
         Some(root),
@@ -615,25 +538,60 @@ fn compile_impl(
                 )
             };
 
-            log("📋 Modules (raw order):");
+            // Use Move utility to mirror CLI dependency ordering.
+            let module_set = Modules::new(module_infos.iter().map(|(_, m)| &m.module));
+            let ordered_ids: Vec<ModuleId> = match module_set.compute_topological_order() {
+                Ok(iter) => iter.map(|m| m.self_id()).collect(),
+                Err(e) => {
+                    return MoveCompilerResult {
+                        success: false,
+                        output: format!("Failed to compute module ordering: {}", e),
+                    }
+                }
+            };
+
+            let mut ordered_modules: Vec<(ModuleId, move_compiler::compiled_unit::NamedCompiledModule)> =
+                Vec::new();
+            for id in ordered_ids {
+                if let Some((_, module)) = module_infos.iter().find(|(mid, _)| *mid == id).cloned() {
+                    ordered_modules.push((id, module));
+                }
+            }
+            for pair in module_infos {
+                if !ordered_modules.iter().any(|(mid, _)| *mid == pair.0) {
+                    ordered_modules.push(pair);
+                }
+            }
+            let module_infos = ordered_modules;
+
+            log("COMPILER_INPUT:");
             for (i, (id, _)) in module_infos.iter().enumerate() {
-                log(&format!("  [{:02}] {}", i, fmt_id(id)));
+                log(&format!("[{:02}] {}", i, fmt_id(id)));
             }
 
-            // Preserve compiler-returned order (matches CLI's dependency_order output).
+            // Serialize in compiler-provided order (already dependency-topological).
             let mut modules = vec![];
             let mut module_bytes = vec![];
             for (idx, (id, module)) in module_infos.iter().enumerate() {
+                let id_str = fmt_id(id);
+                let mut deps_for_log: Vec<String> = Vec::new();
+                for dep in module.module.immediate_dependencies() {
+                    let dep_str = fmt_id(&dep);
+                    deps_for_log.push(dep_str);
+                }
+                deps_for_log.sort();
                 let bytes = module.serialize();
                 module_bytes.push(bytes.clone());
                 modules.push(general_purpose::STANDARD.encode(&bytes));
                 let digest = blake2b256(&bytes);
                 log(&format!(
-                    "  compiler order [{:02}] {} digest {}",
+                    "COMPILER_ORDER [{:02}] {} {}",
                     idx,
-                    fmt_id(id),
+                    id_str,
                     hex::encode(digest)
                 ));
+
+                log(&format!("MODULE_DEPS {} -> {:?}", id_str, deps_for_log));
             }
 
             // Use dependency IDs exactly as provided by JS (package graph order).

@@ -57,11 +57,6 @@ export class GitHubFetcher extends Fetcher {
     subdir?: string,
     context?: string
   ): Promise<Record<string, string>> {
-    // Log fetch with dependency context
-    const ctx = context ? ` | context: ${context}` : "";
-    console.log(
-      `Fetching git ${gitUrl} @ ${rev}${subdir ? ` (subdir: ${subdir})` : ""}${ctx}`
-    );
     const { owner, repo } = this.parseGitUrl(gitUrl);
     if (!owner || !repo) {
       throw new Error(`Invalid git URL: ${gitUrl}`);
@@ -192,14 +187,6 @@ export class GitHubFetcher extends Fetcher {
         }
       }
     }
-
-    // Log fetch result summary
-    console.log(
-      `Fetched ${Object.keys(files).length} files` +
-        (context ? ` for ${context}` : "") +
-        ` from ${gitUrl} @ ${rev}` +
-        (subdir ? ` (subdir: ${subdir})` : "")
-    );
 
     return files;
   }

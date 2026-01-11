@@ -9,7 +9,7 @@ const repoRoot = path.resolve(
 );
 const cloneDir = path.join(repoRoot, ".sui");
 const localSourceDir = path.join(repoRoot, "sui-move-wasm");
-const SUI_COMMIT = "1073a8fbf6cfa0d4a4d2bf34b2494a212116089c"; // mainnet-v1.62.1
+const SUI_COMMIT = "a14d9e8ddadfcea837de46b43d0b72a289320afb"; // testnet-v1.63.1
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -180,6 +180,16 @@ async function main() {
         if (!content.includes("proptest.workspace = true")) {
           content += "\n[dev-dependencies]\nproptest.workspace = true\n";
         }
+        await fs.writeFile(problematicCrate, content);
+      }
+      // Deduplicate dev-dependencies headers (was duplicated in some commits)
+      content = await fs.readFile(problematicCrate, "utf8");
+      const parts = content.split(/\n\[dev-dependencies\]\n/);
+      if (parts.length > 2) {
+        // keep first header and merge the rest
+        const head = parts.shift();
+        const merged = parts.join("");
+        content = `${head}\n[dev-dependencies]\n${merged}`;
         await fs.writeFile(problematicCrate, content);
       }
     }

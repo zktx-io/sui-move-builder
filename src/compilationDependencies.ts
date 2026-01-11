@@ -148,8 +148,9 @@ export class CompilationDependencies {
     // Match CLI behavior: deterministic bytewise lexicographic ordering (like BTreeSet).
     const encoder = new TextEncoder();
     const byteCompare = (x: string, y: string): number => {
-      const ax = encoder.encode(x);
-      const ay = encoder.encode(y);
+      // Prefix with a pseudo-root so relative paths sort like CLI absolute paths.
+      const ax = encoder.encode(`/vfs/deps/${packageName}/${x}`);
+      const ay = encoder.encode(`/vfs/deps/${packageName}/${y}`);
       const len = Math.min(ax.length, ay.length);
       for (let i = 0; i < len; i++) {
         if (ax[i] !== ay[i]) return ax[i] - ay[i];
