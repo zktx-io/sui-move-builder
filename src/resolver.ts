@@ -59,15 +59,7 @@ export class Resolver {
     const rootPackageName = rootParsed.package?.name || "RootPackage";
 
     // Extract edition from root Move.lock if available
-    let rootEdition: string | undefined = rootParsed.package?.edition;
-    if (rootFiles["Move.lock"]) {
-      const rootMoveLock = parseToml(rootFiles["Move.lock"]) as any;
-      if (rootMoveLock.move?.["toolchain-version"]?.edition) {
-        rootEdition = rootMoveLock.move["toolchain-version"].edition;
-      }
-    }
-
-    const globalEdition: string = rootEdition || "2024.beta";
+    const rootEdition: string | undefined = rootParsed.package?.edition;
 
     // === LAYER 1: Build DependencyGraph ===
     const depGraph = new DependencyGraph(rootPackageName);
@@ -138,7 +130,7 @@ export class Resolver {
       rootParsed,
       resolvedGraph.getUnifiedAddressTable(),
       true,
-      globalEdition
+      rootEdition
     );
 
     const updatedRootFiles = { ...rootFiles };
