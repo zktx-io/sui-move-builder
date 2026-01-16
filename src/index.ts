@@ -194,11 +194,11 @@ export async function resolveDependencies(
     input.network,
     inferredRootGit
       ? {
-          type: "git",
-          git: inferredRootGit.git,
-          rev: inferredRootGit.rev,
-          subdir: inferredRootGit.subdir,
-        }
+        type: "git",
+        git: inferredRootGit.git,
+        rev: inferredRootGit.rev,
+        subdir: inferredRootGit.subdir,
+      }
       : undefined
   );
 
@@ -225,10 +225,10 @@ export async function buildMovePackage(
     const raw =
       input.ansiColor && typeof (mod as any).compile_with_color === "function"
         ? (mod as any).compile_with_color(
-            resolved.files,
-            resolved.dependencies,
-            true
-          )
+          resolved.files,
+          resolved.dependencies,
+          true
+        )
         : mod.compile(resolved.files, resolved.dependencies);
     const result = ensureCompileResult(raw);
     const ok = result.success();
@@ -238,6 +238,55 @@ export async function buildMovePackage(
       return asFailure(output);
     }
     return parseCompileResult(output);
+  } catch (error) {
+    return asFailure(error);
+  }
+}
+
+export interface TestSuccess {
+  /** Whether all tests passed. */
+  passed: boolean;
+  /** Output from the test runner (stdout). */
+  output: string;
+}
+
+/** Compile and run tests for a Move package in memory. */
+export async function testMovePackage(
+  input: BuildInput
+): Promise<TestSuccess | BuildFailure> {
+  try {
+    // Use pre-resolved dependencies if provided, otherwise resolve them
+    const resolved = input.resolvedDependencies
+      ? input.resolvedDependencies
+      : await resolveDependencies(input);
+
+    const mod = await loadWasm(input.wasm);
+    // Log dependency addresses passed to compiler (best-effort)
+    logDependencyAddresses(resolved.dependencies);
+
+    const raw =
+      input.ansiColor && typeof (mod as any).test_with_color === "function"
+        ? (mod as any).test_with_color(
+          resolved.files,
+          resolved.dependencies,
+          true
+        )
+        : (mod as any).test(resolved.files, resolved.dependencies); // Fallback if test_with_color missing
+
+    // Check if raw result matches expected shape
+    if (typeof raw.passed === "boolean" && typeof raw.output === "string") {
+      return {
+        passed: raw.passed,
+        output: raw.output,
+      };
+    }
+
+    // In case wasm-bindgen getters are needed (wrapper objects)
+    const passed = typeof raw.passed === 'function' ? raw.passed() : raw.passed;
+    const output = typeof raw.output === 'function' ? raw.output() : raw.output;
+
+    return { passed, output };
+
   } catch (error) {
     return asFailure(error);
   }

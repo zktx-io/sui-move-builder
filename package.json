@@ -45,7 +45,7 @@
     "typecheck": "tsc --noEmit",
     "build:wasm": "node scripts/build-wasm.mjs",
     "build:js": "tsup",
-    "build": "npm run build:js && npm run build:wasm",
+    "build": "npm run build:wasm && npm run build:js",
     "serve:test": "python3 -m http.server 8000 --directory .",
     "prepublishOnly": "npm run build"
   },

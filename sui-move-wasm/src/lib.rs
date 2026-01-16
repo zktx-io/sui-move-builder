@@ -2,11 +2,25 @@ use base64::{Engine as _, engine::general_purpose};
 use blake2::digest::{Update, VariableOutput};
 use blake2::Blake2bVar;
 use move_bytecode_utils::Modules;
-use move_compiler::{Compiler, editions::{Flavor, Edition}, shared::{NumericalAddress, PackageConfig, PackagePaths}};
+use move_compiler::{Compiler, editions::{Flavor, Edition}, shared::{NumericalAddress, PackageConfig, PackagePaths}, diagnostics::report_diagnostics_to_buffer};
 use move_core_types::{account_address::AccountAddress, language_storage::ModuleId};
 use move_symbol_pool::Symbol;
+use move_unit_test::{UnitTestingConfig, extensions::set_extension_hook};
+use move_vm_runtime::native_extensions::NativeContextExtensions;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
+use std::sync::Arc;
+use sui_protocol_config::ProtocolConfig;
+use sui_types::{
+    base_types::{SuiAddress, TxContext},
+    digests::TransactionDigest,
+    gas_model::tables::initial_cost_schedule_for_unit_tests,
+    in_memory_storage::InMemoryStorage,
+    metrics::LimitsMetrics,
+};
 use vfs::{impls::memory::MemoryFS, VfsPath};
 use wasm_bindgen::prelude::*;
 
@@ -100,15 +114,18 @@ fn append_git_revision(version: String) -> String {
     }
 }
 
-#[allow(unused_variables)]
-fn log(_msg: &str) {}
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+}
 
 #[wasm_bindgen]
 pub fn sui_move_version() -> String {
     if let Some(version) = option_env!("SUI_MOVE_VERSION") {
         return version.to_string();
     }
-    let lock_contents = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"));
+    let lock_contents = ""; // include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"));
     match package_version_from_lock(lock_contents, "sui-move") {
         Some(version) => append_git_revision(version),
         None => "unknown".to_string(),
@@ -120,7 +137,7 @@ pub fn sui_version() -> String {
     if let Some(version) = option_env!("SUI_VERSION") {
         return version.to_string();
     }
-    let lock_contents = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"));
+    let lock_contents = ""; // include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"));
     match package_version_from_lock(lock_contents, "sui") {
         Some(version) => append_git_revision(version),
         None => "unknown".to_string(),
@@ -166,41 +183,86 @@ fn parse_edition(edition_str: &str) -> Edition {
     }
 }
 
-fn compile_impl(
+#[wasm_bindgen]
+pub struct MoveTestResult {
+    passed: bool,
+    output: String,
+}
+
+#[wasm_bindgen]
+impl MoveTestResult {
+    #[wasm_bindgen(getter)]
+    pub fn passed(&self) -> bool {
+        self.passed
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn output(&self) -> String {
+        self.output.clone()
+    }
+}
+
+// Create a separate test store per-thread (though Wasm is usually single-threaded).
+thread_local! {
+    static TEST_STORE_INNER: RefCell<InMemoryStorage> = RefCell::new(InMemoryStorage::default());
+}
+
+static TEST_STORE: Lazy<sui_move_natives::test_scenario::InMemoryTestStore> = Lazy::new(|| {
+    sui_move_natives::test_scenario::InMemoryTestStore(&TEST_STORE_INNER)
+});
+
+static SET_EXTENSION_HOOK: Lazy<()> =
+    Lazy::new(|| set_extension_hook(Box::new(new_testing_object_and_natives_cost_runtime)));
+
+fn new_testing_object_and_natives_cost_runtime(ext: &mut NativeContextExtensions) {
+    let registry = prometheus::Registry::new();
+    let metrics = Arc::new(LimitsMetrics::new(&registry));
+    let store = Lazy::force(&TEST_STORE);
+    let protocol_config = ProtocolConfig::get_for_max_version_UNSAFE();
+
+    ext.add(sui_move_natives::object_runtime::ObjectRuntime::new(
+        store,
+        BTreeMap::new(),
+        false,
+        Box::leak(Box::new(ProtocolConfig::get_for_max_version_UNSAFE())),
+        metrics,
+        0,
+    ));
+    ext.add(sui_move_natives::NativesCostTable::from_protocol_config(&protocol_config));
+    let tx_context = TxContext::new_from_components(
+        &SuiAddress::ZERO,
+        &TransactionDigest::default(),
+        &0,
+        0,
+        0,
+        0,
+        0,
+        None,
+        &protocol_config,
+    );
+    ext.add(sui_move_natives::transaction_context::TransactionContext::new_for_testing(Rc::new(RefCell::new(
+        tx_context,
+    ))));
+    ext.add(store);
+}
+
+fn setup_vfs(
     files_json: &str,
-    dependencies_json: &str, // Package-grouped dependencies
-    ansi_color: bool,
-) -> MoveCompilerResult {
-    #[cfg(debug_assertions)]
-    console_error_panic_hook::set_once();
+    dependencies_json: &str,
+) -> Result<(VfsPath, BTreeMap<String, String>, Vec<PackageGroup>), String> {
+    let files: BTreeMap<String, String> = serde_json::from_str(files_json)
+        .map_err(|e| format!("Failed to parse files JSON: {}", e))?;
 
-    // Parse root package files
-    let files: BTreeMap<String, String> = match serde_json::from_str(files_json) {
-        Ok(f) => f,
-        Err(e) => return MoveCompilerResult {
-            success: false,
-            output: format!("Failed to parse files JSON: {}", e),
-        },
-    };
-
-    // Parse dependency package groups
     let dep_packages: Vec<PackageGroup> = if dependencies_json.is_empty() {
         vec![]
     } else {
-        match serde_json::from_str(dependencies_json) {
-            Ok(p) => p,
-            Err(e) => return MoveCompilerResult {
-                success: false,
-                output: format!("Failed to parse dependencies JSON: {}", e),
-            },
-        }
+        serde_json::from_str(dependencies_json)
+            .map_err(|e| format!("Failed to parse dependencies JSON: {}", e))?
     };
 
-    // Setup MemoryFS
     let fs = MemoryFS::new();
     let root = VfsPath::new(fs);
 
-    // Helper to ensure parent directories exist
     let ensure_parents = |path: &VfsPath| -> Result<(), String> {
         let parent = path.parent();
         let mut ancestors = vec![];
@@ -209,7 +271,6 @@ fn compile_impl(
         loop {
             ancestors.push(curr_path.clone());
             if curr_path.as_str() == "/" { break; }
-
             let next = curr_path.parent();
             if next.as_str() == curr_path.as_str() { break; }
             curr_path = next;
@@ -223,70 +284,58 @@ fn compile_impl(
         Ok(())
     };
 
-    // Write all files to VFS
     for (name, content) in &files {
-        let path = match root.join(name) {
-            Ok(p) => p,
-            Err(e) => return MoveCompilerResult {
-                success: false,
-                output: format!("Invalid path {}: {}", name, e),
-            },
-        };
-
-        if let Err(e) = ensure_parents(&path) {
-            return MoveCompilerResult {
-                success: false,
-                output: format!("Failed to create directories for {}: {}", name, e),
-            };
-        }
-
-        if let Err(e) = path.create_file().and_then(|mut f| {
-            use std::io::Write;
-            write!(f, "{}", content)?;
-            Ok(())
-        }) {
-            return MoveCompilerResult {
-                success: false,
-                output: format!("Failed to create file {}: {}", name, e),
-            };
-        }
-    }
-
-    // Write dependency files to VFS
-    for pkg in &dep_packages {
-        for (name, content) in &pkg.files {
-            let path = match root.join(name) {
-                Ok(p) => p,
-                Err(e) => return MoveCompilerResult {
-                    success: false,
-                    output: format!("Invalid dep path {}: {}", name, e),
-                },
-            };
-
-            if let Err(e) = ensure_parents(&path) {
-                return MoveCompilerResult {
-                    success: false,
-                    output: format!("Failed to create directories for dep {}: {}", name, e),
-                };
-            }
-
-            if let Err(e) = path.create_file().and_then(|mut f| {
+        let path = root.join(name).map_err(|e| format!("Invalid path {}: {}", name, e))?;
+        ensure_parents(&path)?;
+        path.create_file()
+            .and_then(|mut f| {
                 use std::io::Write;
                 write!(f, "{}", content)?;
                 Ok(())
-            }) {
-                return MoveCompilerResult {
-                    success: false,
-                    output: format!("Failed to create dep file {}: {}", name, e),
-                };
-            }
+            })
+            .map_err(|e| format!("Failed to create file {}: {}", name, e))?;
+    }
+
+    for pkg in &dep_packages {
+        for (name, content) in &pkg.files {
+            let path = root.join(name).map_err(|e| format!("Invalid dep path {}: {}", name, e))?;
+            ensure_parents(&path)?;
+            path.create_file()
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    write!(f, "{}", content)?;
+                    Ok(())
+                })
+                .map_err(|e| format!("Failed to create dep file {}: {}", name, e))?;
         }
     }
+
+    Ok((root, files, dep_packages))
+}
+
+fn compile_impl(
+    files_json: &str,
+    dependencies_json: &str,
+) -> MoveCompilerResult {
+    #[cfg(debug_assertions)]
+    #[cfg(debug_assertions)]
+    console_error_panic_hook::set_once();
+
+
+    // START ANSI SUPPORT
+    colored::control::set_override(true);
+    let ansi_color = true;
+    // END ANSI SUPPORT
+
+    let (root, files, dep_packages) = match setup_vfs(files_json, dependencies_json) {
+        Ok(res) => res,
+        Err(e) => return MoveCompilerResult { success: false, output: e },
+    };
 
     // Build PackagePaths for targets (root package)
     let mut root_named_address_map = BTreeMap::<String, NumericalAddress>::new();
     let mut root_edition = Edition::LEGACY;
-    let mut root_published_at: Option<[u8; 32]> = None;
+    let mut _root_published_at: Option<[u8; 32]> = None;
 
     if let Some(move_toml_content) = files.get("Move.toml") {
         if let Ok(toml_data) = toml::from_str::<MoveToml>(move_toml_content) {
@@ -295,7 +344,7 @@ fn compile_impl(
                     root_edition = parse_edition(edition_str);
                 }
                 if let Some(ref published_at) = pkg.published_at {
-                    root_published_at = parse_hex_address_to_bytes(published_at);
+                    _root_published_at = parse_hex_address_to_bytes(published_at);
                 }
             }
 
@@ -343,20 +392,6 @@ fn compile_impl(
             .collect::<Vec<_>>()
     ));
 
-    let target_package = PackagePaths {
-        name: Some((
-            Symbol::from("root"),
-            PackageConfig {
-                is_dependency: false,
-                edition: root_edition,
-                flavor: Flavor::Sui,
-                ..PackageConfig::default()
-            },
-        )),
-        paths: root_targets,
-        // Clone so we can log the map after constructing PackagePaths.
-        named_address_map: root_named_address_map.clone(),
-    };
 
     // Build PackagePaths for dependencies
     let mut dep_package_paths = Vec::new();
@@ -485,6 +520,13 @@ fn compile_impl(
             }
         }
 
+        // Merge dependency addresses into root map (MATCHES TEST_IMPL)
+        for (name, addr) in &named_address_map {
+             if !root_named_address_map.contains_key(name) {
+                 root_named_address_map.insert(name.clone(), *addr);
+             }
+        }
+
         dep_package_paths.push(PackagePaths {
             name: Some((
                 Symbol::from(pkg_group.name.as_str()),
@@ -499,11 +541,54 @@ fn compile_impl(
             named_address_map,
         });
     }
+
+    // FALLBACK: Ensure std and sui are always defined
+    if !root_named_address_map.contains_key("std") {
+        if let Some(bytes) = parse_hex_address_to_bytes("0x1") {
+            root_named_address_map.insert("std".to_string(), NumericalAddress::new(bytes, move_compiler::shared::NumberFormat::Hex));
+        }
+    }
+    if !root_named_address_map.contains_key("sui") {
+        if let Some(bytes) = parse_hex_address_to_bytes("0x2") {
+            root_named_address_map.insert("sui".to_string(), NumericalAddress::new(bytes, move_compiler::shared::NumberFormat::Hex));
+        }
+    }
+
+    log(&format!("Rust: root address map keys: {:?}", root_named_address_map.keys()));
+
+    let target_package = PackagePaths {
+        name: Some((
+            Symbol::from("root"),
+            PackageConfig {
+                is_dependency: false,
+                edition: root_edition,
+                flavor: Flavor::Sui,
+                ..PackageConfig::default()
+            },
+        )),
+        paths: root_targets,
+        named_address_map: root_named_address_map,
+    };
+
+    let mut all_targets = vec![target_package];
+    // Force is_dependency=false for all deps to ensure full compilation visibility
+    for mut dep in dep_package_paths {
+        if let Some((_name, config)) = &mut dep.name {
+             config.is_dependency = false;
+        }
+        all_targets.push(dep);
+    }
+
     // Build compiler with from_package_paths
+    // PATCHED: Treat all dependencies as targets (2nd arg) to ensures they are compiled/linked.
+    // Address merging ensures they are resolved correctly.
+    // Build compiler with from_package_paths
+    // PATCHED: Treat all dependencies as targets (2nd arg) to ensures they are compiled/linked.
+    // Address merging ensures they are resolved correctly.
     let compiler = match Compiler::from_package_paths(
         Some(root),
-        vec![target_package],
-        dep_package_paths,
+        all_targets,
+        Vec::new(),
     ) {
         Ok(c) => c,
         Err(e) => return MoveCompilerResult {
@@ -564,16 +649,11 @@ fn compile_impl(
             }
             let module_infos = ordered_modules;
 
-            log("COMPILER_INPUT:");
-            for (i, (id, _)) in module_infos.iter().enumerate() {
-                log(&format!("[{:02}] {}", i, fmt_id(id)));
-            }
-
             // Serialize in compiler-provided order (already dependency-topological).
             let mut modules = vec![];
             let mut module_bytes = vec![];
-            for (idx, (id, module)) in module_infos.iter().enumerate() {
-                let id_str = fmt_id(id);
+            for (_idx, (id, module)) in module_infos.iter().enumerate() {
+                let _id_str = fmt_id(id);
                 let mut deps_for_log: Vec<String> = Vec::new();
                 for dep in module.module.immediate_dependencies() {
                     let dep_str = fmt_id(&dep);
@@ -583,15 +663,7 @@ fn compile_impl(
                 let bytes = module.serialize();
                 module_bytes.push(bytes.clone());
                 modules.push(general_purpose::STANDARD.encode(&bytes));
-                let digest = blake2b256(&bytes);
-                log(&format!(
-                    "COMPILER_ORDER [{:02}] {} {}",
-                    idx,
-                    id_str,
-                    hex::encode(digest)
-                ));
-
-                log(&format!("MODULE_DEPS {} -> {:?}", id_str, deps_for_log));
+                let _digest = blake2b256(&bytes);
             }
 
             // Use dependency IDs exactly as provided by JS (package graph order).
@@ -645,14 +717,258 @@ pub fn compile(
     files_json: &str,
     dependencies_json: &str,
 ) -> MoveCompilerResult {
-    compile_impl(files_json, dependencies_json, false)
+    compile_impl(files_json, dependencies_json)
+}
+
+
+fn test_impl(
+    files_json: &str,
+    dependencies_json: &str,
+) -> MoveTestResult {
+    #[cfg(debug_assertions)]
+    console_error_panic_hook::set_once();
+    
+    // START ANSI SUPPORT
+    colored::control::set_override(true);
+    let ansi_color = true;
+    // END ANSI SUPPORT
+    
+    let (root, files, dep_packages) = match setup_vfs(files_json, dependencies_json) {
+        Ok(res) => {
+            res
+        },
+        Err(e) => {
+            log(&format!("Rust: VFS setup failed: {}", e));
+            return MoveTestResult { passed: false, output: e };
+        }
+    };
+
+    // 1. Build PackagePaths for targets (root package)
+    let mut root_named_address_map = BTreeMap::<String, NumericalAddress>::new();
+    let mut root_edition = Edition::LEGACY;
+
+
+    if let Some(move_toml_content) = files.get("Move.toml") {
+        if let Ok(toml_data) = toml::from_str::<MoveToml>(move_toml_content) {
+            if let Some(ref pkg) = toml_data.package {
+                if let Some(ref edition_str) = pkg.edition {
+                    root_edition = parse_edition(edition_str);
+                }
+            }
+            for (name, addr_str) in toml_data.addresses {
+                if let Some(bytes) = parse_hex_address_to_bytes(&addr_str) {
+                    root_named_address_map.insert(
+                        name.clone(),
+                        NumericalAddress::new(bytes, move_compiler::shared::NumberFormat::Hex)
+                    );
+                }
+            }
+        }
+    }
+
+    let root_targets: Vec<Symbol> = files
+        .keys()
+        .filter(|name| !name.ends_with("Move.toml") && name.ends_with(".move"))
+        .map(|s| Symbol::from(s.as_str()))
+        .collect();
+
+
+    // 2. Build PackagePaths for dependencies
+    let mut dep_package_paths = Vec::new();
+    for pkg_group in &dep_packages {
+        let mut named_address_map = BTreeMap::<String, NumericalAddress>::new();
+        let mut edition = Edition::LEGACY;
+
+        if let Some(ref addr_map) = pkg_group.addressMapping {
+            for (name, addr_str) in addr_map {
+                if let Some(bytes) = parse_hex_address_to_bytes(addr_str) {
+                    named_address_map.insert(
+                        name.clone(),
+                        NumericalAddress::new(bytes, move_compiler::shared::NumberFormat::Hex)
+                    );
+                }
+            }
+        }
+
+        if let Some(ref edition_str) = pkg_group.edition {
+            edition = parse_edition(edition_str);
+        }
+
+        let dep_files: Vec<Symbol> = pkg_group.files
+            .keys()
+            .filter(|name| !name.ends_with("Move.toml") && name.ends_with(".move"))
+            .map(|s| Symbol::from(s.as_str()))
+            .collect();
+
+        // Merge dependency addresses into root map
+        for (name, addr) in &named_address_map {
+             if !root_named_address_map.contains_key(name) {
+                 root_named_address_map.insert(name.clone(), *addr);
+             }
+        }
+
+        dep_package_paths.push(PackagePaths {
+            name: Some((
+                Symbol::from(pkg_group.name.as_str()),
+                PackageConfig {
+                    is_dependency: true,
+                    edition,
+                    flavor: Flavor::Sui,
+                    ..PackageConfig::default()
+                },
+            )),
+            paths: dep_files,
+            named_address_map,
+        });
+    }
+
+    // FALLBACK: Ensure std and sui are always defined
+    if !root_named_address_map.contains_key("std") {
+        if let Some(bytes) = parse_hex_address_to_bytes("0x1") {
+            root_named_address_map.insert("std".to_string(), NumericalAddress::new(bytes, move_compiler::shared::NumberFormat::Hex));
+        }
+    }
+    if !root_named_address_map.contains_key("sui") {
+        if let Some(bytes) = parse_hex_address_to_bytes("0x2") {
+            root_named_address_map.insert("sui".to_string(), NumericalAddress::new(bytes, move_compiler::shared::NumberFormat::Hex));
+        }
+    }
+
+    let target_package = PackagePaths {
+        name: Some((
+            Symbol::from("root"),
+            PackageConfig {
+                is_dependency: false,
+                edition: root_edition,
+                flavor: Flavor::Sui,
+                ..PackageConfig::default()
+            },
+        )),
+        paths: root_targets,
+        named_address_map: root_named_address_map,
+    };
+
+    // PATCHED: Treat all dependencies as targets to ensure their bytecode is emitted.
+    // This is necessary for the test runner to find them in the linking phase.
+    let mut all_targets = vec![target_package];
+    all_targets.extend(dep_package_paths);
+
+    // 3. Construct TestPlan
+    // 3. Construct TestPlan
+    let compiler = match Compiler::from_package_paths(
+        Some(root),
+        all_targets,
+        Vec::new(),
+    ) {
+        Ok(c) => {
+            c
+        },
+        Err(e) => {
+            log(&format!("Rust: Compiler creation failed: {}", e));
+            return MoveTestResult { passed: false, output: format!("Failed to create compiler: {}", e) }
+        },
+    };
+
+
+    let flags = move_compiler::Flags::testing();
+    let (files_info, comments_and_compiler_res) = match compiler.set_flags(flags).run::<{ move_compiler::PASS_CFGIR }>() {
+        Ok(res) => {
+             res
+        },
+        Err(e) => {
+             log(&format!("Rust: compiler passes failed: {}", e));
+             return MoveTestResult { passed: false, output: format!("Compiler error: {}", e) }
+        },
+    };
+
+    log("Rust: checking compilation result...");
+    let compiler = match comments_and_compiler_res {
+        Ok(c) => {
+            log("Rust: compilation successful");
+            c
+        },
+        Err((_severity, diags)) => {
+            log("Rust: compilation failed diagnostics");
+            let buffer = move_compiler::diagnostics::report_diagnostics_to_buffer(&files_info, diags, ansi_color);
+            return MoveTestResult { passed: false, output: String::from_utf8_lossy(&buffer).to_string() };
+        }
+    };
+
+    let (compiler, cfgir) = compiler.into_ast();
+    let compilation_env = compiler.compilation_env();
+    let mut test_tests = move_compiler::unit_test::plan_builder::construct_test_plan(compilation_env, None, &cfgir);
+    
+    // PATCHED: Filter out dependency tests. We only want to run tests for the root package.
+    // test_tests is Option<Vec<ModuleTestPlan>>
+    if let Some(plans) = &mut test_tests {
+         plans.retain(|plan| {
+             // Heuristic: Filter out frameworks (0x1, 0x2).
+             let s = format!("{:?}", plan.module_id.address()); 
+             !s.ends_with("0000000000000000000000000000000000000000000000000000000000000001") &&
+             !s.ends_with("0000000000000000000000000000000000000000000000000000000000000002")
+         });
+    }
+    let mapped_files = compilation_env.mapped_files().clone();
+
+    // Reconstruct/continue compilation to get units
+    let compilation_result = compiler.at_cfgir(cfgir).build();
+    let (units, _) = match compilation_result {
+        Ok(res) => res,
+        Err((_severity, diags)) => {
+             let buffer = move_compiler::diagnostics::report_diagnostics_to_buffer(&files_info, diags, ansi_color);
+             return MoveTestResult { passed: false, output: String::from_utf8_lossy(&buffer).to_string() };
+        }
+    };
+
+    let units: Vec<_> = units.into_iter().map(|unit| unit.named_module).collect();
+
+    let test_plan = match test_tests {
+        Some(tests) => {
+            move_compiler::unit_test::TestPlan::new(tests, mapped_files, units, vec![])
+        },
+        None => {
+            return MoveTestResult { passed: true, output: "No tests found".to_string() }
+        },
+    };
+
+    // 4. Run tests and capture output
+    Lazy::force(&SET_EXTENSION_HOOK);
+
+    let config = UnitTestingConfig {
+        num_threads: 1, // Crucial for Wasm
+        gas_limit: Some(1_000_000),
+        report_stacktrace_on_abort: true,
+        ..UnitTestingConfig::default_with_bound(None)
+    };
+
+    let natives = sui_move_natives::all_natives(
+        false,
+        &ProtocolConfig::get_for_max_version_UNSAFE(),
+    );
+
+    let mut output_buffer = std::io::Cursor::new(Vec::new());
+    let (output_buffer, passed) = match config.run_and_report_unit_tests(
+        test_plan,
+        Some(natives),
+        Some(initial_cost_schedule_for_unit_tests()),
+        output_buffer,
+    ) {
+        Ok(res) => res,
+        Err(e) => return MoveTestResult { passed: false, output: format!("Test runner error: {}", e) },
+    };
+
+    let output_str = String::from_utf8_lossy(output_buffer.get_ref()).to_string();
+
+    MoveTestResult {
+        passed,
+        output: output_str,
+    }
 }
 
 #[wasm_bindgen]
-pub fn compile_with_color(
+pub fn test(
     files_json: &str,
     dependencies_json: &str,
-    ansi_color: bool,
-) -> MoveCompilerResult {
-    compile_impl(files_json, dependencies_json, ansi_color)
+) -> MoveTestResult {
+    test_impl(files_json, dependencies_json)
 }

@@ -6,7 +6,7 @@ export default defineConfig({
   dts: true,
   sourcemap: process.env.SOURCEMAP === "true",
   minify: true,
-  clean: true,
+  clean: false,
   outDir: "dist",
   target: "es2020",
   external: ["./sui_move_wasm.js"],

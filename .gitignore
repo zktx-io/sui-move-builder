@@ -12,3 +12,6 @@ dist
 Cargo.lock
 .DS_Store
 .github_token
+
+# Generated stubs
+scripts/stubs/
