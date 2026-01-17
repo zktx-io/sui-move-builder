@@ -7,7 +7,7 @@ const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   ".."
 );
-const cloneDir = path.join(repoRoot, ".sui");
+const cloneDir = path.join(repoRoot, "sui");
 const localSourceDir = path.join(repoRoot, "sui-move-wasm");
 const SUI_COMMIT = "a14d9e8ddadfcea837de46b43d0b72a289320afb"; // testnet-v1.63.1
 const SUI_VERSION_TAG = "testnet-v1.63.1";
@@ -36,27 +36,35 @@ async function main() {
   try {
     const distDir = path.join(repoRoot, "dist");
     
-    // Load templates for stubs (GLOBAL for main)
-    const templatesDir = path.join(repoRoot, 'scripts', 'templates');
-    const loadTemplate = async (name) => {
-        try {
-            return await fs.readFile(path.join(templatesDir, `${name}.rs`), 'utf-8');
-        } catch(e) {
-            // console.warn(`Warning: Template ${name} not found, using empty stub.`);
-            return "pub fn stub() {}";
-        }
+    // Load templates for stubs (Versioned)
+    const templatesDir = path.join(repoRoot, 'scripts', 'templates', SUI_VERSION_TAG);
+    
+    // Map of package name to template filename (without .rs)
+    const STUB_TEMPLATES = {
+        'rustix': 'rustix',
+        'getrandom': 'getrandom',
+        'zstd': 'zstd',
+        'errno': 'errno',
+        'mysten-metrics': 'mysten-metrics',
+        'fs4': 'fs4',
+        'consensus-config': 'consensus-config',
+        'move-package-alt': 'move-package-alt',
+        'move-package-alt-compilation': 'move-package-alt-compilation',
+        'consensus-types': 'consensus-types',
+        'blst': 'blst_lib',
+        'secp256k1': 'secp256k1_lib',
+        'anemo': 'anemo',
+        'tonic': 'tonic',
+        'fastcrypto-zkp': 'fastcrypto-zkp',
+        'fastcrypto-tbls': 'fastcrypto-tbls',
+        'fastcrypto-vdf': 'fastcrypto-vdf',
+        'stacker': 'stacker',
+        'x509-parser': 'x509-parser',
+        'mysten-network': 'mysten-network',
+        'antithesis-sdk': 'antithesis-sdk',
+        'antithesis_sdk': 'antithesis-sdk',
+        'neptune': 'neptune_lib' // Logic handles startswith neptune separately or we can just map it if exact match
     };
-
-    const rustixLib = await loadTemplate('rustix');
-    const getrandomLib = await loadTemplate('getrandom');
-    const zstdLib = await loadTemplate('zstd');
-    const errnoLib = await loadTemplate('errno');
-    const mystenMetricsLib = await loadTemplate('mysten-metrics');
-    const fs4Lib = await loadTemplate('fs4');
-    const consensusConfigLib = await loadTemplate('consensus-config');
-    const movePackageAltLib = await loadTemplate('move-package-alt');
-    const movePackageAltCompLib = await loadTemplate('move-package-alt-compilation');
-    const consensusTypesLib = await loadTemplate('consensus-types');
     
     // 0. Clean dist at the start
     console.log("Cleaning dist directory...");
@@ -147,7 +155,7 @@ async function main() {
       }
       let workspaceContent = await fs.readFile(workspaceToml, "utf8");
 
-      if (workspaceToml.includes(".sui/Cargo.toml")) {
+      if (workspaceToml.includes("sui/Cargo.toml")) {
         workspaceContent = workspaceContent.replace(
           /"crates\/sui-e2e-tests",/g,
           ""
@@ -187,7 +195,7 @@ async function main() {
       );
 
       if (
-        workspaceToml.includes(".sui/Cargo.toml") &&
+        workspaceToml.includes("sui/Cargo.toml") &&
         !workspaceContent.includes('"crates/sui-move-wasm"')
       ) {
         console.log("Registering crate in Sui root workspace...");
@@ -253,14 +261,14 @@ async function main() {
       const rootAbsPath = path.resolve(process.cwd());
       const patches = [
         `blst = { path = "${path.join(rootAbsPath, "scripts", "stubs", "blst-wasm-stub")}" }`,
-        `secp256k1-sys = { path = "${path.join(rootAbsPath, "scripts", "stubs", "secp256k1-sys-stub")}" }`,
+
         // Dynamic Exhaustive Patches
         ...Array.from({length: 21}, (_, i) => `0.3.${i}`).map(v => `errno_v${v.replace(/\./g, '')} = { package = "errno", version = "=${v}", path = "${path.join(rootAbsPath, "scripts", "stubs", "errno" + v.replace(/\./g, '') + "-stub")}" }`),
         ...Array.from({length: 11}, (_, i) => `0.2.${i+10}`).concat(["0.1.16", "0.3.4"]).map(v => `getrandom_v${v.replace(/\./g, '')} = { package = "getrandom", version = "=${v}", path = "${path.join(rootAbsPath, "scripts", "stubs", "getrandom" + v.replace(/\./g, '') + "-stub")}" }`),
         ...Array.from({length: 31}, (_, i) => `0.38.${i+20}`).concat(Array.from({length: 16}, (_, i) => `1.0.${i}`)).concat(Array.from({length: 11}, (_, i) => `1.1.${i}`)).map(v => `rustix_v${v.replace(/\./g, '')} = { package = "rustix", version = "=${v}", path = "${path.join(rootAbsPath, "scripts", "stubs", "rustix" + v.replace(/\./g, '') + "-stub")}" }`),
         ...Array.from({length: 16}, (_, i) => `0.16.${i+10}`).concat(Array.from({length: 21}, (_, i) => `0.17.${i}`)).map(v => `ring_v${v.replace(/\./g, '')} = { package = "ring", version = "=${v}", path = "${path.join(rootAbsPath, "scripts", "stubs", "ring" + v.replace(/\./g, '') + "-stub")}" }`),
         ...["0.11.2+zstd.1.5.2", "0.12.3", "0.13.3"].map(v => `zstd_v${v.replace(/[.+]/g, '')} = { package = "zstd", version = "=${v}", path = "${path.join(rootAbsPath, "scripts", "stubs", "zstd" + v.replace(/[.+]/g, '') + "-stub")}" }`),
-        `secp256k1 = { path = "${secpDir}" }`,
+        `secp256k1 = { path = "${path.join(rootAbsPath, "scripts", "stubs", "secp256k1-hollow-stub")}" }`,
       ];
       
       workspaceContent += `\n${patchHeader}\n${patches.join("\n")}\n`;
@@ -279,10 +287,10 @@ async function main() {
       
       const allStubConfigs = [
           { name: 'ring', vers: ringVers, features: 'alloc = []\nstd = []', lib: 'pub fn stub() {}' },
-          { name: 'rustix', vers: rustixVers, features: 'std = []\nstdio = []\nfs = []\nnet = []\nprocess = []\nparam = []\ntermios = []\ntime = []\nrand = []', lib: rustixLib },
-          { name: 'errno', vers: errnoVers, features: 'std = []', lib: errnoLib },
-          { name: 'getrandom', vers: getrandomVers, features: 'wasm_js = []\njs = []\nstd = []', lib: getrandomLib },
-          { name: 'zstd', vers: zstdVers, features: 'no_asm = []\nstd = []', lib: zstdLib },
+          { name: 'rustix', vers: rustixVers, features: 'std = []\nstdio = []\nfs = []\nnet = []\nprocess = []\nparam = []\ntermios = []\ntime = []\nrand = []', template: 'rustix' },
+          { name: 'errno', vers: errnoVers, features: 'std = []', template: 'errno' },
+          { name: 'getrandom', vers: getrandomVers, features: 'wasm_js = []\njs = []\nstd = []', template: 'getrandom' },
+          { name: 'zstd', vers: zstdVers, features: 'no_asm = []\nstd = []', template: 'zstd' },
       ];
 
       for (const cfg of allStubConfigs) {
@@ -298,7 +306,43 @@ async function main() {
               
               const libPath = path.join(sDir, 'src', 'lib.rs');
               // ALWAYS overwrite lib.rs for these core stubs to ensure fixes (like semicolons) are applied
-              await fs.writeFile(libPath, cfg.lib);
+              if (cfg.template) {
+                  await fs.copyFile(path.join(repoRoot, 'scripts', 'templates', SUI_VERSION_TAG, `${cfg.template}.rs`), libPath);
+              } else {
+                  await fs.writeFile(libPath, cfg.lib || 'pub fn stub() {}');
+              }
+          }
+      }
+      
+      // 5.2 Explicitly generate hollow stubs for non-vendor workspace dependencies
+      const workspaceStubs = [
+          { name: 'stacker', template: 'stacker' },
+      ];
+      // 5.3 Generate blst and secp256k1 stubs
+      // 5.3 Generate blst and secp256k1 stubs (using templates loaded above)
+      const cryptoStubs = [
+          { name: 'blst-wasm-stub', pkgName: 'blst', version: '0.3.16', template: 'blst_lib', features: 'std = []\nalloc = []' },
+          { name: 'secp256k1-hollow-stub', pkgName: 'secp256k1', version: '0.27.0', template: 'secp256k1_lib', features: 'rand = ["dep:rand"]\nstd = []\nalloc = []\nrecovery = []\nglobal-context = []\nserde = []\nbitcoin_hashes = []\nrand-std = ["rand", "rand/std"]\n\n[dependencies]\nrand = { version = "0.8", optional = true, default-features = false }' },
+      ];
+      for (const st of cryptoStubs) {
+          const sDir = path.join(stubBase, st.name);
+           if (!(await dirExists(sDir))) {
+               console.log(`Generating explicit crypto stub for ${st.name}...`);
+               await fs.mkdir(sDir, { recursive: true });
+               await fs.mkdir(path.join(sDir, 'src'), { recursive: true });
+           }
+           const feats = st.features || '';
+           await fs.writeFile(path.join(sDir, 'Cargo.toml'), `[package]\nname = "${st.pkgName}"\nversion = "${st.version}"\nedition = "2021"\n[lib]\npath = "src/lib.rs"\n[features]\n${feats}`);
+           await fs.copyFile(path.join(repoRoot, 'scripts', 'templates', SUI_VERSION_TAG, `${st.template}.rs`), path.join(sDir, 'src', 'lib.rs'));
+      }
+      for (const st of workspaceStubs) {
+          const sDir = path.join(stubBase, `${st.name}-hollow-stub`);
+          if (!(await dirExists(sDir))) {
+              console.log(`Generating explicit hollow stub for ${st.name}...`);
+              await fs.mkdir(sDir, { recursive: true });
+              await fs.mkdir(path.join(sDir, 'src'), { recursive: true });
+              await fs.writeFile(path.join(sDir, 'Cargo.toml'), `[package]\nname = "${st.name}"\nversion = "0.0.0"\nedition = "2021"\n[lib]\npath = "src/lib.rs"`);
+              await fs.copyFile(path.join(repoRoot, 'scripts', 'templates', SUI_VERSION_TAG, `${st.template}.rs`), path.join(sDir, 'src', 'lib.rs'));
           }
       }
 
@@ -357,10 +401,10 @@ fastcrypto-vdf = { path = "${path.join(fcDir, "fastcrypto-vdf")}" }
           'ring = "=0.17.99"',
           'stacker = "=0.1.15"',
           'getrandom = { version = "0.2.15", features = ["js"] }',
-          `blstrs = { path = "${path.join(cloneDir, '../stubs/empty-stub')}" }`,
-          `fastcrypto-zkp = { path = "${path.join(cloneDir, '../stubs/empty-stub')}" }`,
-          `fastcrypto-tbls = { path = "${path.join(cloneDir, '../stubs/empty-stub')}" }`,
-          `fastcrypto-vdf = { path = "${path.join(cloneDir, '../stubs/empty-stub')}" }`,
+          `blstrs = { path = "${path.join(rootAbsPath, 'scripts/stubs/blstrs-hollow-stub')}" }`,
+          `fastcrypto-zkp = { path = "${path.join(rootAbsPath, 'scripts/stubs/fastcrypto-zkp-hollow-stub')}" }`,
+          `fastcrypto-tbls = { path = "${path.join(rootAbsPath, 'scripts/stubs/fastcrypto-tbls-hollow-stub')}" }`,
+          `fastcrypto-vdf = { path = "${path.join(rootAbsPath, 'scripts/stubs/fastcrypto-vdf-hollow-stub')}" }`,
         ];
 
       let additions = "";
@@ -375,7 +419,7 @@ fastcrypto-vdf = { path = "${path.join(fcDir, "fastcrypto-vdf")}" }
       }
 
       // Inject release profile for Wasm optimization (Task 6)
-      if (workspaceToml.includes(".sui/Cargo.toml")) {
+      if (workspaceToml.includes("sui/Cargo.toml")) {
           const profileRelease = `
 [profile.release]
 opt-level = "z"
@@ -486,43 +530,16 @@ panic = "abort"
 
         // Patch sui-move-natives to stub nitro_attestation (ALL VERSIONS)
         const sVersions = ['latest', 'v0', 'v1', 'v2'];
-        const nitroStub = `
-use move_binary_format::errors::PartialVMResult;
-use move_vm_runtime::native_functions::NativeContext;
-use move_vm_types::{
-    loaded_data::runtime_types::Type,
-    natives::function::NativeResult,
-    values::Value,
-};
-use move_core_types::gas_algebra::InternalGas;
-use std::collections::VecDeque;
-
-#[derive(Clone)]
-pub struct NitroAttestationCostParams {
-    pub parse_base_cost: Option<InternalGas>,
-    pub parse_cost_per_byte: Option<InternalGas>,
-    pub verify_base_cost: Option<InternalGas>,
-    pub verify_cost_per_cert: Option<InternalGas>,
-}
-
-pub fn load_nitro_attestation_internal(
-    context: &mut NativeContext,
-    _ty_args: Vec<Type>,
-    mut args: VecDeque<Value>,
-) -> PartialVMResult<NativeResult> {
-    // Pop args
-    let _ = args.pop_back(); 
-    let _ = args.pop_back();
-    // Return ENotSupportedError (0)
-    Ok(NativeResult::err(context.gas_used(), 0))
-}
-`;
+        
         for (const v of sVersions) {
              const nativesSrc = path.join(cloneDir, `sui-execution/${v}/sui-move-natives/src`);
              if (await dirExists(nativesSrc)) {
                  console.log(`  Stubbing nitro_attestation in ${v}...`);
-                 // Overwrite nitro_attestation.rs
-                 await fs.writeFile(path.join(nativesSrc, "crypto/nitro_attestation.rs"), nitroStub);
+                 // Overwrite nitro_attestation.rs using the template
+                 await fs.copyFile(
+                     path.join(repoRoot, 'scripts', 'templates', SUI_VERSION_TAG, 'nitro_attestation.rs'),
+                     path.join(nativesSrc, "crypto/nitro_attestation.rs")
+                 );
                  
                  // Patch lib.rs to remove ONLY cost params, keep registration
                  const nLib = path.join(nativesSrc, "lib.rs");
@@ -645,13 +662,17 @@ pub fn load_nitro_attestation_internal(
             'sui-indexer-alt-consistent-api', 'sui-indexer-alt-consistent-store', 'sui-indexer-alt-e2e-tests',
             'sui-indexer-alt-framework-store-traits', 'sui-indexer-alt-object-store', 'sui-indexer-alt-reader',
             'sui-indexer-alt-restorer', 'sui-indexer-builder', 'fs4',
+            'fastcrypto-zkp', 'fastcrypto-tbls', 'fastcrypto-vdf', 'blstrs',
           ];
           for (const item of offending) {
             // 0. GENERATE NAMED STUB (once per run)
             const namedStubDir = path.join(repoRoot, 'scripts', 'stubs', `${item}-hollow-stub`);
-            if (!(await dirExists(namedStubDir))) {
-                await fs.mkdir(namedStubDir, { recursive: true });
-                await fs.mkdir(path.join(namedStubDir, 'src'), { recursive: true });
+            // 0. GENERATE NAMED STUB (Always regenerate to capture template updates)
+            await fs.mkdir(namedStubDir, { recursive: true });
+            await fs.mkdir(path.join(namedStubDir, 'src'), { recursive: true });
+            
+            { // Scoping block to avoid variable collision if any
+
                 // Ring needs 'alloc' and 'std' for rustls compatibility
                 let extraConfig = '\n[features]\n';
                 if (item === 'ring') {
@@ -666,219 +687,34 @@ pub fn load_nitro_attestation_internal(
                     extraConfig = `\n[dependencies]\nserde = { version = "1.0", features = ["derive"] }\n`;
                 } else if (item === 'consensus-config') {
                     extraConfig = `\n[dependencies]\nmysten-network = { path = "${path.join(repoRoot, 'scripts/stubs/mysten-network-hollow-stub')}" }\n`;
+                } else if (item === 'fastcrypto-zkp') {
+                    extraConfig = `\n[dependencies]\nserde = { version = "1.0", features = ["derive"] }\nschemars = "0.8"\nim = "15"\nfastcrypto = { path = "${path.join(repoRoot, 'vendor/fastcrypto/fastcrypto')}" }\n`;
+                } else if (item === 'fastcrypto-tbls') {
+                    extraConfig = `\n[dependencies]\nserde = { version = "1.0", features = ["derive"] }\nfastcrypto = { path = "${path.join(repoRoot, 'vendor/fastcrypto/fastcrypto')}" }\n`;
+                } else if (item === 'fastcrypto-vdf') {
+                    extraConfig = `\n[dependencies]\nserde = { version = "1.0", features = ["derive"] }\nfastcrypto = { path = "${path.join(repoRoot, 'vendor/fastcrypto/fastcrypto')}" }\n`;
                 }
                 await fs.writeFile(path.join(namedStubDir, 'Cargo.toml'), `[package]\nname = "${item}"\nversion = "0.1.0"\nedition = "2021"\n${extraConfig}`);
                 
-                let libContent = `pub fn stub() {}`;
-                if (item === 'mysten-metrics') {
-                    libContent = mystenMetricsLib;
-                } else if (item === 'fs4') {
-                     libContent = fs4Lib;
-                } else if (item === 'consensus-types') {
-                    libContent = consensusTypesLib;
-                } else if (item === 'consensus-config') {
-                    libContent = consensusConfigLib;
-                } else if (item === 'move-package-alt') {
-                     libContent = movePackageAltLib;
-                } else if (item === 'move-package-alt-compilation') {
-                     libContent = movePackageAltCompLib;
-                } else if (item === 'mysten-network') {
-                    libContent = `
-                        pub mod multiaddr {
-                            pub use anemo::Multiaddr;
-                        }
-                    `;
-                } else if (item === 'anemo') {
-                    libContent = `
-                        use serde::{Serialize, Deserialize};
-                        #[derive(Clone, Debug)]
-                        pub struct PeerId(pub [u8; 32]);
-                        
-                        #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-                        pub struct Multiaddr;
-                        impl std::fmt::Display for Multiaddr {
-                            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "/ip4/127.0.0.1/tcp/0") }
-                        }
-                        impl Multiaddr {
-                            pub fn to_anemo_address(&self) -> Result<Multiaddr, String> { Ok(self.clone()) }
-                        }
-                        impl TryFrom<String> for Multiaddr {
-                           type Error = String;
-                           fn try_from(_: String) -> Result<Self, Self::Error> { Ok(Multiaddr) }
-                        }
-
-                        pub mod types {
-                             use super::{PeerId, Multiaddr};
-                             #[derive(Clone, Debug)]
-                             pub struct PeerInfo {
-                                 pub peer_id: PeerId,
-                                 pub affinity: PeerAffinity,
-                                 pub address: Vec<Multiaddr>,
-                             }
-                             #[derive(Clone, Debug)]
-                             pub enum PeerAffinity { High, Low }
-                        }
-                    `;
-                } else if (item === 'tonic') {
-                    libContent = `
-                        pub enum Code { Internal, Ok, Unknown, InvalidArgument, NotFound, AlreadyExists, PermissionDenied, ResourceExhausted, FailedPrecondition, Aborted, OutOfRange, Unimplemented, Unavailable, DataLoss, Unauthenticated }
-                        impl Code {
-                            pub fn description(&self) -> &str { "stub_description" }
-                        }
-                        pub struct Status;
-                        impl Status {
-                             pub fn new(code: Code, msg: impl Into<String>) -> Self { Self }
-                             pub fn with_details(code: Code, msg: impl Into<String>, details: Vec<u8>) -> Self { Self }
-                             pub fn message(&self) -> &str { "stub_message" }
-                             pub fn details(&self) -> &[u8] { &[] }
-                             pub fn code(&self) -> Code { Code::Unknown }
-                        }
-                    `;
-
-                } else if (item === 'x509-parser') {
-                    libContent = `
-                        pub mod certificate {
-                            #[derive(Clone)]
-                            pub struct X509Certificate;
-                            impl X509Certificate {
-                                pub fn from_der(bytes: &[u8]) -> Result<(&[u8], Self), crate::prelude::X509Error> { Ok((&[], Self)) }
-                                pub fn public_key(&self) -> &[u8] { &[] }
-                                pub fn key_usage(&self) -> Result<Option<crate::extensions::KeyUsage>, crate::prelude::X509Error> { Ok(Some(crate::extensions::KeyUsage::default())) }
-                                pub fn basic_constraints(&self) -> Result<Option<crate::extensions::BasicConstraints>, crate::prelude::X509Error> { Ok(Some(crate::extensions::BasicConstraints::default())) }
-                                pub fn validity(&self) -> crate::time::Validity { crate::time::Validity }
-                                pub fn issuer(&self) -> &[u8] { &[] }
-                                pub fn subject(&self) -> &[u8] { &[] }
-                                pub fn verify_signature(&self, _: Option<&[u8]>) -> Result<(), crate::prelude::X509Error> { Ok(()) }
-                            }
-                        }
-                        pub mod public_key {
-                            pub struct EcKey;
-                            impl EcKey { pub fn data(&self) -> &[u8] { &[] } }
-                            pub enum PublicKey { EC(EcKey) }
-                        }
-                        pub mod time {
-                            #[derive(Clone, Copy)]
-                            pub struct ASN1Time;
-                            impl ASN1Time {
-                                pub fn from_timestamp(_: i64) -> Result<Self, crate::prelude::X509Error> { Ok(Self) }
-                            }
-                            pub struct Validity;
-                            impl Validity {
-                                pub fn is_valid_at(&self, _: ASN1Time) -> bool { true }
-                            }
-                        }
-                        pub mod extensions {
-                            #[derive(Default)]
-                            pub struct KeyUsage { pub value: KeyUsageValue }
-                            #[derive(Default)]
-                            pub struct KeyUsageValue;
-                            impl KeyUsageValue {
-                                pub fn digital_signature(&self) -> bool { true }
-                                pub fn key_cert_sign(&self) -> bool { true }
-                            }
-                            #[derive(Default)]
-                            pub struct BasicConstraints { pub critical: bool, pub value: BasicConstraintsValue }
-                            #[derive(Default)]
-                            pub struct BasicConstraintsValue { pub ca: bool, pub path_len_constraint: Option<u64> }
-                        }
-                        pub mod x509 {
-                            pub struct SubjectPublicKeyInfo;
-                            impl SubjectPublicKeyInfo {
-                                pub fn parsed(_: &[u8]) -> Result<crate::public_key::PublicKey, crate::prelude::X509Error> { Ok(crate::public_key::PublicKey::EC(crate::public_key::EcKey)) }
-                            }
-                        }
-                        pub mod prelude {
-                            pub trait FromDer {}
-                            #[derive(Debug)]
-                            pub struct X509Error;
-                            impl std::fmt::Display for X509Error {
-                                fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { write!(f, "X509Error") }
-                            }
-                            impl std::error::Error for X509Error {}
-                        }
-                    `;
-                } else if (item === 'mysten-metrics') {
-                    libContent = `
-                        pub fn monitored_scope(name: &str) -> () { () }
-                        #[macro_export]
-                        macro_rules! spawn_monitored_task { ($($arg:tt)*) => { tokio::spawn($($arg)*) } }
-
-                        #[derive(Clone)]
-                        pub struct StubMetric;
-                        impl StubMetric {
-                            pub fn with_label_values(&self, _: &[&str]) -> Self { Self }
-                            pub fn inc(&self) {}
-                        }
-                        #[derive(Clone)]
-                        pub struct Metrics {
-                            pub system_invariant_violations: StubMetric,
-                        }
-                        pub fn get_metrics() -> Option<Metrics> { None }
-                        pub mod histogram {
-                            #[derive(Clone)]
-                            pub struct Histogram;
-                             impl Histogram {
-                                pub fn observe(&self, _: f64) {}
-                            }
-                        }
-                    `;
-                } else if (item === 'antithesis-sdk' || item === 'antithesis_sdk') {
-                    libContent = `
-                        #[macro_export]
-                        macro_rules! assert_reachable { ($($arg:tt)*) => {} }
-                        #[macro_export]
-                        macro_rules! assert_sometimes { ($($arg:tt)*) => {} }
-                        #[macro_export]
-                        macro_rules! assert_unreachable { ($($arg:tt)*) => {} }
-
-                        pub mod random { 
-                            #[derive(Clone)]
-                            pub struct AntithesisRng;
-                            impl rand::RngCore for AntithesisRng {
-                                fn next_u32(&mut self) -> u32 { 0 }
-                                fn next_u64(&mut self) -> u64 { 0 }
-                                fn fill_bytes(&mut self, dest: &mut [u8]) { for x in dest { *x = 0; } }
-                                fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand::Error> { self.fill_bytes(dest); Ok(()) }
-                            }
-                            impl rand::CryptoRng for AntithesisRng {}
-                        }
-                    `;
+                // Refactored Stub Generation: Copy from template if available
+                let templateName = STUB_TEMPLATES[item];
+                // Handle special cases not in map
+                if (!templateName) {
+                     if (item.startsWith('neptune')) templateName = 'neptune_lib';
                 }
- else if (item.startsWith('neptune')) {
-                    libContent = `
-                        use std::marker::PhantomData;
-                        pub mod poseidon {
-                            pub enum HashMode { OptimizedStatic, Dynamic }
-                            #[derive(Clone)]
-                            pub struct PoseidonConstants<F, U>(std::marker::PhantomData<(F, U)>);
-                            impl<F, U> PoseidonConstants<F, U> {
-                                pub fn new_from_parameters<A, B, C, D, E, G, H>(_: A, _: B, _: C, _: D, _: E, _: G, _: H) -> Self { 
-                                    Self(std::marker::PhantomData) 
-                                }
-                            }
-                        }
-                        pub mod hash_type { 
-                            pub enum HashType<F, U> { Sponge, Phantom(std::marker::PhantomData<(F, U)>) }
-                        }
-                        #[derive(Clone)]
-                        pub struct Poseidon<F> {
-                            pub elements: Vec<F>,
-                            _marker: PhantomData<F>,
-                        }
-                        impl<F> Poseidon<F> {
-                            pub fn new<U>(_constants: &poseidon::PoseidonConstants<F, U>) -> Self { 
-                                Self { elements: Vec::new(), _marker: PhantomData } 
-                            }
-                            pub fn reset(&mut self) {}
-                            pub fn input(&mut self, _input: F) -> Result<(), ()> { Ok(()) }
-                            pub fn hash(&mut self) -> F { panic!("Stubbed") }
-                            pub fn hash_in_mode(&mut self, _mode: poseidon::HashMode) -> F { panic!("Stubbed") }
-                        }
-                        #[derive(Clone, Copy)]
-                        pub enum Strength { Standard }
-                    `;
+
+                const destPath = path.join(namedStubDir, 'src', 'lib.rs');
+                if (templateName) {
+                    const srcPath = path.join(templatesDir, `${templateName}.rs`);
+                    try {
+                        await fs.copyFile(srcPath, destPath);
+                    } catch (e) {
+                         console.warn(`Warning: Failed to copy template ${templateName} for ${item}, falling back to empty stub.`, e);
+                         await fs.writeFile(destPath, `pub fn stub() {}`);
+                    }
+                } else {
+                    await fs.writeFile(destPath, `pub fn stub() {}`);
                 }
-                await fs.writeFile(path.join(namedStubDir, 'src', 'lib.rs'), libContent);
             }
 
             // 1. REDIRECT IN ALL MANIFESTS: Point offending crates to named hollow-stub
@@ -964,7 +800,7 @@ pub fn load_nitro_attestation_internal(
             'errno': path.join(repoRoot, "scripts", "stubs", "errno0314-stub"),
             'zstd': path.join(repoRoot, "scripts", "stubs", "zstd0123-stub"),
             'ring': path.join(repoRoot, "scripts", "stubs", "ring01714-stub"),
-            'stacker': path.join(repoRoot, "scripts", "stubs", "stacker-stub"),
+            'stacker': path.join(repoRoot, "scripts", "stubs", "stacker-hollow-stub"),
             'rustix': path.join(repoRoot, "scripts", "stubs", "rustix03844-stub"),
             'getrandom': path.join(repoRoot, "scripts", "stubs", "getrandom0217-stub"),
           };
