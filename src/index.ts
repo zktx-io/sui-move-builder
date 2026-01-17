@@ -26,6 +26,10 @@ export interface BuildInput {
   resolvedDependencies?: ResolvedDependencies;
   /** Use this option to silence warnings. */
   silenceWarnings?: boolean;
+  /** Use this option to enable test mode (includes #[test_only] modules). */
+  testMode?: boolean;
+  /** Use this option to specify lint level (e.g. "all", "none"). */
+  lintFlag?: string;
 }
 
 export interface BuildSuccess {
@@ -224,18 +228,15 @@ export async function buildMovePackage(
     // Log dependency addresses passed to compiler (best-effort)
     logDependencyAddresses(resolved.dependencies);
 
-    const raw =
-      input.ansiColor && typeof (mod as any).compile_with_color === "function"
-        ? (mod as any).compile_with_color(
-          resolved.files,
-          resolved.dependencies,
-          true
-        )
-        : mod.compile(
-          resolved.files,
-          resolved.dependencies,
-          JSON.stringify({ silenceWarnings: input.silenceWarnings })
-        );
+    const raw = (mod as any).compile(
+      resolved.files,
+      resolved.dependencies,
+      JSON.stringify({
+        silenceWarnings: input.silenceWarnings,
+        testMode: input.testMode,
+        lintFlag: input.lintFlag,
+      })
+    );
     const result = ensureCompileResult(raw);
     const ok = result.success();
     const output = result.output();

@@ -15,9 +15,64 @@ pub mod bn254 {
         pub fn poseidon_bytes(_: &Vec<Vec<u8>>) -> Result<Vec<u8>, String> { Ok(vec![]) }
     }
     pub mod api {
+        use ark_bn254::{Bn254, G1Affine, G2Affine, Fq12};
+        use ark_groth16::{Groth16, PreparedVerifyingKey, Proof, VerifyingKey};
+        use ark_serialize::CanonicalDeserialize;
+        use ark_groth16::r1cs_to_qap::LibsnarkReduction;
+
         pub const SCALAR_SIZE: usize = 32;
-        pub fn prepare_pvk_bytes(_: &[u8]) -> Result<Vec<Vec<u8>>, String> { Ok(vec![]) }
-        pub fn verify_groth16_in_bytes(_: &[u8], _: &[u8], _: &[u8], _: &[u8], _: &[u8], _: &[u8]) -> Result<bool, String> { Ok(true) }
+        pub fn prepare_pvk_bytes(bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> { 
+            // Stub implementation as this is for preparing/serializing PVK?
+            // If native code calls this, we might need real impl logic, but verify_groth16_in_bytes is the main consumer for verification.
+            Ok(vec![]) 
+        }
+
+        pub fn verify_groth16_in_bytes(
+            vk_gamma_abc_g1_bytes: &[u8],
+            alpha_g1_beta_g2_bytes: &[u8],
+            gamma_g2_neg_pc_bytes: &[u8],
+            delta_g2_neg_pc_bytes: &[u8],
+            proof_inputs_bytes: &[u8],
+            proof_points_bytes: &[u8]
+        ) -> Result<bool, String> {
+            // Deserialize components
+            let gamma_abc_g1: Vec<G1Affine> = CanonicalDeserialize::deserialize_compressed(vk_gamma_abc_g1_bytes)
+                .map_err(|e| format!("Failed to deserialize gamma_abc_g1: {}", e))?;
+            
+            let alpha_g1_beta_g2: Fq12 = CanonicalDeserialize::deserialize_compressed(alpha_g1_beta_g2_bytes)
+                .map_err(|e| format!("Failed to deserialize alpha_g1_beta_g2: {}", e))?;
+            
+            let gamma_g2_neg_pc: <Bn254 as ark_ec::pairing::Pairing>::G2Prepared = CanonicalDeserialize::deserialize_compressed(gamma_g2_neg_pc_bytes)
+                .map_err(|e| format!("Failed to deserialize gamma_g2_neg_pc: {}", e))?;
+            
+            let delta_g2_neg_pc: <Bn254 as ark_ec::pairing::Pairing>::G2Prepared = CanonicalDeserialize::deserialize_compressed(delta_g2_neg_pc_bytes)
+                .map_err(|e| format!("Failed to deserialize delta_g2_neg_pc: {}", e))?;
+            
+            let proof: Proof<Bn254> = CanonicalDeserialize::deserialize_compressed(proof_points_bytes)
+                .map_err(|e| format!("Failed to deserialize proof: {}", e))?;
+            
+            let public_inputs: Vec<ark_bn254::Fr> = CanonicalDeserialize::deserialize_compressed(proof_inputs_bytes)
+                .map_err(|e| format!("Failed to deserialize public inputs: {}", e))?;
+
+            // Construct VerifyingKey (only gamma_abc_g1 is strictly needed for the prepared view if we populate other fields directly)
+            let vk = VerifyingKey::<Bn254> {
+                alpha_g1: Default::default(),
+                beta_g2: Default::default(),
+                gamma_g2: Default::default(),
+                delta_g2: Default::default(),
+                gamma_abc_g1,
+            };
+
+            let pvk = PreparedVerifyingKey::<Bn254> {
+                vk,
+                alpha_g1_beta_g2,
+                gamma_g2_neg_pc,
+                delta_g2_neg_pc,
+            };
+
+            Groth16::<Bn254, LibsnarkReduction>::verify_proof(&pvk, &proof, &public_inputs)
+                .map_err(|e| format!("Verification failed: {}", e))
+        }
     }
 
     pub mod zk_login {
@@ -67,4 +122,3 @@ pub mod bls12381 {
 }
 pub mod dummy_circuits {}
 pub mod groth16 {}
-                    

@@ -322,7 +322,7 @@ async function main() {
       // 5.3 Generate blst, secp256k1, and rayon stubs (using templates loaded above)
       const cryptoStubs = [
           { name: 'blst-wasm-stub', pkgName: 'blst', version: '0.3.16', template: 'blst_lib', features: 'std = []\nalloc = []' },
-          { name: 'secp256k1-hollow-stub', pkgName: 'secp256k1', version: '0.27.0', template: 'secp256k1_lib', features: 'rand = ["dep:rand"]\nstd = []\nalloc = []\nrecovery = []\nglobal-context = []\nserde = []\nbitcoin_hashes = []\nrand-std = ["rand", "rand/std"]\n\n[dependencies]\nrand = { version = "0.8", optional = true, default-features = false }' },
+          { name: 'secp256k1-hollow-stub', pkgName: 'secp256k1', version: '0.27.0', template: 'secp256k1_lib', features: 'rand = ["dep:rand"]\nstd = []\nalloc = []\nrecovery = []\nglobal-context = []\nserde = ["dep:serde", "k256/serde"]\nbitcoin_hashes = []\nrand-std = ["rand", "rand/std"]\n\n[dependencies]\nserde = { version = "1.0", optional = true, features = ["derive"] }\nrand = { version = "0.8", optional = true, default-features = false }\nk256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic", "schnorr", "sha256", "serde", "pkcs8"] }' },
           { name: 'rayon-stub', pkgName: 'rayon', version: '1.10.0', template: 'rayon_lib', features: '' },
       ];
       for (const st of cryptoStubs) {
@@ -369,6 +369,14 @@ async function main() {
           const stubPath = path.join(repoRoot, "scripts", "stubs", "secp256k1-sys-stub");
           content = content.replace(/^secp256k1-sys\s*=.*$/gm, `secp256k1-sys = { path = "${stubPath}", default-features = false }`);
           await fs.writeFile(secpCargo, content);
+      }
+
+      // Patch fastcrypto to fix type inference ambiguity in secp256r1
+      const fcSecp256r1 = path.join(fcDir, "fastcrypto", "src", "secp256r1", "mod.rs");
+      if (await fs.stat(fcSecp256r1).catch(() => false)) {
+           console.log("Patching fastcrypto secp256r1/mod.rs (Overwriting with fixed template)...");
+           const templatePath = path.join(repoRoot, 'scripts', 'templates', SUI_VERSION_TAG, 'fastcrypto_secp256r1_mod.rs');
+           await fs.copyFile(templatePath, fcSecp256r1);
       }
 
       // Apply strict patching to vendored manifests to force stubs (ALWAYS run this)
@@ -713,7 +721,7 @@ panic = "abort"
                 } else if (item === 'consensus-config') {
                     extraConfig = `\n[dependencies]\nmysten-network = { path = "${path.join(repoRoot, 'scripts/stubs/mysten-network-hollow-stub')}" }\n`;
                 } else if (item === 'fastcrypto-zkp') {
-                    extraConfig = `\n[dependencies]\nserde = { version = "1.0", features = ["derive"] }\nschemars = "0.8"\nim = "15"\nfastcrypto = { path = "${path.join(repoRoot, 'vendor/fastcrypto/fastcrypto')}" }\n`;
+                    extraConfig = `\n[dependencies]\nserde = { version = "1.0", features = ["derive"] }\nschemars = "0.8"\nim = "15"\nfastcrypto = { path = "${path.join(repoRoot, 'vendor/fastcrypto/fastcrypto')}" }\nark-bn254 = { version = "0.4.0", default-features = false, features = ["curve"] }\nark-groth16 = { version = "0.4.0", default-features = false }\nark-serialize = { version = "0.4.0", default-features = false, features = ["derive"] }\nark-ff = { version = "0.4.0", default-features = false }\nark-ec = { version = "0.4.0", default-features = false }\n`;
                 } else if (item === 'fastcrypto-tbls') {
                     extraConfig = `\n[dependencies]\nserde = { version = "1.0", features = ["derive"] }\nfastcrypto = { path = "${path.join(repoRoot, 'vendor/fastcrypto/fastcrypto')}" }\n`;
                 } else if (item === 'fastcrypto-vdf') {

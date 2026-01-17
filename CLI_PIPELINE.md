@@ -20,7 +20,7 @@ This document maps the Sui CLI build steps to the JS + WASM implementation in th
 ## 4) Compiler Invocation
 
 - **CLI**: `Compiler::from_package_paths` with target + deps (Source/Bytecode mix), using real FS or VFS.
-- **Here (WASM/Rust)**: `compile_impl` builds `PackagePaths` for root/deps, writes files to in-memory VFS, then calls `Compiler::from_package_paths`. Dependency named-address maps/IDs prefer JS-provided `addressMapping`, falling back to Move.toml parsing only when missing to reduce WASM-side work.
+- **Here (WASM/Rust)**: `compile_impl` builds `PackagePaths` for root/deps, writes files to in-memory VFS, then calls `Compiler::from_package_paths`. Dependency named-address maps/IDs prefer JS-provided `addressMapping`, falling back to `SourceManifest` parsing (via `manifest.rs`) for robust TOML handling. Supports `test_mode` and `lint_flag` configuration exposed from JS.
 
 ## 5) Module Ordering
 
@@ -40,6 +40,6 @@ This document maps the Sui CLI build steps to the JS + WASM implementation in th
 
 - Version conflicts: CLI aborts on same-name/different-rev packages; JS/WASM must mirror this (no silent dedupe).
 - Path sorting: CLI uses `BTreeSet` (bytewise) for `.move` paths; JS must produce identical ordering (no locale-dependent compare).
-- Move.toml usage: CLI only parses for address maps/edition; do **not** mutate or inject TOML content before compilation.
+- Move.toml usage: CLI only parses for address maps/edition; we now use `SourceManifest` (ported from proper Move crates) to parse `Move.toml` strictly without IO dependencies.
 - Module ordering: Emit exactly the compiler-returned `dependency_order`; avoid extra re-sorts in WASM.
 - Outputs: Dependencies/IDs should pass through from JS; BuildInfo/disassembly artifacts are CLI-only unless intentionally added to WASM.

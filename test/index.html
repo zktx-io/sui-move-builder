@@ -151,6 +151,14 @@
       <input id="silenceWarnings" type="checkbox" />
       Silence Warnings
     </label>
+    <label style="
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+        ">
+      <input id="testMode" type="checkbox" />
+      Test Mode
+    </label>
   </div>
   <div style="margin: 16px 0; display: flex; gap: 8px; flex-wrap: wrap">
     <button id="compileBtn" disabled>Build from GitHub</button>
@@ -422,10 +430,12 @@
 
           const useAnsi = document.getElementById("ansiColor").checked;
           const silenceWarnings = document.getElementById("silenceWarnings").checked;
+          const testMode = document.getElementById("testMode").checked;
           const result = await buildMovePackage({
             files,
             ansiColor: useAnsi,
             silenceWarnings: silenceWarnings,
+            testMode: testMode,
             network: network,
             githubToken: githubToken || undefined,
           });
@@ -567,11 +577,13 @@
 
           const useAnsi = document.getElementById("ansiColor").checked;
           const silenceWarnings = document.getElementById("silenceWarnings").checked;
+          const testMode = document.getElementById("testMode").checked;
           const network = networkSelect.value;
           const result = await buildMovePackage({
             files: cachedFiles,
             ansiColor: useAnsi,
             silenceWarnings: silenceWarnings,
+            testMode: testMode,
             network: network,
             resolvedDependencies: cachedDependencies,
             githubToken: githubToken || undefined,

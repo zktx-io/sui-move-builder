@@ -51,6 +51,10 @@ const result = await buildMovePackage({
   githubToken: process.env.GITHUB_TOKEN,
   // optional: silence warnings from Move compiler
   silenceWarnings: true,
+  // optional: enable test mode (include #[test_only] modules)
+  testMode: false,
+  // optional: set linting level (default: "all")
+  lintFlag: "all",
 });
 
 if (result.success) {
