@@ -261,6 +261,7 @@ async function main() {
       const rootAbsPath = path.resolve(process.cwd());
       const patches = [
         `blst = { path = "${path.join(rootAbsPath, "scripts", "stubs", "blst-wasm-stub")}" }`,
+        `rayon = { path = "${path.join(rootAbsPath, "scripts", "stubs", "rayon-stub")}" }`,
 
         // Dynamic Exhaustive Patches
         ...Array.from({length: 21}, (_, i) => `0.3.${i}`).map(v => `errno_v${v.replace(/\./g, '')} = { package = "errno", version = "=${v}", path = "${path.join(rootAbsPath, "scripts", "stubs", "errno" + v.replace(/\./g, '') + "-stub")}" }`),
@@ -318,16 +319,16 @@ async function main() {
       const workspaceStubs = [
           { name: 'stacker', template: 'stacker' },
       ];
-      // 5.3 Generate blst and secp256k1 stubs
-      // 5.3 Generate blst and secp256k1 stubs (using templates loaded above)
+      // 5.3 Generate blst, secp256k1, and rayon stubs (using templates loaded above)
       const cryptoStubs = [
           { name: 'blst-wasm-stub', pkgName: 'blst', version: '0.3.16', template: 'blst_lib', features: 'std = []\nalloc = []' },
           { name: 'secp256k1-hollow-stub', pkgName: 'secp256k1', version: '0.27.0', template: 'secp256k1_lib', features: 'rand = ["dep:rand"]\nstd = []\nalloc = []\nrecovery = []\nglobal-context = []\nserde = []\nbitcoin_hashes = []\nrand-std = ["rand", "rand/std"]\n\n[dependencies]\nrand = { version = "0.8", optional = true, default-features = false }' },
+          { name: 'rayon-stub', pkgName: 'rayon', version: '1.10.0', template: 'rayon_lib', features: '' },
       ];
       for (const st of cryptoStubs) {
           const sDir = path.join(stubBase, st.name);
            if (!(await dirExists(sDir))) {
-               console.log(`Generating explicit crypto stub for ${st.name}...`);
+               console.log(`Generating explicit stub for ${st.name}...`);
                await fs.mkdir(sDir, { recursive: true });
                await fs.mkdir(path.join(sDir, 'src'), { recursive: true });
            }
@@ -453,6 +454,17 @@ panic = "abort"
       let content = await fs.readFile(problematicCrate, "utf8");
       content = content.replace('proptest = { workspace = true }', 'proptest = { version = "1.6.0", default-features = false, features = ["std", "bit-set"], optional = true }');
       await fs.writeFile(problematicCrate, content);
+    }
+
+    // PATCH: Inject wasm-bindgen into move-unit-test for debugging
+    const moveUnitTestCargo = path.join(cloneDir, "external-crates", "move", "crates", "move-unit-test", "Cargo.toml");
+    if (await dirExists(moveUnitTestCargo)) {
+        console.log("Injecting wasm-bindgen into move-unit-test/Cargo.toml...");
+        let content = await fs.readFile(moveUnitTestCargo, 'utf-8');
+        if (!content.includes("wasm-bindgen")) {
+            content += '\n[dependencies.wasm-bindgen]\nversion = "0.2"\n';
+            await fs.writeFile(moveUnitTestCargo, content);
+        }
     }
 
     // Fix malformed external-crates/move/Cargo.toml where ']' might be commented out
@@ -609,11 +621,24 @@ panic = "abort"
 
     // 4.3 Patch move-unit-test to DISABLE THREADING (Wasm crash fix)
     const moveUnitTestRunner = path.join(cloneDir, "external-crates", "move", "crates", "move-unit-test", "src", "test_runner.rs");
-    const patchedRunnerStub = path.join(repoRoot, "scripts", "stubs", "move_unit_test_runner_patch.rs");
+    const patchedRunnerStub = path.join(repoRoot, "scripts", "templates", "move_unit_test_runner_patch.rs");
     
-    if ((await fs.stat(moveUnitTestRunner).catch(() => false)) && (await fs.stat(patchedRunnerStub).catch(() => false))) {
+    console.log("Checking for test runner patch...");
+    console.log("  Target: " + moveUnitTestRunner);
+    console.log("  Source: " + patchedRunnerStub);
+    const targetExists = await fs.stat(moveUnitTestRunner).catch(() => false);
+    const sourceExists = await fs.stat(patchedRunnerStub).catch(() => false);
+    console.log(`  Target exists: ${!!targetExists}, Source exists: ${!!sourceExists}`);
+
+    if (targetExists && sourceExists) {
          console.log("Forcibly overwriting move-unit-test/src/test_runner.rs with patched version...");
          await fs.copyFile(patchedRunnerStub, moveUnitTestRunner);
+         const content = await fs.readFile(moveUnitTestRunner, 'utf-8');
+         if (content.includes("DEBUG: TestRunner::run start")) {
+             console.log("CONFIRMED: test_runner.rs contains debug prints.");
+         } else {
+             console.log("WARNING: test_runner.rs does NOT contain debug prints!");
+         }
     } else {
          console.log("WARNING: Could not patch test_runner.rs (File not found or stub missing)");
     }
