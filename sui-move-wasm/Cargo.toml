@@ -7,6 +7,10 @@ publish = false
 edition = "2024"
 build = "build.rs"
 
+[features]
+default = []
+testing = ["dep:move-unit-test", "dep:sui-move-natives", "dep:move-vm-runtime"]
+
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
 
@@ -209,10 +213,10 @@ move-core-types = { path = "vendor/move/crates/move-core-types" }
 move-symbol-pool = { path = "vendor/move/crates/move-symbol-pool" }
 move-bytecode-utils = { path = "vendor/move/crates/move-bytecode-utils" }
 move-bytecode-verifier = { path = "vendor/move/crates/move-bytecode-verifier" }
-move-unit-test = { path = "vendor/move/crates/move-unit-test" }
-move-vm-runtime = { path = "vendor/move/crates/move-vm-runtime" }
+move-unit-test = { path = "vendor/move/crates/move-unit-test", optional = true }
+move-vm-runtime = { path = "vendor/move/crates/move-vm-runtime", optional = true }
 move-package-alt-compilation = { path = "vendor/move/crates/move-package-alt-compilation" }
-sui-move-natives = { path = "sui-execution/latest/sui-move-natives", package = "sui-move-natives-latest" }
+sui-move-natives = { path = "sui-execution/latest/sui-move-natives", package = "sui-move-natives-latest", optional = true }
 sui-protocol-config = { path = "crates/sui-protocol-config" }
 sui-types = { path = "crates/sui-types" }
 sui-verifier = { path = "sui-execution/latest/sui-verifier", package = "sui-verifier-latest" }

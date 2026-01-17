@@ -1,4 +1,4 @@
-import { buildMovePackage, initMoveCompiler } from "../../dist/full/index.js";
+import { buildMovePackage, initMoveCompiler } from "../../dist/lite/index.js";
 import { promises as fs } from "fs";
 import path from "path";
 import { execSync } from "child_process";
@@ -67,7 +67,7 @@ function areDigestsEqual(digestA, digestB) {
 }
 
 async function runTest() {
-  const wasmPath = path.resolve(__dirname, "../../dist/full/sui_move_wasm_bg.wasm");
+  const wasmPath = path.resolve(__dirname, "../../dist/lite/sui_move_wasm_bg.wasm");
   const wasmBuffer = await fs.readFile(wasmPath);
   await initMoveCompiler({ wasm: wasmBuffer });
 

@@ -5,7 +5,9 @@ use move_bytecode_utils::Modules;
 use move_compiler::{Compiler, Flags, editions::{Flavor, Edition}, shared::{NumericalAddress, PackageConfig, PackagePaths}, diagnostics::report_diagnostics_to_buffer};
 use move_core_types::{account_address::AccountAddress, language_storage::ModuleId};
 use move_symbol_pool::Symbol;
+#[cfg(feature = "testing")]
 use move_unit_test::{UnitTestingConfig, extensions::set_extension_hook};
+#[cfg(feature = "testing")]
 use move_vm_runtime::native_extensions::NativeContextExtensions;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -221,12 +223,14 @@ fn parse_edition(edition_str: &str) -> Edition {
     }
 }
 
+#[cfg(feature = "testing")]
 #[wasm_bindgen]
 pub struct MoveTestResult {
     passed: bool,
     output: String,
 }
 
+#[cfg(feature = "testing")]
 #[wasm_bindgen]
 impl MoveTestResult {
     #[wasm_bindgen(getter)]
@@ -241,17 +245,21 @@ impl MoveTestResult {
 }
 
 // Create a separate test store per-thread (though Wasm is usually single-threaded).
+#[cfg(feature = "testing")]
 thread_local! {
     static TEST_STORE_INNER: RefCell<InMemoryStorage> = RefCell::new(InMemoryStorage::default());
 }
 
+#[cfg(feature = "testing")]
 static TEST_STORE: Lazy<sui_move_natives::test_scenario::InMemoryTestStore> = Lazy::new(|| {
     sui_move_natives::test_scenario::InMemoryTestStore(&TEST_STORE_INNER)
 });
 
+#[cfg(feature = "testing")]
 static SET_EXTENSION_HOOK: Lazy<()> =
     Lazy::new(|| set_extension_hook(Box::new(new_testing_object_and_natives_cost_runtime)));
 
+#[cfg(feature = "testing")]
 fn new_testing_object_and_natives_cost_runtime(ext: &mut NativeContextExtensions) {
     let registry = prometheus::Registry::new();
     let metrics = Arc::new(LimitsMetrics::new(&registry));
@@ -793,6 +801,7 @@ pub fn compile(
 }
 
 
+#[cfg(feature = "testing")]
 fn test_impl(
     files_json: &str,
     dependencies_json: &str,
@@ -918,7 +927,7 @@ fn test_impl(
                 edition: root_edition,
                 flavor: Flavor::Sui,
                 ..PackageConfig::default()
-            },
+                },
         )),
         paths: root_targets,
         named_address_map: root_named_address_map,
@@ -1038,6 +1047,7 @@ fn test_impl(
     }
 }
 
+#[cfg(feature = "testing")]
 #[wasm_bindgen]
 pub fn test(
     files_json: &str,

@@ -1411,62 +1411,119 @@ panic = "abort"
       SUI_MOVE_VERSION: suiMoveVersion,
     };
 
-    await run(
-      "cargo",
-      ["build", "--lib", "--release", "--target", "wasm32-unknown-unknown"],
-      { cwd: crateDir, env: releaseEnv }
-    );
+    // Optimization settings for Lite build (Max size reduction)
+    const liteEnv = {
+      ...releaseEnv,
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "z",
+      CARGO_PROFILE_RELEASE_LTO: "true",
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1",
+      CARGO_PROFILE_RELEASE_PANIC: "abort",
+      CARGO_PROFILE_RELEASE_STRIP: "true",
+    };
 
-    // 5.1 Link with wasm-bindgen
-    console.log("Linking with wasm-bindgen...");
-    const localBin = path.join(repoRoot, "local-bin");
-    const wasmBindgenCmd = path.join(localBin, "bin/wasm-bindgen");
+    // Optimization settings for Full build (Balanced: Size + Test capabilities)
+    const fullEnv = {
+      ...releaseEnv,
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "z", // Optimize for size (was 1)
+      CARGO_PROFILE_RELEASE_LTO: "true",    // Enable LTO (was false)
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1",
+      CARGO_PROFILE_RELEASE_STRIP: "debuginfo", // Remove debug info (keep symbols if needed? or strictly debuginfo)
+      // Keep panic="unwind" (default) for testing support
+    };
 
-    // Install if missing
-    if (!(await dirExists(wasmBindgenCmd))) {
-      console.log("Installing wasm-bindgen-cli v0.2.108...");
+    // 4.5 Build Steps (Lite & Full)
+    const buildProfiles = [
+      { name: "lite", features: [], outDir: path.join(distDir, "lite") },
+      {
+        name: "full",
+        features: ["testing"],
+        outDir: path.join(distDir, "full"),
+      },
+    ];
+
+    for (const profile of buildProfiles) {
+      console.log(
+        `\nBuilding '${profile.name}' WASM (Features: ${profile.features.join(", ") || "none"})...`
+      );
+
+      const buildArgs = [
+        "build",
+        "--lib",
+        "--release",
+        "--target",
+        "wasm32-unknown-unknown",
+      ];
+      if (profile.features.length > 0) {
+        buildArgs.push("--features", profile.features.join(","));
+      } else {
+        // Explicitly disable default features if any (though we set default = [])
+        buildArgs.push("--no-default-features");
+      }
+
+      // Select environment based on profile name
+      const env = profile.name === "lite" ? liteEnv : fullEnv;
+
+      await run("cargo", buildArgs, { cwd: crateDir, env });
+
+      // 5.1 Link with wasm-bindgen
+      console.log(`Linking '${profile.name}' with wasm-bindgen...`);
+      const localBin = path.join(repoRoot, "local-bin");
+      const wasmBindgenCmd = path.join(localBin, "bin/wasm-bindgen");
+
+      // Install if missing (only need to check once really, but idempotent)
+      if (!(await dirExists(wasmBindgenCmd))) {
+        console.log("Installing wasm-bindgen-cli v0.2.108...");
+        await run(
+          "cargo",
+          [
+            "install",
+            "wasm-bindgen-cli",
+            "--version",
+            "0.2.108",
+            "--root",
+            localBin,
+            "--force",
+          ],
+          { env: process.env }
+        );
+      }
+
+      const wasmArtifact = path.join(
+        cloneDir,
+        "target/wasm32-unknown-unknown/release/sui_move_wasm.wasm"
+      );
+
       await run(
-        "cargo",
+        wasmBindgenCmd,
         [
-          "install",
-          "wasm-bindgen-cli",
-          "--version",
-          "0.2.108",
-          "--root",
-          localBin,
-          "--force",
+          wasmArtifact,
+          "--out-dir",
+          profile.outDir,
+          "--target",
+          "web",
+          "--typescript",
         ],
-        { env: process.env }
+        { cwd: repoRoot }
       );
-    }
 
-    const wasmArtifact = path.join(
-      cloneDir,
-      "target/wasm32-unknown-unknown/release/sui_move_wasm.wasm"
-    );
-    // distDir defined at top
+      // 6. Post-process JS bindings (Fix 'env' and add 'now')
+      console.log(`Patching generated JS bindings for '${profile.name}'...`);
+      const jsPath = path.join(profile.outDir, "sui_move_wasm.js");
+      let jsContent = await fs.readFile(jsPath, "utf-8");
 
-    await run(
-      wasmBindgenCmd,
-      [wasmArtifact, "--out-dir", distDir, "--target", "web", "--typescript"],
-      { cwd: repoRoot }
-    );
-
-    // 6. Post-process JS bindings (Fix 'env' and add 'now')
-    console.log("Patching generated JS bindings...");
-    const jsPath = path.join(distDir, "sui_move_wasm.js");
-    let jsContent = await fs.readFile(jsPath, "utf-8");
-
-    // Fix 1: Remove imports from "env" and provide polyfills
-    if (jsContent.includes('from "env"')) {
-      jsContent = jsContent.replace(
-        /import \* as import1 from "env"/g,
-        `const import1 = {
-    now: () => Date.now() / 1000,
-}; // import * as import1 from "env"`
-      );
-      await fs.writeFile(jsPath, jsContent);
-      console.log("✓ Patched 'env' import and added 'now' polyfill.");
+      // Fix 1: Remove imports from "env" and provide polyfills
+      if (jsContent.includes('from "env"')) {
+        jsContent = jsContent.replace(
+          /import \* as import1 from "env"/g,
+          `const import1 = {
+      now: () => Date.now() / 1000,
+  }; // import * as import1 from "env"`
+        );
+        await fs.writeFile(jsPath, jsContent);
+        console.log(
+          `✓ Patched 'env' import and added 'now' polyfill for ${profile.name}.`
+        );
+      }
     }
 
     console.log("\nBuild successful! Artifacts in dist/");

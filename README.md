@@ -19,6 +19,25 @@ Build Move packages in web or Node.js with Sui CLI-compatible dependency resolut
 npm install @zktx.io/sui-move-builder
 ```
 
+## Lite vs Full Version
+
+The package comes in two variants:
+
+1. **Full Version (Default)**: ~12MB. Includes `move-unit-test`, `sui-move-natives`, and testing capabilities.
+2. **Lite Version**: ~5.1MB. Build-only. **Recommended for frontend applications** where testing infrastructure is not needed.
+
+### Using the Full Version (Default)
+
+```ts
+import { initMoveCompiler, buildMovePackage, testMovePackage } from "@zktx.io/sui-move-builder";
+```
+
+### Using the Lite Version
+
+```ts
+import { initMoveCompiler, buildMovePackage } from "@zktx.io/sui-move-builder/lite";
+```
+
 ## Quick start (Node.js or browser)
 
 ```ts
