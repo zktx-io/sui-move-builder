@@ -208,12 +208,14 @@ move-compiler = { path = "vendor/move/crates/move-compiler" }
 move-core-types = { path = "vendor/move/crates/move-core-types" }
 move-symbol-pool = { path = "vendor/move/crates/move-symbol-pool" }
 move-bytecode-utils = { path = "vendor/move/crates/move-bytecode-utils" }
+move-bytecode-verifier = { path = "vendor/move/crates/move-bytecode-verifier" }
 move-unit-test = { path = "vendor/move/crates/move-unit-test" }
 move-vm-runtime = { path = "vendor/move/crates/move-vm-runtime" }
 move-package-alt-compilation = { path = "vendor/move/crates/move-package-alt-compilation" }
 sui-move-natives = { path = "sui-execution/latest/sui-move-natives", package = "sui-move-natives-latest" }
 sui-protocol-config = { path = "crates/sui-protocol-config" }
 sui-types = { path = "crates/sui-types" }
+sui-verifier = { path = "sui-execution/latest/sui-verifier", package = "sui-verifier-latest" }
 vfs = "0.10.0"
 hex = "0.4.3"
 # getrandom replaced by renamed versions below

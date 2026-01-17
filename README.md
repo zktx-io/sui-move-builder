@@ -49,6 +49,8 @@ const result = await buildMovePackage({
   files,
   // optional: bump GitHub API limits during dependency resolution
   githubToken: process.env.GITHUB_TOKEN,
+  // optional: silence warnings from Move compiler
+  silenceWarnings: true,
 });
 
 if (result.success) {

@@ -23,6 +23,13 @@ use sui_types::{
 };
 use vfs::{impls::memory::MemoryFS, VfsPath};
 use wasm_bindgen::prelude::*;
+use move_compiler::compiled_unit::AnnotatedCompiledModule;
+use sui_types::{
+    move_package::{FnInfo, FnInfoKey, FnInfoMap},
+    error::{SuiErrorKind},
+};
+use sui_protocol_config::{Chain, ProtocolVersion};
+use sui_verifier::verifier as sui_bytecode_verifier;
 
 #[wasm_bindgen]
 pub struct MoveCompilerResult {
@@ -73,10 +80,16 @@ struct PackageGroup {
     files: BTreeMap<String, String>,
     #[serde(default)]
     edition: Option<String>,
-    #[serde(default)]
-    addressMapping: Option<BTreeMap<String, String>>,
-    #[serde(default)]
-    publishedIdForOutput: Option<String>,
+    #[serde(default, rename = "addressMapping")]
+    address_mapping: Option<BTreeMap<String, String>>,
+    #[serde(default, rename = "publishedIdForOutput")]
+    published_id_for_output: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct CompileOptions {
+    #[serde(default, rename = "silenceWarnings")]
+    silence_warnings: bool,
 }
 
 fn package_version_from_lock(lock_contents: &str, package_name: &str) -> Option<String> {
@@ -144,6 +157,38 @@ pub fn sui_version() -> String {
     }
 }
 
+
+// Ported from sui-move-build/src/lib.rs
+fn fn_info(units: &[AnnotatedCompiledModule]) -> FnInfoMap {
+    let mut fn_info_map = BTreeMap::new();
+    for u in units {
+        let mod_addr = u.named_module.address.into_inner();
+        let mod_is_test = u.attributes.is_test_or_test_only();
+        for (_, s, info) in &u.function_infos {
+            let fn_name = s.as_str().to_string();
+            let is_test = mod_is_test || info.attributes.is_test_or_test_only();
+            fn_info_map.insert(FnInfoKey { fn_name, mod_addr }, FnInfo { is_test });
+        }
+    }
+    fn_info_map
+}
+
+// Ported from sui-move-build/src/lib.rs
+fn verify_bytecode(units: &[AnnotatedCompiledModule], fn_info: &FnInfoMap) -> Result<(), String> {
+    let verifier_config = ProtocolConfig::get_for_version(ProtocolVersion::MAX, Chain::Unknown)
+        .verifier_config(/* signing_limits */ None);
+
+    for unit in units {
+        let m = &unit.named_module.module;
+        move_bytecode_verifier::verify_module_unmetered(m).map_err(|err| {
+             format!("Module Verification Failure: {}", err)
+        })?;
+        sui_bytecode_verifier::sui_verify_module_unmetered(m, fn_info, &verifier_config).map_err(|err| {
+             format!("Sui Module Verification Failure: {}", err)
+        })?;
+    }
+    Ok(())
+}
 fn parse_hex_address_to_bytes(addr: &str) -> Option<[u8; 32]> {
     let addr_clean = addr.trim().trim_start_matches("0x");
     if addr_clean.is_empty() {
@@ -316,6 +361,7 @@ fn setup_vfs(
 fn compile_impl(
     files_json: &str,
     dependencies_json: &str,
+    options_json: Option<String>,
 ) -> MoveCompilerResult {
     #[cfg(debug_assertions)]
     #[cfg(debug_assertions)]
@@ -406,12 +452,12 @@ fn compile_impl(
 
         // Dependency ID for output prefers latest-published-id.
         let mut dep_id_for_output = pkg_group
-            .publishedIdForOutput
+            .published_id_for_output
             .as_ref()
             .and_then(|id| parse_hex_address_to_bytes(id));
 
         // Prefer address mapping supplied from JS to avoid extra parsing work in WASM.
-        if let Some(ref addr_map) = pkg_group.addressMapping {
+        if let Some(ref addr_map) = pkg_group.address_mapping {
             for (name, addr_str) in addr_map {
                 if let Some(bytes) = parse_hex_address_to_bytes(addr_str) {
                     named_address_map.insert(
@@ -597,7 +643,7 @@ fn compile_impl(
         },
     };
 
-    let (files, res) = match compiler.build() {
+    let (compiler_files, res) = match compiler.build() {
         Ok(res) => res,
         Err(e) => return MoveCompilerResult {
             success: false,
@@ -606,13 +652,45 @@ fn compile_impl(
     };
 
     match res {
-        Ok((units, _warnings)) => {
+        Ok((units, warning_diags)) => {
+            // VERIFICATION STEP (Ported from sui-move-build)
+            let fn_info = fn_info(&units);
+            if let Err(e) = verify_bytecode(&units, &fn_info) {
+                 return MoveCompilerResult {
+                    success: false,
+                     output: format!("Bytecode Verification Failed: {}", e),
+                 };
+            }
+
+            // NEW: Filter modules to only include those that are part of the root package source files.
+            // In the VFS, root files are top-level keys in the `files` map provided to compile_impl.
+            // The compiler returns all units because we passed dependencies as targets.
+            // let root_file_names: std::collections::HashSet<&str> = files.keys().map(|s| s.as_str()).collect();
+
+            // Handle warnings
+            let options: CompileOptions = options_json
+                .and_then(|json| serde_json::from_str(&json).ok())
+                .unwrap_or_default();
+
+            if !options.silence_warnings && !warning_diags.is_empty() {
+                let warning_buffer = move_compiler::diagnostics::report_diagnostics_to_buffer(&compiler_files, warning_diags, ansi_color);
+                log(&format!("Rust: Compilation Warnings:\n{}", String::from_utf8_lossy(&warning_buffer)));
+            }
+
             // Build module list with IDs
             let mut module_infos: Vec<(ModuleId, move_compiler::compiled_unit::NamedCompiledModule)> =
                 Vec::new();
             for unit in units {
-                let id = unit.named_module.module.self_id();
-                module_infos.push((id, unit.named_module));
+                // Filter modules based on package name.
+                // We assigned "root" package name to limits, so we check for that.
+                // If package_name is None, we assume it's part of the compilation target (root).
+                // Dependencies usually have explicit package names.
+                let is_root = unit.named_module.package_name.map(|s| s.as_str() == "root").unwrap_or(true);
+                
+                if is_root {
+                    let id = unit.named_module.module.self_id();
+                    module_infos.push((id, unit.named_module));
+                }
             }
 
             let fmt_id = |id: &ModuleId| {
@@ -702,7 +780,7 @@ fn compile_impl(
             }
         }
         Err(diags) => {
-            let error_buffer = move_compiler::diagnostics::report_diagnostics_to_buffer(&files, diags, ansi_color);
+            let error_buffer = move_compiler::diagnostics::report_diagnostics_to_buffer(&compiler_files, diags, ansi_color);
             MoveCompilerResult {
                 success: false,
                 output: String::from_utf8_lossy(&error_buffer).to_string(),
@@ -716,8 +794,9 @@ fn compile_impl(
 pub fn compile(
     files_json: &str,
     dependencies_json: &str,
+    options_json: Option<String>,
 ) -> MoveCompilerResult {
-    compile_impl(files_json, dependencies_json)
+    compile_impl(files_json, dependencies_json, options_json)
 }
 
 
@@ -779,7 +858,7 @@ fn test_impl(
         let mut named_address_map = BTreeMap::<String, NumericalAddress>::new();
         let mut edition = Edition::LEGACY;
 
-        if let Some(ref addr_map) = pkg_group.addressMapping {
+        if let Some(ref addr_map) = pkg_group.address_mapping {
             for (name, addr_str) in addr_map {
                 if let Some(bytes) = parse_hex_address_to_bytes(addr_str) {
                     named_address_map.insert(
@@ -946,7 +1025,7 @@ fn test_impl(
         &ProtocolConfig::get_for_max_version_UNSAFE(),
     );
 
-    let mut output_buffer = std::io::Cursor::new(Vec::new());
+    let output_buffer = std::io::Cursor::new(Vec::new());
     let (output_buffer, passed) = match config.run_and_report_unit_tests(
         test_plan,
         Some(natives),

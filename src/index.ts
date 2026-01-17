@@ -24,6 +24,8 @@ export interface BuildInput {
   network?: "mainnet" | "testnet" | "devnet";
   /** Optional pre-resolved dependencies. If provided, dependency resolution will be skipped. */
   resolvedDependencies?: ResolvedDependencies;
+  /** Use this option to silence warnings. */
+  silenceWarnings?: boolean;
 }
 
 export interface BuildSuccess {
@@ -229,7 +231,11 @@ export async function buildMovePackage(
           resolved.dependencies,
           true
         )
-        : mod.compile(resolved.files, resolved.dependencies);
+        : mod.compile(
+          resolved.files,
+          resolved.dependencies,
+          JSON.stringify({ silenceWarnings: input.silenceWarnings })
+        );
     const result = ensureCompileResult(raw);
     const ok = result.success();
     const output = result.output();
@@ -325,7 +331,7 @@ export async function compileRaw(
   const raw =
     options?.ansiColor && typeof (mod as any).compile_with_color === "function"
       ? (mod as any).compile_with_color(filesJson, depsJson, true)
-      : mod.compile(filesJson, depsJson);
+      : mod.compile(filesJson, depsJson, JSON.stringify({ silenceWarnings: false }));
   const result = ensureCompileResult(raw);
   return {
     success: result.success(),
