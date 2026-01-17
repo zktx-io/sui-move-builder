@@ -36,6 +36,13 @@ This document maps the Sui CLI build steps to the JS + WASM implementation in th
 
 - Bytecode-only dependency fallback (.mv) used by the Sui CLI when sources are missing is **not supported** in the WASM path; all deps must be available as source.
 
+## 7) Testing
+
+- **CLI**: `sui move test` compiles in test mode and runs the unit test runner.
+- **Here (WASM/Rust)**:
+  - **Compilation**: `compile_impl` accepts `test_mode: true` in `compileOptions`. This sets `Flags::testing()` and includes modules marked with `#[test_only]`.
+  - **Execution**: `test_impl` (exposed as `test`) takes the package source and dependencies, sets up `UnitTestingConfig` (configured for WASM safety, e.g., no multi-threading), and runs tests using `move_unit_test::UnitTestingConfig`. It returns a boolean pass/fail status and a string of output logs. Real cryptographic verification is supported via `k256`/`arkworks` integration, allowing accurate negative testing of `secp256k1` and `groth16` operations.
+
 ## Verification checklist (keep in sync)
 
 - Version conflicts: CLI aborts on same-name/different-rev packages; JS/WASM must mirror this (no silent dedupe).
