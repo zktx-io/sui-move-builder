@@ -47,6 +47,8 @@
     "build:js": "tsup",
     "build": "npm run build:wasm && npm run build:js",
     "serve:test": "python3 -m http.server 8000 --directory .",
+    "test:integration": "node test/integration/fidelity_test.mjs",
+    "test": "npm run test:integration",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {

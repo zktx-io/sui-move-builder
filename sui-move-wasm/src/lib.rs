@@ -32,6 +32,12 @@ use sui_protocol_config::{Chain, ProtocolVersion};
 use sui_verifier::verifier as sui_bytecode_verifier;
 
 #[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+}
+
+#[wasm_bindgen]
 pub struct MoveCompilerResult {
     success: bool,
     output: String, // JSON string of compiled units or errors
@@ -377,31 +383,42 @@ fn compile_impl(
     let mut _root_published_at: Option<[u8; 32]> = None;
 
     if let Some(move_toml_content) = files.get("Move.toml") {
-        if let Ok(manifest) = toml::from_str::<SourceManifest>(move_toml_content) {
-            root_package_name = manifest.package.name.to_string();
 
-            // Extract Edition
-            if let Some(edition) = manifest.package.edition {
-                root_edition = edition;
-            }
-            // Extract Published At
-            if let Some(published_at_str) = manifest.package.published_at {
-                _root_published_at = parse_hex_address_to_bytes(&published_at_str);
-            }
 
-            // Extract Addresses
-            if let Some(addresses) = manifest.addresses {
-                for (name, addr_opt) in addresses {
-                    if let Some(addr_str) = addr_opt {
-                        let name_str = name.as_str().to_string();
-                        if let Some(bytes) = parse_hex_address_to_bytes(&addr_str) {
-                            root_named_address_map.insert(
-                                name_str,
-                                NumericalAddress::new(bytes, move_compiler::shared::NumberFormat::Hex)
-                            );
+
+        match toml::from_str::<SourceManifest>(move_toml_content) {
+            Ok(manifest) => {
+                root_package_name = manifest.package.name.to_string();
+
+                // Extract Edition
+                if let Some(edition_str) = manifest.package.edition {
+                    root_edition = parse_edition(&edition_str);
+                } else {
+                    // crate::log("Rust: Edition not found in SourceManifest.");
+                }
+
+                // Extract Published At
+                if let Some(published_at_str) = manifest.package.published_at {
+                    _root_published_at = parse_hex_address_to_bytes(&published_at_str);
+                }
+
+                // Extract Addresses
+                if let Some(addresses) = manifest.addresses {
+                    for (name, addr_opt) in addresses {
+                        if let Some(addr_str) = addr_opt {
+                            let name_str = name.as_str().to_string();
+                            if let Some(bytes) = parse_hex_address_to_bytes(&addr_str) {
+                                root_named_address_map.insert(
+                                    name_str,
+                                    NumericalAddress::new(bytes, move_compiler::shared::NumberFormat::Hex)
+                                );
+                            }
                         }
                     }
                 }
+            }
+            Err(_e) => {
+                 // Ignore parse errors
             }
         }
     }
@@ -472,7 +489,7 @@ fn compile_impl(
                     if let Ok(manifest) = toml::from_str::<SourceManifest>(move_toml_content) {
                         // Extract Edition
                         if let Some(edition_val) = manifest.package.edition {
-                            edition = edition_val;
+                            edition = parse_edition(&edition_val);
                         }
                         // Extract Published At
                         if let Some(published_at_val) = manifest.package.published_at {
@@ -806,7 +823,7 @@ fn test_impl(
         if let Ok(manifest) = toml::from_str::<SourceManifest>(move_toml_content) {
             // Extract Edition
             if let Some(edition) = manifest.package.edition {
-                root_edition = edition;
+                root_edition = parse_edition(&edition);
             }
             // Extract Addresses
             if let Some(addresses) = manifest.addresses {
@@ -923,7 +940,7 @@ fn test_impl(
             c
         },
         Err(e) => {
-            // log
+
             return MoveTestResult { passed: false, output: format!("Failed to create compiler: {}", e) }
         },
     };
@@ -935,7 +952,7 @@ fn test_impl(
              res
         },
         Err(e) => {
-             // log
+
              return MoveTestResult { passed: false, output: format!("Compiler error: {}", e) }
         },
     };

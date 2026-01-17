@@ -16,4 +16,5 @@ Cargo.lock
 # Generated stubs
 scripts/stubs/
 vendor/
-/local-bin
+test/integration/fixtures
+local-bin

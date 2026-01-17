@@ -35,12 +35,6 @@ export default tseslint.config(
     },
   },
   {
-    ignores: [
-      "dist",
-      "sui",
-      "sui-move-wasm/js",
-      "**/*.d.ts",
-      "tsup.config.ts",
-    ],
+    ignores: ["dist", "sui", "sui-move-wasm/js", "**/*.d.ts", "tsup.config.ts"],
   }
 );

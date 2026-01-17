@@ -13,7 +13,7 @@ export interface BuildInput {
   /** Virtual file system contents. Keys are paths (e.g. "Move.toml", "sources/Module.move"). */
   files: Record<string, string>;
   /** Optional custom URL for the wasm binary. Defaults to bundled wasm next to this module. */
-  wasm?: string | URL;
+  wasm?: string | URL | BufferSource;
   /** Optional hint for the root package git source (enables resolving local deps from Move.lock). */
   rootGit?: { git: string; rev: string; subdir?: string };
   /** Optional GitHub token to raise API limits when resolving dependencies. */
@@ -49,11 +49,13 @@ type WasmModule = typeof import("./sui_move_wasm.js");
 
 let wasmReady: Promise<WasmModule> | undefined;
 
-async function loadWasm(customWasm?: string | URL): Promise<WasmModule> {
+async function loadWasm(
+  customWasm?: string | URL | BufferSource
+): Promise<WasmModule> {
   if (!wasmReady) {
     wasmReady = import("./sui_move_wasm.js").then(async (mod) => {
       if (customWasm) {
-        await (mod.default as any)({ module_or_path: customWasm });
+        await (mod.default as any)(customWasm);
       } else {
         await mod.default();
       }
@@ -172,7 +174,7 @@ function logDependencyAddresses(depsJson: string): void {
 
 /** Initialize the wasm module (idempotent). Provide a custom wasm URL if hosting separately. */
 export async function initMoveCompiler(options?: {
-  wasm?: string | URL;
+  wasm?: string | URL | BufferSource;
 }): Promise<void> {
   await loadWasm(options?.wasm);
 }
@@ -200,11 +202,11 @@ export async function resolveDependencies(
     input.network,
     inferredRootGit
       ? {
-        type: "git",
-        git: inferredRootGit.git,
-        rev: inferredRootGit.rev,
-        subdir: inferredRootGit.subdir,
-      }
+          type: "git",
+          git: inferredRootGit.git,
+          rev: inferredRootGit.rev,
+          subdir: inferredRootGit.subdir,
+        }
       : undefined
   );
 
@@ -219,6 +221,37 @@ export async function buildMovePackage(
   input: BuildInput
 ): Promise<BuildSuccess | BuildFailure> {
   try {
+    // Auto-patch Move.toml address from Move.lock if present
+    if (input.files["Move.lock"] && input.files["Move.toml"]) {
+      try {
+        const lock = parseToml(input.files["Move.lock"]);
+        const network = input.network || "mainnet";
+        const lockAddr = lock.env?.[network]?.["original-published-id"];
+
+        if (lockAddr) {
+          const toml = parseToml(input.files["Move.toml"]);
+          const pkgName = toml.package?.name;
+          if (pkgName) {
+            // Try to find the address key matching the package name (case-insensitive)
+            // Convention: Package "Kiosk" -> address "kiosk"
+            const keys = new Set([pkgName, pkgName.toLowerCase()]);
+            let tomlContent = input.files["Move.toml"];
+            for (const key of keys) {
+              // Match [whitespace]key = "0x0"
+              const re = new RegExp(`(^|[\\s])(${key}\\s*=\\s*)"0x0"`, "m");
+              if (re.test(tomlContent)) {
+                tomlContent = tomlContent.replace(re, `$1$2"${lockAddr}"`);
+                break; // Replace once
+              }
+            }
+            input.files["Move.toml"] = tomlContent;
+          }
+        }
+      } catch (e) {
+        // console.warn("[Builder] Failed to process Move.lock:", e);
+      }
+    }
+
     // Use pre-resolved dependencies if provided, otherwise resolve them
     const resolved = input.resolvedDependencies
       ? input.resolvedDependencies
@@ -274,10 +307,10 @@ export async function testMovePackage(
     const raw =
       input.ansiColor && typeof (mod as any).test_with_color === "function"
         ? (mod as any).test_with_color(
-          resolved.files,
-          resolved.dependencies,
-          true
-        )
+            resolved.files,
+            resolved.dependencies,
+            true
+          )
         : (mod as any).test(resolved.files, resolved.dependencies); // Fallback if test_with_color missing
 
     // Check if raw result matches expected shape
@@ -289,11 +322,10 @@ export async function testMovePackage(
     }
 
     // In case wasm-bindgen getters are needed (wrapper objects)
-    const passed = typeof raw.passed === 'function' ? raw.passed() : raw.passed;
-    const output = typeof raw.output === 'function' ? raw.output() : raw.output;
+    const passed = typeof raw.passed === "function" ? raw.passed() : raw.passed;
+    const output = typeof raw.output === "function" ? raw.output() : raw.output;
 
     return { passed, output };
-
   } catch (error) {
     return asFailure(error);
   }
@@ -332,7 +364,11 @@ export async function compileRaw(
   const raw =
     options?.ansiColor && typeof (mod as any).compile_with_color === "function"
       ? (mod as any).compile_with_color(filesJson, depsJson, true)
-      : mod.compile(filesJson, depsJson, JSON.stringify({ silenceWarnings: false }));
+      : mod.compile(
+          filesJson,
+          depsJson,
+          JSON.stringify({ silenceWarnings: false })
+        );
   const result = ensureCompileResult(raw);
   return {
     success: result.success(),

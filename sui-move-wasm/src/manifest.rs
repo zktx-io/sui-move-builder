@@ -29,19 +29,18 @@ pub type Substitution = BTreeMap<NamedAddress, SubstOrRename>;
 pub struct SourceManifest {
     pub package: PackageInfo,
     pub addresses: Option<AddressDeclarations>,
-    pub dev_address_assignments: Option<DevAddressDeclarations>,
-    pub build: Option<BuildInfo>,
-    pub dependencies: Option<Dependencies>,
-    pub dev_dependencies: Option<Dependencies>,
+    // Removed unused fields to avoid strict parsing issues with 'deps'
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PackageInfo {
     pub name: PackageName,
+    #[serde(default)]
     pub authors: Vec<Symbol>,
     pub license: Option<Symbol>,
-    pub edition: Option<Edition>,
+    pub edition: Option<String>, // Changed to String for manual parsing
     pub flavor: Option<Flavor>,
+    #[serde(rename = "published-at")]
     pub published_at: Option<String>, // Changed to String for safety
     #[serde(default)]
     pub custom_properties: BTreeMap<Symbol, String>,
