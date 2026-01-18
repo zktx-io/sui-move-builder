@@ -1,5 +1,7 @@
 # @zktx.io/sui-move-builder
 
+> **Upstream source:** [MystenLabs/sui](https://github.com/MystenLabs/sui) (tag: `testnet-v1.63.1`)
+
 Build Move packages in web or Node.js with Sui CLI-compatible dependency resolution and compilation.
 
 ## Features
@@ -206,6 +208,3 @@ npm run serve:test   # serves ./test via python -m http.server
 # open http://localhost:8000/test/index.html
 ```
 
-## Source
-
-> **Upstream source (Sui repository):** https://github.com/MystenLabs/sui

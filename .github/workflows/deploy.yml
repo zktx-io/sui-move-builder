@@ -53,7 +53,15 @@ jobs:
       - name: Install deps
         run: npm ci
 
+      - name: Debug Rust env
+        run: |
+          rustup show
+          rustc --version --verbose
+          rustup target list --installed
+
       - name: Build package (js + wasm)
+        env:
+          RUSTUP_TOOLCHAIN: stable
         run: npm run build
 
       - name: Publish to npm
