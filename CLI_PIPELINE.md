@@ -55,6 +55,7 @@ This document maps the Sui CLI build steps to the JS + WASM implementation in th
 - Outputs: Dependencies/IDs should pass through from JS; BuildInfo/disassembly artifacts are CLI-only unless intentionally added to WASM.
 
 ## 8) Implementation Defaults & Heuristics
+
 - **Network Default**: If not specified, `Move.lock` parsing defaults to the `[env.mainnet]` section.
 - **Address Injection**: `Move.lock` address injection uses a heuristic: it scans `Move.toml` for `package_name = "0x0"` (case-insensitive). It may not verify arbitrary variable names.
 - **Test Filtering**: To improve performance, `move test` (WASM) filters out tests defined in standard frameworks (`std=0x1`, `sui=0x2`). User tests are always executed.

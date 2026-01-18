@@ -31,13 +31,20 @@ The package comes in two variants:
 ### Using the Full Version (Default)
 
 ```ts
-import { initMoveCompiler, buildMovePackage, testMovePackage } from "@zktx.io/sui-move-builder";
+import {
+  initMoveCompiler,
+  buildMovePackage,
+  testMovePackage,
+} from "@zktx.io/sui-move-builder";
 ```
 
 ### Using the Lite Version
 
 ```ts
-import { initMoveCompiler, buildMovePackage } from "@zktx.io/sui-move-builder/lite";
+import {
+  initMoveCompiler,
+  buildMovePackage,
+} from "@zktx.io/sui-move-builder/lite";
 ```
 
 ## Quick start (Node.js or browser)
@@ -150,6 +157,19 @@ if (result.success) {
 }
 ```
 
+## Package Management Logic
+
+This builder follows the official Sui CLI precedence rules for package management:
+
+1. **CLI Overrides**: Explicit options (e.g., `network`) take highest precedence.
+2. **Move.lock**: If present and valid, dependencies are resolved exactly as pinned in the lockfile. This ensures deterministic builds.
+   - The addresses of dependencies (e.g., `Sui`, `Std`) are determined by the lockfile's `[move.package.addresses]` section for the active environment (e.g., `devnet`, `mainnet`).
+3. **Move.toml**: Used if no lockfile exists or if it is invalid. Defines direct dependencies and their sources.
+4. **Published.toml**:
+   - Used to resolve the `published-at` address (original ID) for the root package if available.
+   - **Does not** override dependency resolution; it is primarily an output record of deployment.
+   - If a package is listed in `Published.toml` with a matching `id`, the builder uses that ID for linking, similar to how the Sui CLI handles upgrades.
+
 ## Dependency caching and reuse
 
 For faster builds when compiling multiple times with the same dependencies, you can resolve dependencies once and reuse them:
@@ -201,10 +221,24 @@ const result2 = await buildMovePackage({
 
 - Dependencies are always compiled from source. Bytecode-only deps (.mv fallback used by the Sui CLI when sources are missing) are not supported in the wasm path.
 
+## Best Practices
+
+### Input Sanitization
+
+When preparing the `files` object for `buildMovePackage`, **exclude build artifacts** (e.g., the `build/` directory) and version control folders (`.git/`). Including these can cause:
+
+- **Compilation Errors**: Duplicate modules or incorrect edition parsing (e.g., dependency files treated as root sources).
+- **Performance Issues**: Unnecessary processing of large binary files.
+
+Example filtering logic:
+
+```ts
+if (entry.name === "build" || entry.name === ".git") continue;
+```
+
 ## Local test page
 
 ```
 npm run serve:test   # serves ./test via python -m http.server
 # open http://localhost:8000/test/index.html
 ```
-

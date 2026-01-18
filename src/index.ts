@@ -30,6 +30,8 @@ export interface BuildInput {
   testMode?: boolean;
   /** Use this option to specify lint level (e.g. "all", "none"). */
   lintFlag?: string;
+  /** Use this option to strip metadata from the output (e.g. for mainnet dep matching). */
+  stripMetadata?: boolean;
 }
 
 export interface BuildSuccess {
@@ -268,6 +270,7 @@ export async function buildMovePackage(
         silenceWarnings: input.silenceWarnings,
         testMode: input.testMode,
         lintFlag: input.lintFlag,
+        stripMetadata: input.stripMetadata,
       })
     );
     const result = ensureCompileResult(raw);

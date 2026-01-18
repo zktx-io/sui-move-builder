@@ -67,7 +67,10 @@ function areDigestsEqual(digestA, digestB) {
 }
 
 async function runTest() {
-  const wasmPath = path.resolve(__dirname, "../../dist/full/sui_move_wasm_bg.wasm");
+  const wasmPath = path.resolve(
+    __dirname,
+    "../../dist/full/sui_move_wasm_bg.wasm"
+  );
   const wasmBuffer = await fs.readFile(wasmPath);
   await initMoveCompiler({ wasm: wasmBuffer });
 
@@ -85,6 +88,7 @@ async function runTest() {
         const fullPath = path.join(dir, entry.name);
         const relPath = path.join(base, entry.name);
         if (entry.isDirectory()) {
+          if (entry.name === "build" || entry.name === ".git") continue;
           await readDirRecursive(fullPath, relPath);
         } else if (entry.isFile()) {
           if (

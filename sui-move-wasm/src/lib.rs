@@ -432,11 +432,21 @@ fn compile_impl(
     }
     // log(&format!("Rust: Parsed root_package_name='{}'", root_package_name));
 
+    // Collect all dependency file paths to exclude them from root targets
+    let mut dependency_paths = std::collections::HashSet::new();
+    for pkg_group in &dep_packages {
+        for path in pkg_group.files.keys() {
+            dependency_paths.insert(path.as_str());
+        }
+    }
+
     let mut root_targets: Vec<Symbol> = files
         .keys()
         .filter(|name| !name.ends_with("Move.toml") && name.ends_with(".move"))
+        .filter(|name| !dependency_paths.contains(name.as_str()))
         .map(|s| Symbol::from(s.as_str()))
         .collect();
+
     // Sort to mimic CLI: sources/* before tests/*, then lexical.
     root_targets.sort_by(|a, b| {
         let pa = a.as_str();
@@ -547,7 +557,11 @@ fn compile_impl(
 
         // Use explicitly provided edition if available
         if let Some(ref edition_str) = pkg_group.edition {
+            log(&format!("Rust: Explicit edition for {}: {}", pkg_group.name, edition_str));
             edition = parse_edition(edition_str);
+            log(&format!("Rust: Parsed edition for {}: {:?}", pkg_group.name, edition));
+        } else {
+            log(&format!("Rust: No explicit edition for {}, using legacy/Move.toml", pkg_group.name));
         }
 
         let dep_files: Vec<Symbol> = pkg_group.files

@@ -1425,7 +1425,7 @@ panic = "abort"
     const fullEnv = {
       ...releaseEnv,
       CARGO_PROFILE_RELEASE_OPT_LEVEL: "z", // Optimize for size (was 1)
-      CARGO_PROFILE_RELEASE_LTO: "true",    // Enable LTO (was false)
+      CARGO_PROFILE_RELEASE_LTO: "true", // Enable LTO (was false)
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1",
       CARGO_PROFILE_RELEASE_STRIP: "debuginfo", // Remove debug info (keep symbols if needed? or strictly debuginfo)
       // Keep panic="unwind" (default) for testing support

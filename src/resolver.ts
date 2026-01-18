@@ -171,6 +171,48 @@ export class Resolver {
       ? this.normalizeAddress(publishedAtResult.latestId)
       : undefined;
 
+    // Check for Published.toml (Sui CLI compatibility)
+    // The CLI uses this to track published versions per environment.
+    // Debug: Log detecting edition
+    if (parsed.package && !parsed.package.edition) {
+      console.log(
+        `[Resolver] Package ${name} has no edition in Move.toml. Parsed:`,
+        JSON.stringify(parsed.package)
+      );
+    } else if (parsed.package) {
+      console.log(
+        `[Resolver] Package ${name} detected edition: ${parsed.package.edition}`
+      );
+    }
+
+    // Check for Published.toml (Sui CLI compatibility)
+    // The CLI uses this to track published versions per environment.
+    const publishedTomlContent = files["Published.toml"];
+    let publishedAtFromPublishedToml: string | undefined;
+    let originalIdFromPublishedToml: string | undefined;
+
+    if (publishedTomlContent) {
+      try {
+        const publishedToml = parseToml(publishedTomlContent);
+        // Format: [published.<network>]
+        const envSection = publishedToml.published?.[this.network];
+        if (envSection) {
+          if (envSection["published-at"]) {
+            publishedAtFromPublishedToml = this.normalizeAddress(
+              envSection["published-at"]
+            );
+          }
+          if (envSection["original-id"]) {
+            originalIdFromPublishedToml = this.normalizeAddress(
+              envSection["original-id"]
+            );
+          }
+        }
+      } catch (e) {
+        // console.warn("Failed to parse Published.toml", e);
+      }
+    }
+
     if (publishedAtResult.error) {
       // suppress noisy warnings
     }
@@ -179,8 +221,9 @@ export class Resolver {
       name: parsed.package?.name || name,
       version: parsed.package?.version || "0.0.0",
       edition: parsed.package?.edition,
-      publishedAt: publishedAtResult.publishedAt,
-      originalId: publishedAtResult.originalId,
+      publishedAt:
+        publishedAtFromPublishedToml || publishedAtResult.publishedAt,
+      originalId: originalIdFromPublishedToml || publishedAtResult.originalId,
       latestPublishedId,
       addresses: parsed.addresses || {},
       dependencies: parsed.dependencies || {},
@@ -351,8 +394,7 @@ export class Resolver {
       const files = await this.fetcher.fetch(
         dep.source.git!,
         dep.source.rev!,
-        subdir,
-        `${pkg.id.name} -> ${depName}`
+        subdir
       );
 
       // Find Move.toml
@@ -645,8 +687,18 @@ export class Resolver {
       // Version 3 format: Use [[move.package]] array
       return await this.loadFromLockfileV3(graph, lockfile, rootPackage);
     } else if (lockfileVersion && lockfileVersion >= 4) {
-      // Version 4+ format: Use pinned section
-      return await this.loadFromLockfileV4(graph, lockfile, rootFiles);
+      // Try v4+ format first (pinned)
+      if (lockfile.pinned) {
+        return await this.loadFromLockfileV4(
+          graph,
+          lockfile,
+          rootFiles,
+          rootPackage
+        );
+      } else {
+        // Fallback for pinned property missing in v4+ (unlikely but safe)
+        return false;
+      }
     } else {
       // Legacy versions (v0/v1/v2) - best-effort support following CLI layout
       return await this.loadFromLockfileV0(graph, lockfile, rootPackage);
@@ -716,8 +768,7 @@ export class Resolver {
       const files = await this.fetcher.fetch(
         depSource.git!,
         depSource.rev!,
-        depSource.subdir,
-        `lockfile:${pkgId}`
+        depSource.subdir
       );
       if (Object.keys(files).length === 0) continue;
 
@@ -824,10 +875,9 @@ export class Resolver {
 
       // Fetch package files
       const files = await this.fetcher.fetch(
-        source.git,
-        source.rev,
-        source.subdir,
-        `lockfile:${pkgId}`
+        depSource.git,
+        depSource.rev,
+        depSource.subdir
       );
       if (Object.keys(files).length === 0) {
         continue;
@@ -879,8 +929,7 @@ export class Resolver {
             const files = await this.fetcher.fetch(
               depSource.git!,
               depSource.rev!,
-              depSource.subdir,
-              `lockfile:${depId}`
+              depSource.subdir
             );
             const moveToml = files["Move.toml"];
             if (moveToml) {
@@ -926,21 +975,25 @@ export class Resolver {
   private async loadFromLockfileV4(
     graph: DependencyGraph,
     lockfile: any,
-    _rootFiles: Record<string, string>
+    rootFiles: Record<string, string>,
+    rootPackage: Package
   ): Promise<boolean> {
     // Check if lockfile has pinned dependencies for this network
     const pinnedPackages = lockfile.pinned?.[this.network];
-    if (!pinnedPackages) {
-      return false;
-    }
+    // Version 4+ format: Use pinned section
+    if (!pinnedPackages) return false;
 
-    // Validate root manifest digest
-    const rootMoveToml = rootFiles["Move.toml"];
-    if (rootMoveToml && lockfile.move?.manifest_digest) {
-      const currentDigest = await this.computeManifestDigest(rootMoveToml);
-      if (currentDigest !== lockfile.move.manifest_digest) {
-        return false;
-      }
+    // Root package is already built and passed in (graph already has it from resolve())
+
+    // Check manifest digest
+    const rootToml = rootFiles["Move.toml"];
+    if (
+      rootToml &&
+      lockfile.move?.manifest_digest &&
+      (await this.computeManifestDigest(rootToml)) !==
+        lockfile.move.manifest_digest
+    ) {
+      return false;
     }
 
     // Build graph from pinned packages
@@ -1059,12 +1112,7 @@ export class Resolver {
   ): Promise<Record<string, string> | null> {
     if (source.type === "git" && source.git && source.rev) {
       try {
-        return await this.fetcher.fetch(
-          source.git,
-          source.rev,
-          source.subdir,
-          "lockfile:dependency"
-        );
+        return await this.fetcher.fetch(source.git, source.rev, source.subdir);
       } catch {
         return null;
       }
