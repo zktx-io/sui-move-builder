@@ -167,6 +167,7 @@ function logDependencyAddresses(depsJson: string): void {
           );
         })();
       if (addr !== undefined) {
+        // Address resolved
       }
     }
   } catch {
@@ -188,7 +189,7 @@ export async function initMoveCompiler(options?: {
 export async function resolveDependencies(
   input: Omit<BuildInput, "resolvedDependencies">
 ): Promise<ResolvedDependencies> {
-  let moveToml = input.files["Move.toml"] || "";
+  const moveToml = input.files["Move.toml"] || "";
   // CLI does not mutate Move.toml; use as-is.
 
   const inferredRootGit =
@@ -204,11 +205,11 @@ export async function resolveDependencies(
     input.network,
     inferredRootGit
       ? {
-          type: "git",
-          git: inferredRootGit.git,
-          rev: inferredRootGit.rev,
-          subdir: inferredRootGit.subdir,
-        }
+        type: "git",
+        git: inferredRootGit.git,
+        rev: inferredRootGit.rev,
+        subdir: inferredRootGit.subdir,
+      }
       : undefined
   );
 
@@ -223,36 +224,21 @@ export async function buildMovePackage(
   input: BuildInput
 ): Promise<BuildSuccess | BuildFailure> {
   try {
-    // Auto-patch Move.toml address from Move.lock if present
-    if (input.files["Move.lock"] && input.files["Move.toml"]) {
-      try {
-        const lock = parseToml(input.files["Move.lock"]);
-        const network = input.network || "mainnet";
-        const lockAddr = lock.env?.[network]?.["original-published-id"];
-
-        if (lockAddr) {
-          const toml = parseToml(input.files["Move.toml"]);
-          const pkgName = toml.package?.name;
-          if (pkgName) {
-            // Try to find the address key matching the package name (case-insensitive)
-            // Convention: Package "Kiosk" -> address "kiosk"
-            const keys = new Set([pkgName, pkgName.toLowerCase()]);
-            let tomlContent = input.files["Move.toml"];
-            for (const key of keys) {
-              // Match [whitespace]key = "0x0"
-              const re = new RegExp(`(^|[\\s])(${key}\\s*=\\s*)"0x0"`, "m");
-              if (re.test(tomlContent)) {
-                tomlContent = tomlContent.replace(re, `$1$2"${lockAddr}"`);
-                break; // Replace once
-              }
-            }
-            input.files["Move.toml"] = tomlContent;
-          }
-        }
-      } catch (e) {
-        // console.warn("[Builder] Failed to process Move.lock:", e);
+    // Filter input files to only include valid Move package files
+    // This mimics the CLI behavior of only processing relevant files from the directory
+    // and ignoring things like README.md, .gitignore, etc.
+    const filteredFiles: Record<string, string> = {};
+    for (const [path, content] of Object.entries(input.files)) {
+      if (
+        path.endsWith(".move") ||
+        path.endsWith("Move.toml") ||
+        path.endsWith("Move.lock") ||
+        path.endsWith("Published.toml")
+      ) {
+        filteredFiles[path] = content;
       }
     }
+    input.files = filteredFiles;
 
     // Use pre-resolved dependencies if provided, otherwise resolve them
     const resolved = input.resolvedDependencies
@@ -273,6 +259,7 @@ export async function buildMovePackage(
         stripMetadata: input.stripMetadata,
       })
     );
+
     const result = ensureCompileResult(raw);
     const ok = result.success();
     const output = result.output();
@@ -310,10 +297,10 @@ export async function testMovePackage(
     const raw =
       input.ansiColor && typeof (mod as any).test_with_color === "function"
         ? (mod as any).test_with_color(
-            resolved.files,
-            resolved.dependencies,
-            true
-          )
+          resolved.files,
+          resolved.dependencies,
+          true
+        )
         : (mod as any).test(resolved.files, resolved.dependencies); // Fallback if test_with_color missing
 
     // Check if raw result matches expected shape
@@ -368,10 +355,10 @@ export async function compileRaw(
     options?.ansiColor && typeof (mod as any).compile_with_color === "function"
       ? (mod as any).compile_with_color(filesJson, depsJson, true)
       : mod.compile(
-          filesJson,
-          depsJson,
-          JSON.stringify({ silenceWarnings: false })
-        );
+        filesJson,
+        depsJson,
+        JSON.stringify({ silenceWarnings: false })
+      );
   const result = ensureCompileResult(raw);
   return {
     success: result.success(),

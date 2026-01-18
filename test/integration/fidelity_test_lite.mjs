@@ -3,7 +3,6 @@ import { promises as fs } from "fs";
 import path from "path";
 import { execSync } from "child_process";
 import { fileURLToPath } from "url";
-import crypto from "crypto";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,18 +31,6 @@ async function setupRepo(name, config) {
   const repoDir = path.join(FIXTURES_DIR, name);
   if (await fs.stat(repoDir).catch(() => false)) {
     console.log(`[Setup] ${name} exists.`);
-    // Hack for Nautilus: user wants 0x0 address, so hide Move.lock if present
-    if (name === "nautilus") {
-      const moveLockInfo = path.join(repoDir, config.packagePath, "Move.lock");
-      const moveLockBackup = path.join(
-        repoDir,
-        config.packagePath,
-        "Move.lock.bak"
-      );
-      try {
-        await fs.rename(moveLockInfo, moveLockBackup);
-      } catch (e) {}
-    }
     return path.join(repoDir, config.packagePath);
   }
 
@@ -91,13 +78,7 @@ async function runTest() {
           if (entry.name === "build" || entry.name === ".git") continue;
           await readDirRecursive(fullPath, relPath);
         } else if (entry.isFile()) {
-          if (
-            entry.name.endsWith(".move") ||
-            entry.name === "Move.toml" ||
-            entry.name === "Move.lock"
-          ) {
-            projectFiles[relPath] = await fs.readFile(fullPath, "utf-8");
-          }
+          projectFiles[relPath] = await fs.readFile(fullPath, "utf-8");
         }
       }
     }

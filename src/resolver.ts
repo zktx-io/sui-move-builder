@@ -173,17 +173,6 @@ export class Resolver {
 
     // Check for Published.toml (Sui CLI compatibility)
     // The CLI uses this to track published versions per environment.
-    // Debug: Log detecting edition
-    if (parsed.package && !parsed.package.edition) {
-      console.log(
-        `[Resolver] Package ${name} has no edition in Move.toml. Parsed:`,
-        JSON.stringify(parsed.package)
-      );
-    } else if (parsed.package) {
-      console.log(
-        `[Resolver] Package ${name} detected edition: ${parsed.package.edition}`
-      );
-    }
 
     // Check for Published.toml (Sui CLI compatibility)
     // The CLI uses this to track published versions per environment.
@@ -208,7 +197,7 @@ export class Resolver {
             );
           }
         }
-      } catch (e) {
+      } catch (_e) {
         // console.warn("Failed to parse Published.toml", e);
       }
     }
@@ -509,8 +498,8 @@ export class Resolver {
    */
   private resolvePublishedAt(
     moveTomlContent: string,
-    moveLockContent: string | undefined,
-    chainId: string | undefined
+    _moveLockContent: string | undefined,
+    _chainId: string | undefined
   ): {
     publishedAt?: string;
     originalId?: string;
@@ -533,68 +522,15 @@ export class Resolver {
     // Read original-id from Move.toml (if specified manually)
     const originalIdInManifest = moveToml.package?.["original-id"];
 
-    // If no Move.lock or no chain_id, return manifest values
-    if (!moveLockContent || !chainId) {
-      return {
-        publishedAt: manifestId,
-        originalId: originalIdInManifest,
-      };
-    }
-
-    // Read published-at and original-id from Move.lock [env.<chain_id>]
-    const moveLock = parseToml(moveLockContent) as any;
-    let lockId: string | undefined;
-    let lockLatestId: string | undefined;
-    let lockOriginalId: string | undefined;
-
-    if (moveLock.env) {
-      // Find environment matching chain_id
-      for (const [, envData] of Object.entries(
-        moveLock.env as Record<string, any>
-      )) {
-        const latestId = envData["latest-published-id"];
-        const originalId = envData["original-published-id"];
-        const envChainId = envData["chain-id"];
-
-        // Match by chain-id if available, otherwise use first environment
-        if (envChainId === chainId || !envChainId) {
-          const latest =
-            latestId && latestId !== "0x0"
-              ? this.normalizeAddress(latestId)
-              : undefined;
-          const original =
-            originalId && originalId !== "0x0"
-              ? this.normalizeAddress(originalId)
-              : undefined;
-
-          lockLatestId = latest;
-          // CLI fills address mapping preferring original-published-id.
-          lockOriginalId = original;
-          lockId = latest || original;
-          break;
-        }
-      }
-    }
-
-    // If lock has only latest-published-id (no original), fall back to that for address mapping.
-    if (!lockOriginalId && lockId) {
-      lockOriginalId = lockId;
-    }
-
-    // Detect conflicts (CLI behavior: lib.rs:195-209)
-    if (lockId && manifestId && lockId !== manifestId) {
-      return {
-        error: `Conflicting 'published-at' addresses between Move.toml (${manifestId}) and Move.lock (${lockId})`,
-      };
-    }
-
-    // Return lock values if available, otherwise manifest
-    return {
-      // Address used for mapping: prefer original-published-id, else latest/manifest
-      publishedAt: lockOriginalId || manifestId || lockId,
-      originalId: lockOriginalId || originalIdInManifest,
-      latestId: lockLatestId || lockId || manifestId,
+    // Return manifest values directly.
+    // Logic: We respect Move.lock original-published-id for the root package if present,
+    // matching the original CLI behavior. The client wrapper (index.ts) or test runner
+    // is responsible for handling environment isolation if a fresh build (0x0) is desired.
+    const result = {
+      publishedAt: manifestId,
+      originalId: originalIdInManifest,
     };
+    return result;
   }
 
   /**
@@ -722,8 +658,8 @@ export class Resolver {
     // Lockfile order: use move.dependencies if present, otherwise package listing order
     const depsArray = Array.isArray(lockfile.move?.dependencies)
       ? lockfile.move.dependencies
-          .map((d: any) => d.name || d.id || d)
-          .filter(Boolean)
+        .map((d: any) => d.name || d.id || d)
+        .filter(Boolean)
       : [];
     const pkgArray = packages.map((p: any) => p.name || p.id).filter(Boolean);
     const lockfileOrder = [
@@ -873,6 +809,10 @@ export class Resolver {
         continue;
       }
 
+      if (!depSource.git || !depSource.rev) {
+        continue;
+      }
+
       // Fetch package files
       const files = await this.fetcher.fetch(
         depSource.git,
@@ -991,7 +931,7 @@ export class Resolver {
       rootToml &&
       lockfile.move?.manifest_digest &&
       (await this.computeManifestDigest(rootToml)) !==
-        lockfile.move.manifest_digest
+      lockfile.move.manifest_digest
     ) {
       return false;
     }

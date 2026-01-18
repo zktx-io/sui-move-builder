@@ -55,7 +55,7 @@ export class GitHubFetcher extends Fetcher {
     gitUrl: string,
     rev: string,
     subdir?: string,
-    context?: string
+    _context?: any
   ): Promise<Record<string, string>> {
     const { owner, repo } = this.parseGitUrl(gitUrl);
     if (!owner || !repo) {

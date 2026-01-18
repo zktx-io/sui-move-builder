@@ -21,20 +21,31 @@ export default tseslint.config(
         {
           argsIgnorePattern: "^_",
           varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
         },
       ],
     },
   },
   {
-    files: ["scripts/**/*.mjs"],
+    files: ["scripts/**/*.mjs", "test/**/*.mjs"],
     languageOptions: {
       globals: {
         console: "readonly",
         process: "readonly",
+        Buffer: "readonly",
       },
     },
   },
   {
-    ignores: ["dist", "sui", "sui-move-wasm/js", "**/*.d.ts", "tsup.config.ts"],
+    ignores: [
+      "dist",
+      "sui",
+      "sui-move-wasm/js/**",
+      "**/*.d.ts",
+      "tsup.config.ts",
+      "test/integration/fixtures",
+      "vendor",
+      "scripts/stubs"
+    ],
   }
 );

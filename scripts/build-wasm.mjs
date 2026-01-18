@@ -881,40 +881,9 @@ panic = "abort"
     }
 
     // Patch move-stdlib/src/lib.rs to remove build_doc and imports
-    const moveStdlibLib = path.join(
-      cloneDir,
-      "external-crates",
-      "move",
-      "crates",
-      "move-stdlib",
-      "src",
-      "lib.rs"
-    );
-    if (await fs.stat(moveStdlibLib).catch(() => false)) {
-      let content = await fs.readFile(moveStdlibLib, "utf-8");
-      content = content.replace(
-        /use move_package_alt::flavor::Vanilla;/g,
-        "// use move_package_alt::flavor::Vanilla;"
-      );
-      content = content.replace(
-        /use move_package_alt_compilation::build_config::BuildConfig;/g,
-        "// use move_package_alt_compilation::build_config::BuildConfig;"
-      );
-      content = content.replace(
-        /pub async fn build_doc\(output_directory: String\) -> anyhow::Result<\(\)> \{[\s\S]*?^ ok\(\)\n^\}/gm,
-        "pub async fn build_doc(_output_directory: String) -> anyhow::Result<()> { Ok(()) }"
-      );
-      // Logic to remove the whole function body or stub it is hard with regex.
-      // Simpler: comment out the specific lines inside it or stub imports.
-      // Actually, if I comment out the imports, the function will fail.
-      // I will just replace the whole file content with a safe version since the method isn't critical for Wasm?
-      // No, move-stdlib is critical.
-      // I'll replace the function `build_doc` using a simpler regex or manual stubbing if regex fails.
-      // Or better: Inject stubs for move-package-alt flavor/build_config properly so I don't need to patch code.
-      // Patched code is fragile. Stub imports are better.
-      // I will stick to expanding stubs.
-      // But patching imports for mysten-network in sui-types is still needed or stub it.
-    }
+    // const moveStdlibLib ... (removed unused)
+    // Patching move-stdlib was abandoned in favor of stubs
+    // if (await fs.stat(moveStdlibLib).catch(() => false)) { ... }
 
     // Patch format.rs to wrap data in BufReader
     if (await fs.stat(moveTraceFormatFormat).catch(() => false)) {
@@ -997,7 +966,7 @@ panic = "abort"
         let stats;
         try {
           stats = await fs.stat(fullPath);
-        } catch (e) {
+        } catch {
           continue;
         } // Skip broken symlinks
 
@@ -1143,10 +1112,10 @@ panic = "abort"
                 const srcPath = path.join(templatesDir, `${templateName}.rs`);
                 try {
                   await fs.copyFile(srcPath, destPath);
-                } catch (e) {
+                } catch (_e) {
                   console.warn(
                     `Warning: Failed to copy template ${templateName} for ${item}, falling back to empty stub.`,
-                    e
+                    _e
                   );
                   await fs.writeFile(destPath, `pub fn stub() {}`);
                 }
