@@ -25,7 +25,11 @@ jobs:
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: stable
           targets: wasm32-unknown-unknown
+
+      - name: Add WASM target manually
+        run: rustup target add wasm32-unknown-unknown
 
       - name: Install wasm-pack
         uses: jetli/wasm-pack-action@v0.4.0
