@@ -37,6 +37,12 @@ use sui_verifier::verifier as sui_bytecode_verifier;
 extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn log(s: &str);
+
+    #[wasm_bindgen(js_namespace = console)]
+    fn error(s: &str);
+
+    #[wasm_bindgen(js_namespace = console)]
+    fn warn(s: &str);
 }
 
 #[wasm_bindgen]
@@ -469,6 +475,11 @@ fn compile_impl(
     // Use Vec instead of BTreeSet to preserve insertion order (matches Sui CLI behavior)
     let mut dependency_ids: Vec<[u8; 32]> = Vec::new();
 
+    // Mapping: Compilation Address (Original) -> Output Address (Latest)
+    let mut compilation_to_output = BTreeMap::<AccountAddress, AccountAddress>::new();
+    // Set of addresses used for compilation, to identify published dependencies in the graph
+    let mut known_compilation_addresses = std::collections::HashSet::new();
+
     for pkg_group in &dep_packages {
         let mut named_address_map = BTreeMap::<String, NumericalAddress>::new();
         let mut edition = Edition::LEGACY;
@@ -557,11 +568,11 @@ fn compile_impl(
 
         // Use explicitly provided edition if available
         if let Some(ref edition_str) = pkg_group.edition {
-            log(&format!("Rust: Explicit edition for {}: {}", pkg_group.name, edition_str));
+
             edition = parse_edition(edition_str);
-            log(&format!("Rust: Parsed edition for {}: {:?}", pkg_group.name, edition));
+
         } else {
-            log(&format!("Rust: No explicit edition for {}, using legacy/Move.toml", pkg_group.name));
+
         }
 
         let dep_files: Vec<Symbol> = pkg_group.files
@@ -586,6 +597,18 @@ fn compile_impl(
             if !dependency_ids.contains(&bytes) {
                 dependency_ids.push(bytes);
             }
+        }
+        
+        // Track the mapping from Compilation Address -> Output Address
+        if let (Some(comp_bytes), Some(out_bytes)) = (fallback_dep_id, dep_id_for_output) {
+            let comp_addr = AccountAddress::new(comp_bytes);
+            let out_addr = AccountAddress::new(out_bytes);
+            compilation_to_output.insert(comp_addr, out_addr);
+            known_compilation_addresses.insert(comp_addr);
+        } else if let Some(comp_bytes) = fallback_dep_id {
+             let comp_addr = AccountAddress::new(comp_bytes);
+             compilation_to_output.insert(comp_addr, comp_addr);
+             known_compilation_addresses.insert(comp_addr);
         }
 
         // Merge dependency addresses into root map (MATCHES TEST_IMPL)
@@ -636,25 +659,16 @@ fn compile_impl(
         named_address_map: root_named_address_map,
     };
 
+    // Combine target and dependencies into 'paths' (2nd arg), matching Sui CLI `build_for_driver` logic
+    // which treats source dependencies as targets but distinguishes them via `config.is_dependency`.
     let mut all_targets = vec![target_package];
-    // Force is_dependency=false for all deps to ensure full compilation visibility
-    for mut dep in dep_package_paths {
-        if let Some((_name, config)) = &mut dep.name {
-             config.is_dependency = false;
-        }
-        all_targets.push(dep);
-    }
+    all_targets.extend(dep_package_paths);
 
     // Build compiler with from_package_paths
-    // PATCHED: Treat all dependencies as targets (2nd arg) to ensures they are compiled/linked.
-    // Address merging ensures they are resolved correctly.
-    // Build compiler with from_package_paths
-    // PATCHED: Treat all dependencies as targets (2nd arg) to ensures they are compiled/linked.
-    // Address merging ensures they are resolved correctly.
     let mut compiler = match Compiler::from_package_paths(
         Some(root),
         all_targets,
-        Vec::new(),
+        Vec::new(), // No bytecode dependencies in this flow
     ) {
         Ok(c) => c,
         Err(e) => return MoveCompilerResult {
@@ -694,6 +708,129 @@ fn compile_impl(
             }
 
             // NEW: Filter modules to only include those that are part of the root package source files.
+            
+            // Tree Shaking / Usage-Based Dependency Filtering (Strict Parity with Sui CLI)
+            // The official CLI `dump_bytecode_as_base64` logic only retains published dependencies
+            // that are EITHER:
+            // 1. Immediately used by the root package.
+            // 2. Used by other *published* dependencies (transitive closure).
+            // Crucially, it IGNORES usages from unpublished (source) dependencies.
+            
+            // 1. Identify Published Addresses (Compilation IDs used in bytecode)
+            let published_addresses = known_compilation_addresses;
+
+            // 2. Compute Kept Addresses via Rooted Graph Traversal (Strict Usage)
+            // Start only from Root modules (the output targets).
+            // Traverse to find all reachable dependencies (both Source and Published).
+            
+            // We keep OUTPUT addresses
+            let mut kept_output_addresses = std::collections::HashSet::new();
+            // We traverse COMPILATION addresses
+            let mut visited_compilation_addresses = std::collections::HashSet::new();
+            
+            // Queue for traversal
+            // contains ModuleId to look up in units or published deps
+            let mut worklist_source_units = Vec::new();
+            let mut worklist_published_addresses = Vec::new();
+
+            // 2a. Initialize with Root Modules
+            for unit in &units {
+                let pkg_name = unit.named_module.package_name.map(|s| s.to_string()).unwrap_or("".to_string());
+                let is_root = pkg_name == "root" || pkg_name == root_package_name || unit.named_module.package_name.is_none();
+                
+                if is_root {
+                    worklist_source_units.push(unit);
+                }
+            }
+
+            use std::fmt::Write;
+
+
+            // Helper to find a unit by ID (for traversing usage of Source Dependencies)
+            
+            let mut visited_source_units = std::collections::HashSet::new();
+            for u in &worklist_source_units {
+                visited_source_units.insert(u.named_module.module.self_id());
+            }
+
+            while !worklist_source_units.is_empty() {
+                let current_batch = worklist_source_units.split_off(0);
+                
+                for unit in current_batch {
+                    let module = &unit.named_module.module;
+                    
+                    // Traverse immediate dependencies (Imports)
+                    for dep_id in module.immediate_dependencies() {
+                        let addr = *dep_id.address();
+                        
+                        if published_addresses.contains(&addr) {
+                            // Link to Published Package
+                            // Map compilation address (addr) to output address
+                            if let Some(output_addr) = compilation_to_output.get(&addr) {
+                                if kept_output_addresses.insert(*output_addr) {
+
+                                    // We need to traverse the dependencies of this published package too.
+                                    // Published packages are identified by their COMPILATION address in 'units'
+                                    if visited_compilation_addresses.insert(addr) {
+                                        worklist_published_addresses.push(addr);
+                                    }
+                                }
+                            } else {
+                                warn(&format!("Rust: TreeShake WARNING: {} in published but no output mapping!", addr));
+                            }
+                        } else {
+                            // Link to Source Package (e.g. multisig)
+                            // Find the unit that corresponds to this dependency
+                            // Search in 'units'
+                            for valid_unit in &units {
+                                let valid_id = valid_unit.named_module.module.self_id();
+                                if valid_id == dep_id {
+                                    // Found the source module being used!
+                                    if visited_source_units.insert(valid_id) {
+                                        worklist_source_units.push(valid_unit);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2b. Transitive Closure for Published Packages
+            // If we keep Pyth, we must keep Wormhole (Pyth's dependency).
+            // We search for modules in 'units' (which contains all compiled deps) matching the address.
+            while let Some(addr) = worklist_published_addresses.pop() {
+                // Find all modules belonging to this published address (Compilation ID) in our compiled set
+                for unit in &units {
+                    if *unit.named_module.module.address() == addr {
+                        // This unit belongs to a kept published package.
+                        // Check ITS dependencies.
+                        for dep_id in unit.named_module.module.immediate_dependencies() {
+                            let dep_addr = *dep_id.address();
+                             if published_addresses.contains(&dep_addr) {
+                                if let Some(output_addr) = compilation_to_output.get(&dep_addr) {
+                                    if kept_output_addresses.insert(*output_addr) {
+                                        if visited_compilation_addresses.insert(dep_addr) {
+                                            worklist_published_addresses.push(dep_addr);
+                                        }
+                                    }
+                                }
+                            }
+                            // Note: Published modules should not depend on Source modules
+                        }
+                    }
+                }
+            }
+
+            // 3. Filter dependency IDs
+            let mut dependency_ids_vec: Vec<[u8; 32]> = dependency_ids
+                .iter() // Iterate by reference to avoid moving early if needed, though clean here
+                .cloned()
+                .filter(|bytes| kept_output_addresses.contains(&AccountAddress::new(*bytes)))
+                .collect();
+            
+            // Sort dependency IDs to ensure deterministic order (matches CLI)
+            dependency_ids_vec.sort();
             // In the VFS, root files are top-level keys in the `files` map provided to compile_impl.
             // The compiler returns all units because we passed dependencies as targets.
             // let root_file_names: std::collections::HashSet<&str> = files.keys().map(|s| s.as_str()).collect();
@@ -766,8 +903,8 @@ fn compile_impl(
                 modules.push(general_purpose::STANDARD.encode(&bytes));
             }
 
-            // Use dependency IDs exactly as provided by JS (package graph order).
-            let dependency_ids_vec = dependency_ids;
+            // Use dependency IDs (Already filtered by Tree Shaking above)
+            // let dependency_ids_vec = dependency_ids_vec; // Already defined
             
             // Canonical Digest Calculation
             let dep_object_ids: Vec<sui_types::base_types::ObjectID> = dependency_ids_vec.iter()

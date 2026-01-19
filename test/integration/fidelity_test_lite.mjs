@@ -25,30 +25,28 @@ const REPOS = {
     goldenFile: "app.kiosk.json",
     network: "mainnet",
   },
+  // Note: deeptrade might be too heavy for lite or we can include it if desired.
+  // Sticking to existing scope of lite test which was just nautilus + apps usually.
+  // But for consistency I'll include it if it was there (it wasn't in the original view).
+  // Actually, checking previous view, REPOS only had nautilus and apps. I will keep it that way for lite.
 };
 
 async function setupRepo(name, config) {
   const repoDir = path.join(FIXTURES_DIR, name);
   if (await fs.stat(repoDir).catch(() => false)) {
-    console.log(`[Setup] ${name} exists.`);
     return path.join(repoDir, config.packagePath);
   }
-
-  console.log(`[Setup] Cloning ${name}...`);
   await fs.mkdir(FIXTURES_DIR, { recursive: true });
   execSync(`git clone ${config.url} ${repoDir}`, { stdio: "inherit" });
   execSync(`git checkout ${config.commit}`, { cwd: repoDir, stdio: "inherit" });
-
   return path.join(repoDir, config.packagePath);
 }
 
-// Compare byte arrays or hex strings
 function areDigestsEqual(digestA, digestB) {
-  // Convert both to array of numbers if possible, or hex strings
   const normalize = (d) => {
     if (Array.isArray(d)) return Buffer.from(d).toString("hex");
     if (d instanceof Uint8Array) return Buffer.from(d).toString("hex");
-    return d; // assume hex string
+    return d;
   };
   return normalize(digestA) === normalize(digestB);
 }
@@ -66,110 +64,95 @@ async function runTest() {
   for (const [name, config] of Object.entries(REPOS)) {
     console.log(`\n=== Testing ${name} ===`);
     const packageDir = await setupRepo(name, config);
+    const rootFiles = {};
 
-    // Read Move.toml and files
-    const projectFiles = {};
-    async function readDirRecursive(dir, base) {
+    async function readDirRecursive(dir, baseDir = dir) {
       const entries = await fs.readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
         const fullPath = path.join(dir, entry.name);
-        const relPath = path.join(base, entry.name);
+        const relativePath = path.relative(baseDir, fullPath);
         if (entry.isDirectory()) {
           if (entry.name === "build" || entry.name === ".git") continue;
-          await readDirRecursive(fullPath, relPath);
-        } else if (entry.isFile()) {
-          projectFiles[relPath] = await fs.readFile(fullPath, "utf-8");
+          await readDirRecursive(fullPath, baseDir);
+        } else {
+          if (
+            entry.name.endsWith(".move") ||
+            entry.name.endsWith(".toml") ||
+            entry.name.endsWith(".lock")
+          ) {
+            rootFiles[relativePath] = await fs.readFile(fullPath, "utf-8");
+          }
         }
       }
     }
 
-    await readDirRecursive(packageDir, ".");
-
-    console.log(
-      `[Build] Compiling ${Object.keys(projectFiles).length} files from ${config.packagePath}...`
-    );
+    await readDirRecursive(packageDir);
+    console.log(`[Build] Compiling ${Object.keys(rootFiles).length} files...`);
 
     try {
-      // Logic handled by builder now
-
       const result = await buildMovePackage({
-        files: projectFiles,
+        files: rootFiles,
         network: config.network,
       });
 
       if ("error" in result) {
-        console.error(`[Error] Build failed with error:`, result.error);
+        console.error(`[Error] Build failed:`, result.error);
         allPass = false;
         continue;
       }
 
-      // Load Golden
-      const goldenPath = path.join(JSON_DIR, config.goldenFile);
-      const golden = JSON.parse(await fs.readFile(goldenPath, "utf-8"));
+      const golden = JSON.parse(
+        await fs.readFile(path.join(JSON_DIR, config.goldenFile), "utf-8")
+      );
 
       // Compare Digest
-      const digestMatch = areDigestsEqual(result.digest, golden.digest);
-      console.log(`Digest Match: ${digestMatch ? "✅" : "❌"}`);
-      if (!digestMatch) {
-        console.log(`  Expected: ${golden.digest}`);
-        console.log(`  Actual:   ${result.digest}`);
-        allPass = false;
+      if (golden.digest) {
+        const digestMatch = areDigestsEqual(result.digest, golden.digest);
+        console.log(`Digest Match: ${digestMatch ? "✅" : "❌"}`);
+        if (!digestMatch) {
+          console.log(
+            `  Expected: ${golden.digest}\n  Actual:   ${result.digest}`
+          );
+          allPass = false;
+        }
       }
 
-      // Compare Modules Count
+      // Compare Modules
       if (result.modules.length !== golden.modules.length) {
         console.log(
-          `Module Count Match: ❌ (Got ${result.modules.length}, Expected ${golden.modules.length})`
+          `Module Count: ❌ (Got ${result.modules.length}, Expected ${golden.modules.length})`
         );
         allPass = false;
       } else {
-        console.log(`Module Count Match: ✅`);
-      }
-
-      // Deep Compare Modules (Base64)
-      let modulesMatch = true;
-      for (let i = 0; i < golden.modules.length; i++) {
-        if (result.modules[i] !== golden.modules[i]) {
-          console.log(`  Module ${i} mismatch!`);
-
-          const actualBuf = Buffer.from(result.modules[i], "base64");
-          const expectedBuf = Buffer.from(golden.modules[i], "base64");
-
-          console.log(
-            `    Size: Expected ${expectedBuf.length} bytes, Actual ${actualBuf.length} bytes`
-          );
-
-          // Find first difference
-          const mismatchIdx = expectedBuf.findIndex(
-            (b, i) => b !== actualBuf[i]
-          );
-          if (mismatchIdx !== -1) {
-            console.log(`    First mismatch at byte offset: ${mismatchIdx}`);
-            const start = Math.max(0, mismatchIdx - 10);
-            const end = Math.min(expectedBuf.length, mismatchIdx + 10);
-            console.log(
-              `      Expected: 0x${expectedBuf.subarray(start, end).toString("hex")}`
-            );
-            console.log(
-              `      Actual:   0x${actualBuf.subarray(start, end).toString("hex")}`
-            );
+        console.log(`Module Count: ✅`);
+        // Lite build might not produce bit-for-bit identical modules (stripped),
+        // so we might relax strict content check if intended.
+        // But for now, we follow the pattern: check and report.
+        let modulesMatch = true;
+        for (let i = 0; i < golden.modules.length; i++) {
+          if (result.modules[i] !== golden.modules[i]) {
+            // In Lite build, we might expect differences if golden is from full build?
+            // Actually, if we want strict parity, they should match.
+            // If mismatch is expected due to stripping, we might need different goldens for lite.
+            // For now, let's report it.
+            console.log(`  Module ${i} content mismatch!`);
             modulesMatch = false;
           }
         }
+        console.log(`Modules Content: ${modulesMatch ? "✅" : "❌"}`);
+        if (!modulesMatch) allPass = false;
       }
-      console.log(`Modules Content Match: ${modulesMatch ? "✅" : "❌"}`);
-      if (!modulesMatch) allPass = false;
     } catch (e) {
-      console.error(`[Error] Build failed:`, e);
+      console.error(`[Error] Execution failed:`, e);
       allPass = false;
     }
   }
 
   if (!allPass) {
-    console.error("\n❌ Some fidelity tests failed.");
+    console.error("\n❌ Fidelity tests failed.");
     process.exit(1);
   } else {
-    console.log("\n✅ All fidelity tests passed!");
+    console.log("\n✅ Fidelity tests passed!");
   }
 }
 

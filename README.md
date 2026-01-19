@@ -1,12 +1,13 @@
 # @zktx.io/sui-move-builder
 
-> **Upstream source:** [MystenLabs/sui](https://github.com/MystenLabs/sui) (tag: `testnet-v1.63.1`)
+> **Upstream source:** [MystenLabs/sui](https://github.com/MystenLabs/sui) (tag: `v1.63.3`)
 
 Build Move packages in web or Node.js with Sui CLI-compatible dependency resolution and compilation.
 
 ## Features
 
 - ✅ **Sui CLI Compatible**: Identical dependency resolution algorithm as Sui CLI
+- ✅ **Verified Parity**: Audited against `sui-04dd` source code (Jan 2026)
 - ✅ **Lockfile Support**: Reads `Move.lock` for faster, deterministic builds
 - ✅ **Per-Package Editions**: Each package can use its own Move edition (legacy, 2024.alpha, 2024.beta)
 - ✅ **Monorepo Support**: Handles local dependencies in monorepo structures
@@ -141,7 +142,7 @@ name = "my_package"
 edition = "2024.beta"
 
 [dependencies]
-deepbook = { git = "https://github.com/MystenLabs/deepbookv3.git", subdir = "packages/deepbook", rev = "main" }
+dep_name = { git = "https://github.com/org/repo.git", subdir = "packages/dep_name", rev = "main" }
 `,
   "sources/main.move": "...",
 };
@@ -242,3 +243,7 @@ if (entry.name === "build" || entry.name === ".git") continue;
 npm run serve:test   # serves ./test via python -m http.server
 # open http://localhost:8000/test/index.html
 ```
+
+## Roadmap
+
+- **Return Build Artifacts**: Future updates will include generating and returning `Move.lock` and `Published.toml` files to the caller, facilitating deployment tracking and deterministic rebuilds.

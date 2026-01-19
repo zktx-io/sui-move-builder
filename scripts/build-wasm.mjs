@@ -9,8 +9,8 @@ const repoRoot = path.resolve(
 );
 const cloneDir = path.join(repoRoot, "sui");
 const localSourceDir = path.join(repoRoot, "sui-move-wasm");
-const SUI_COMMIT = "a14d9e8ddadfcea837de46b43d0b72a289320afb"; // testnet-v1.63.1
-const SUI_VERSION_TAG = "testnet-v1.63.1";
+const SUI_COMMIT = "04dd28d5c5d92bff685ddfecb86f8acce18ce6df"; // v1.63.3
+const SUI_VERSION_TAG = "v1.63.3";
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {

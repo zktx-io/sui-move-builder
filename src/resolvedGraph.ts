@@ -133,6 +133,13 @@ export class ResolvedGraph {
   }
 
   /**
+   * Get packages in Compiler Input Order
+   */
+  compilerInputOrder(): string[] {
+    return this.graph.compilerInputOrder();
+  }
+
+  /**
    * Get the root package name
    */
   getRootName(): string {

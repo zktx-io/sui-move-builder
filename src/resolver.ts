@@ -101,6 +101,7 @@ export class Resolver {
       rootPackage,
       rootFiles
     );
+
     const missingDeps = Array.from(rootPackage.dependencies.keys()).filter(
       (name) => !depGraph.getPackage(name)
     );
@@ -109,6 +110,8 @@ export class Resolver {
       // Fallback: Recursively resolve all dependencies from manifests
       await this.buildDependencyGraph(depGraph, rootPackage);
     }
+
+
 
     // Check for cycles
     const cycle = depGraph.detectCycle();
@@ -120,15 +123,55 @@ export class Resolver {
     const resolvedGraph = new ResolvedGraph(depGraph, {});
     await resolvedGraph.resolve();
 
+    // Ensure we use the correct Move.toml for compilation (handling Move.mainnet.toml etc)
+    const networkTomlName = `Move.${this.network}.toml`;
+    for (const [pkgName, files] of this.packageFiles) {
+      if (files[networkTomlName]) {
+        // If a network-specific TOML exists, it takes precedence as the "Move.toml"
+        // for the compilation phase. This handles cases where Move.toml
+        // is just a symlink/placeholder and Move.mainnet.toml has real config.
+        files["Move.toml"] = files[networkTomlName];
+      }
+    }
+
     // === LAYER 3: Prepare Compilation Dependencies ===
     const compilationDeps = new CompilationDependencies(resolvedGraph);
     await compilationDeps.compute(this.packageFiles);
 
     // === Convert to Compiler Input Format ===
     // Rebuild root Move.toml with unified addresses (matches CLI named_address_map)
+    const unifiedTable = resolvedGraph.getUnifiedAddressTable();
+
+    // Fix: Ensure unified table reflects the actual published IDs of packages
+    // This allows aliases for dependencies with mismatched names to resolve to the correct published address.
+    // We prioritize originalId for compilation (stability).
+    for (const pkg of depGraph.getAllPackages()) {
+      const publishedId =
+        pkg.manifest.originalId ||
+        pkg.manifest.publishedAt ||
+        pkg.manifest.latestPublishedId;
+
+      if (pkg.manifest.name === "Sui" || pkg.manifest.name === "sui") {
+
+      }
+
+      if (
+        publishedId &&
+        publishedId !== "0x0" &&
+        !publishedId.startsWith(
+          "0x0000000000000000000000000000000000000000000000000000000000000000"
+        )
+      ) {
+        const normalized = this.normalizeAddress(publishedId);
+        // Map both ExactName and lowercase_name just to be safe and cover common Move patterns
+        unifiedTable[pkg.manifest.name] = normalized;
+        unifiedTable[pkg.manifest.name.toLowerCase()] = normalized;
+      }
+    }
+
     const updatedRootToml = this.reconstructMoveToml(
       rootParsed,
-      resolvedGraph.getUnifiedAddressTable(),
+      unifiedTable,
       true,
       rootEdition
     );
@@ -141,6 +184,7 @@ export class Resolver {
     const packageGroups = compilationDeps.toPackageGroupedFormat(
       this.packageFiles
     );
+
 
     return {
       files: JSON.stringify(updatedRootFiles),
@@ -165,14 +209,12 @@ export class Resolver {
     const publishedAtResult = this.resolvePublishedAt(
       moveTomlContent,
       moveLockContent,
-      chainId
+      chainId,
+      this.network
     );
     const latestPublishedId = publishedAtResult.latestId
       ? this.normalizeAddress(publishedAtResult.latestId)
       : undefined;
-
-    // Check for Published.toml (Sui CLI compatibility)
-    // The CLI uses this to track published versions per environment.
 
     // Check for Published.toml (Sui CLI compatibility)
     // The CLI uses this to track published versions per environment.
@@ -219,19 +261,48 @@ export class Resolver {
       devDependencies: parsed["dev-dependencies"],
     };
 
+    // Check if package defines its own address in [addresses] (case-insensitive)
+    // This handles cases where a package explicitly defines its address in `[addresses]` which might differ from `published-at`
+    const selfAddressKey = Object.keys(manifest.addresses).find(
+      (key) => key.toLowerCase() === manifest.name.toLowerCase()
+    );
+
+    if (selfAddressKey && manifest.addresses[selfAddressKey]) {
+      const selfAddr = this.normalizeAddress(
+        manifest.addresses[selfAddressKey]
+      );
+      // Treat explicit address as originalId if not 0x0
+      if (
+        selfAddr !==
+        "0x0000000000000000000000000000000000000000000000000000000000000000"
+      ) {
+        manifest.originalId = selfAddr;
+      }
+    }
+
     // Ensure package has an address entry for its own name.
-    // If published-at is known, prefer it even if an address exists or is 0x0.
+    // ORIGINAL CLI SOURCE:
+    // In `external-crates/move/crates/move-package-alt/src/graph/package_info.rs`, `node_to_addr` prioritization
+    // determines the address used for a package node. It specifically prioritizes the address defined in the
+    // manifest's `[addresses]` table (if it exists and matches the package name) over other sources like `published-at`.
+    // This is critical for packages where `published-at` differs from the `[addresses]` entry.
+    const addressToUse = manifest.originalId || manifest.publishedAt;
     const normalizedPublished =
-      manifest.publishedAt && manifest.publishedAt !== "0x0"
-        ? this.normalizeAddress(manifest.publishedAt)
+      addressToUse && addressToUse !== "0x0"
+        ? this.normalizeAddress(addressToUse)
         : undefined;
+
     const currentAddr = manifest.addresses[manifest.name];
     const normalizedCurrent = currentAddr
       ? this.normalizeAddress(currentAddr)
       : undefined;
 
     if (normalizedPublished) {
-      manifest.addresses[manifest.name] = normalizedPublished;
+      // Fix: Do not overwrite if the package explicitly defines its own address in [addresses]
+      // This handles cases where [addresses] pkg = "0x..." but published-at = "0x..." differs.
+      if (!currentAddr) {
+        manifest.addresses[manifest.name] = normalizedPublished;
+      }
     } else if (!normalizedCurrent) {
       manifest.addresses[manifest.name] = "0x0";
     } else {
@@ -409,6 +480,9 @@ export class Resolver {
       }
 
       if (!moveTomlContent) {
+        // If we are in 'build' mode, Move.toml must exist for compilation.
+        // If we are in 'build' mode, Move.toml must exist for compilation.
+        // Otherwise, we can skip this dependency if it's not critical.
         continue;
       }
 
@@ -443,11 +517,7 @@ export class Resolver {
       }
 
       // published-at is already resolved in buildPackage via resolvePublishedAt
-      // But we need to update addresses table if publishedAt exists
-      if (depPackage.manifest.publishedAt) {
-        depPackage.manifest.addresses[depPackage.manifest.name] =
-          this.normalizeAddress(depPackage.manifest.publishedAt);
-      }
+      // We rely on buildPackage to populate manifest.addresses correctly
 
       // Use edition only from Move.toml (Move.lock editions are unreliable)
       // If Move.toml doesn't specify edition, default to 'legacy' for safety
@@ -495,11 +565,14 @@ export class Resolver {
    * 2. Move.toml [package].published-at
    * 3. Detect conflicts between Move.lock and Move.toml
    * 4. Track original-id for package upgrade chains
+   *
+   * Distinguish between chainId (e.g. 35834a8a) and network alias (e.g. mainnet)
    */
   private resolvePublishedAt(
     moveTomlContent: string,
-    _moveLockContent: string | undefined,
-    _chainId: string | undefined
+    moveLockContent: string | undefined,
+    chainId: string | undefined,
+    network: string
   ): {
     publishedAt?: string;
     originalId?: string;
@@ -522,13 +595,50 @@ export class Resolver {
     // Read original-id from Move.toml (if specified manually)
     const originalIdInManifest = moveToml.package?.["original-id"];
 
-    // Return manifest values directly.
-    // Logic: We respect Move.lock original-published-id for the root package if present,
-    // matching the original CLI behavior. The client wrapper (index.ts) or test runner
-    // is responsible for handling environment isolation if a fresh build (0x0) is desired.
+    // Read from Move.lock if available
+    let lockOriginalId: string | undefined;
+    let lockLatestId: string | undefined;
+
+    if (moveLockContent) {
+      try {
+        const lock = parseToml(moveLockContent);
+        // Check both [env.<chainId>] and [env.<network>]
+        // Sui CLI writes [env.<chain_id>] but might fall back to alias in some contexts
+        const envSection =
+          (chainId && lock.env?.[chainId]) || lock.env?.[network];
+
+        if (envSection) {
+          if (envSection["original-published-id"]) {
+            lockOriginalId = this.normalizeAddress(
+              envSection["original-published-id"]
+            );
+          }
+          if (envSection["latest-published-id"]) {
+            lockLatestId = this.normalizeAddress(
+              envSection["latest-published-id"]
+            );
+          }
+        }
+      } catch (e) {
+        // failed to parse lock, ignore
+      }
+    }
+
+    // Logic: Prefer Move.toml if present (it overrides).
+    // Fallback to Move.lock for dependencies that don't have published-at in Manifest but have it in Lock.
+    // CRITICAL: Prefer original-published-id from lockfile over latest-published-id.
+    // This matches Sui CLI behavior where the address used for compilation is the original ID
+    // (ensuring stability across upgrades), while the latest ID is tracked for resolution.
+    // CRITICAL: Prefer original-published-id from lockfile over latest-published-id.
+    // This matches Sui CLI behavior where the address used for compilation is the original ID
+    // (ensuring stability across upgrades), while the latest ID is tracked for resolution.
+    // CRITICAL: We prioritize ORIGINAL-published-id to match compilationDependencies usage for BUILD.
+    const finalPublishedAt = lockOriginalId || manifestId || lockLatestId;
+
     const result = {
-      publishedAt: manifestId,
-      originalId: originalIdInManifest,
+      publishedAt: finalPublishedAt,
+      originalId: originalIdInManifest || lockOriginalId,
+      latestId: lockLatestId,
     };
     return result;
   }
@@ -819,6 +929,7 @@ export class Resolver {
         depSource.rev,
         depSource.subdir
       );
+
       if (Object.keys(files).length === 0) {
         continue;
       }
@@ -1004,12 +1115,30 @@ export class Resolver {
       }
     }
 
-    // Add root edges from manifest dependencies to pinned packages (name-based lookup)
-    for (const depName of rootPackage.dependencies.keys()) {
-      const depPkg = packageByName.get(depName) || packageById.get(depName);
-      if (depPkg) {
-        const dep = rootPackage.dependencies.get(depName)!;
-        graph.addDependency(rootPackage.id.name, depPkg.id.name, dep);
+    // Add root edges from Move.lock [move] dependencies if available
+    if (
+      lockfile.move?.dependencies &&
+      Array.isArray(lockfile.move.dependencies)
+    ) {
+      for (const depInfo of lockfile.move.dependencies) {
+        const depId = depInfo.id;
+        const depPkg = packageById.get(depId);
+        if (depPkg) {
+          // Create a synthetic dependency object
+          const dep: Dependency = {
+            source: depPkg.id.source,
+          };
+          graph.addDependency(rootPackage.id.name, depPkg.id.name, dep);
+        }
+      }
+    } else {
+      // Fallback: Add root edges from manifest dependencies to pinned packages
+      for (const depName of rootPackage.dependencies.keys()) {
+        const depPkg = packageByName.get(depName) || packageById.get(depName);
+        if (depPkg) {
+          const dep = rootPackage.dependencies.get(depName)!;
+          graph.addDependency(rootPackage.id.name, depPkg.id.name, dep);
+        }
       }
     }
 
@@ -1081,7 +1210,10 @@ export class Resolver {
 
     newToml += `\n[dependencies]\n`;
     if (originalParsed.dependencies) {
-      for (const [name, info] of Object.entries(originalParsed.dependencies)) {
+      const sortedDeps = Object.entries(originalParsed.dependencies).sort(
+        ([a], [b]) => a.localeCompare(b)
+      );
+      for (const [name, info] of sortedDeps) {
         const depInfo = info as any;
         if (depInfo.local) {
           newToml += `${name} = { local = "${depInfo.local}" }\n`;
@@ -1096,7 +1228,10 @@ export class Resolver {
     }
 
     newToml += `\n[addresses]\n`;
-    for (const [addrName, addrVal] of Object.entries(addresses)) {
+    const sortedAddrs = Object.entries(addresses).sort(([a], [b]) =>
+      a.localeCompare(b)
+    );
+    for (const [addrName, addrVal] of sortedAddrs) {
       newToml += `${addrName} = "${addrVal}"\n`;
     }
 
@@ -1134,7 +1269,6 @@ export class Resolver {
       MoveStdlib: "crates/sui-framework/packages/move-stdlib",
       SuiSystem: "crates/sui-framework/packages/sui-system",
       Bridge: "crates/sui-framework/packages/bridge",
-      DeepBook: "crates/sui-framework/packages/deepbook",
       SuiFramework: "crates/sui-framework/packages/sui-framework",
     };
 

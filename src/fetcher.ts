@@ -129,6 +129,8 @@ export class GitHubFetcher extends Fetcher {
       }
     }
 
+    const modes = new Map<string, string>();
+
     const files: Record<string, string> = {};
     const fetchPromises: Promise<void>[] = [];
 
@@ -137,7 +139,9 @@ export class GitHubFetcher extends Fetcher {
 
       let relativePath: string = item.path;
       if (subdir) {
-        if (!item.path.startsWith(subdir)) continue;
+        if (!item.path.startsWith(subdir)) {
+          continue;
+        }
         relativePath = item.path.slice(subdir.length);
         if (relativePath.startsWith("/")) {
           relativePath = relativePath.slice(1);
@@ -153,6 +157,11 @@ export class GitHubFetcher extends Fetcher {
         continue;
       }
 
+      // Store mode for Move.toml to detect symlinks (120000)
+      if (relativePath === "Move.toml" && item.mode) {
+        modes.set("Move.toml", item.mode);
+      }
+
       const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${rev}/${item.path}`;
       const p = this.fetchContent(rawUrl).then((content) => {
         if (content) {
@@ -164,27 +173,25 @@ export class GitHubFetcher extends Fetcher {
 
     await Promise.all(fetchPromises);
 
-    // Handle symlinks: If Move.toml content is just a filename, fetch that file
-    if (files["Move.toml"]) {
+    // Handle symlinks: Check valid mode 120000 or 120755
+    // ORIGINAL CLI SOURCE:
+    // Rust's `std::fs` matches this behavior transparently.
+    // In `external-crates/move/crates/move-package/src/source_package/layout.rs`, the CLI uses standard file I/O
+    // which follows symlinks. Here we emulate that by checking the git tree mode (120000).
+    if (files["Move.toml"] && modes.get("Move.toml") === "120000") {
       const content = files["Move.toml"].trim();
-      // Check if it looks like a symlink (single line, ends with .toml, no [ or =)
-      if (
-        content.match(/^Move\.(mainnet|testnet|devnet)\.toml$/) &&
-        !content.includes("[") &&
-        !content.includes("=")
-      ) {
-        // This is a symlink, fetch the actual file
-        const targetFile = content;
-        const targetPath = subdir
-          ? `${subdir}/${targetFile}`.replace(/\/+/g, "/")
-          : targetFile;
-        const targetUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${rev}/${targetPath}`;
-        const actualContent = await this.fetchContent(targetUrl);
-        if (actualContent) {
-          // Replace Move.toml with actual content, and also add the target file
-          files["Move.toml"] = actualContent;
-          files[targetFile] = actualContent;
-        }
+
+      const targetFile = content;
+      const targetPath = subdir
+        ? `${subdir}/${targetFile}`.replace(/\/+/g, "/")
+        : targetFile;
+      const targetUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${rev}/${targetPath}`;
+      const actualContent = await this.fetchContent(targetUrl);
+      if (actualContent) {
+        files["Move.toml"] = actualContent;
+        // files[targetFile] = actualContent; // Do not expose duplicate dirty TOML
+      } else {
+        // Warning: Failed to resolve symlink
       }
     }
 

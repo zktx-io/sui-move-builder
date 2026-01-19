@@ -45,7 +45,7 @@ export default tseslint.config(
       "tsup.config.ts",
       "test/integration/fixtures",
       "vendor",
-      "scripts/stubs"
+      "scripts/stubs",
     ],
   }
 );

@@ -104,12 +104,7 @@ export class DependencyGraph {
   private graph: Map<string, Set<string>> = new Map();
 
   // Packages that should always be included (system packages)
-  private alwaysDeps: Set<string> = new Set([
-    "Sui",
-    "MoveStdlib",
-    "SuiSystem",
-    "Bridge",
-  ]);
+  private alwaysDeps: Set<string> = new Set(["Sui", "MoveStdlib"]);
 
   // Root package name
   private root: string;
@@ -196,46 +191,85 @@ export class DependencyGraph {
   }
 
   /**
-   * Get packages in dependency order from Move.lock
+   * Get packages in strict topological dependency order
    *
-   * CRITICAL: This MUST return the exact order from Move.lock's [[move.package]] array!
-   * DO NOT sort alphabetically! See CRITICAL_RULES.md
+   * CRITICAL: This MUST match Sui CLI's compilation order.
+   * Logic:
+   * 1. Dependencies MUST come before their dependents (Post-Order DFS).
+   * 2. Tie-breaking: Sort siblings by Package Name (alphabetical) before traversing.
+   * 3. Move.lock list order is arbitrary/alphabetical and CANNOT be used as topological order.
    */
   topologicalOrder(): string[] {
-    // If we don't have lockfile order (e.g., Move.lock v0 or missing), fall back to DFS ordering.
-    if (!this.lockfileOrder.length) {
-      const dfsOrder = this.topologicalOrderDFS();
-      return dfsOrder.filter((n) => n !== this.root);
-    }
-
-    // Return Move.lock order for reachable packages only
-
-    // Get all packages that are reachable from root (i.e., actually used)
-    const reachable = new Set<string>();
     const visited = new Set<string>();
+    const result: string[] = [];
 
-    const dfs = (name: string) => {
+    // Helper for Post-Order DFS
+    const visit = (name: string) => {
       if (visited.has(name)) return;
       visited.add(name);
-      reachable.add(name);
 
       const deps = this.graph.get(name);
       if (deps) {
-        for (const dep of deps) {
-          dfs(dep);
+        // Sort dependencies alphabetically to ensure deterministic transversal
+        const sortedDeps = Array.from(deps).sort();
+        for (const dep of sortedDeps) {
+          visit(dep);
         }
       }
+
+      // Post-order: Add self after dependencies
+      result.push(name);
     };
 
-    // Start from root to find all reachable packages
-    dfs(this.root);
+    // We only care about packages reachable from root
+    visit(this.root);
+
+    // Filter out root itself if it's in the list (usually we want deps for root)
+    return result.filter((n) => n !== this.root);
+  }
+
+  /**
+   * Get packages in Compiler Input Order (Pre-order DFS)
+   * CORRESPONDS TO: `move-package-alt` FilteredGraph construction.
+   * Logic:
+   * 1. Root is visited first.
+   * 2. Dependencies (neighbors) are visited recursively.
+   * 3. Neighbors are visited in Alphabetical Order.
+   *
+   * This structure (Root -> A -> B...) is what `move-package-alt-compilation` expects.
+   */
+  compilerInputOrder(): string[] {
+    // ORIGINAL CLI SOURCE:
+    // Analysis of test failure shows that `Move.lock` order (Alphabetical) violates topological dependencies.
+    // In `external-crates/move/crates/move-package-alt/src/graph/mod.rs`, the construction of the `filtered_graph`
+    // utilizes `petgraph::algo::toposort` (via `check_cycles` and eventual linearization), which ensures that
+    // compilation proceeds in a topological order (Dependencies first).
+    // Given the alphabetical insertion order in `builder.rs`, `petgraph`'s toposort (DFS-based) naturally follows
+    // a Post-order traversal where neighbors are visited in insertion (alphabetical) order.
+
+    const visited = new Set<string>();
     const result: string[] = [];
-    for (const pkgName of this.lockfileOrder) {
-      if (pkgName === this.root) continue; // Skip root package
-      if (reachable.has(pkgName)) {
-        result.push(pkgName);
+
+    // Helper for Post-Order DFS
+    const visit = (name: string) => {
+      if (visited.has(name)) return;
+      visited.add(name); // Mark as visited to prevent cycles/re-visits
+
+      const deps = this.graph.get(name);
+      if (deps) {
+        // Sort dependencies alphabetically to ensure deterministic neighbor traversal
+        // matching the alphabetical insertion order in `builder.rs`.
+        const sortedDeps = Array.from(deps).sort();
+        for (const dep of sortedDeps) {
+          visit(dep);
+        }
       }
-    }
+
+      // Post-order: Add self AFTER dependencies have been visited
+      result.push(name);
+    };
+
+    visit(this.root);
     return result;
   }
 

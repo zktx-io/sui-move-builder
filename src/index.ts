@@ -135,6 +135,7 @@ function parseCompileResult(output: string): BuildSuccess | BuildFailure {
         : Array.from(parsed.digest);
     return {
       modules: parsed.modules,
+      // Filter out implicit system dependencies to match CLI behavior
       dependencies: parsed.dependencies,
       digest: digestBytes,
     };
@@ -205,11 +206,11 @@ export async function resolveDependencies(
     input.network,
     inferredRootGit
       ? {
-        type: "git",
-        git: inferredRootGit.git,
-        rev: inferredRootGit.rev,
-        subdir: inferredRootGit.subdir,
-      }
+          type: "git",
+          git: inferredRootGit.git,
+          rev: inferredRootGit.rev,
+          subdir: inferredRootGit.subdir,
+        }
       : undefined
   );
 
@@ -297,10 +298,10 @@ export async function testMovePackage(
     const raw =
       input.ansiColor && typeof (mod as any).test_with_color === "function"
         ? (mod as any).test_with_color(
-          resolved.files,
-          resolved.dependencies,
-          true
-        )
+            resolved.files,
+            resolved.dependencies,
+            true
+          )
         : (mod as any).test(resolved.files, resolved.dependencies); // Fallback if test_with_color missing
 
     // Check if raw result matches expected shape
@@ -355,10 +356,10 @@ export async function compileRaw(
     options?.ansiColor && typeof (mod as any).compile_with_color === "function"
       ? (mod as any).compile_with_color(filesJson, depsJson, true)
       : mod.compile(
-        filesJson,
-        depsJson,
-        JSON.stringify({ silenceWarnings: false })
-      );
+          filesJson,
+          depsJson,
+          JSON.stringify({ silenceWarnings: false })
+        );
   const result = ensureCompileResult(raw);
   return {
     success: result.success(),

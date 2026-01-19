@@ -81,12 +81,15 @@ export class CompilationDependencies {
       this.rootPackageName
     );
 
-    // Get all packages in Move.lock order
-    const packageOrder = this.resolvedGraph.topologicalOrder();
+    const packageOrder = this.resolvedGraph.compilerInputOrder();
+
+    // Registry of build IDs (addresses) assigned to each package.
+    // This allows us to propagate dummy addresses (assigned to unpublished dependencies)
+    // to their dependents, ensuring consistent address resolution across the graph.
+    const packageBuildIds = new Map<string, string>();
+
     // System packages that we exclude when not explicitly needed.
     // Matches observed CLI outputs where Bridge/SuiSystem IDs are omitted.
-    const filteredSystemDeps = new Set(["Bridge", "SuiSystem"]);
-
     // Build DependencyInfo for each package (excluding root)
     for (const pkgName of packageOrder) {
       if (pkgName === this.rootPackageName) {
@@ -96,11 +99,6 @@ export class CompilationDependencies {
       const pkg = this.resolvedGraph.getPackage(pkgName);
       if (!pkg) continue;
 
-      // Skip unused system packages that the CLI does not surface in dependency IDs.
-      if (filteredSystemDeps.has(pkgName)) {
-        continue;
-      }
-
       const files = packageFiles.get(pkgName) || {};
       const sourcePaths = this.extractSourcePaths(pkgName, files);
 
@@ -108,17 +106,64 @@ export class CompilationDependencies {
       const effectiveEdition = pkg.manifest.edition || "legacy";
 
       // Dependency ID for output: latest > original > published-at/address mapping
-      const publishedIdForOutput =
+      // Dependency ID for output: latest > original > published-at/address mapping
+      let publishedIdForOutput =
         pkg.manifest.latestPublishedId ||
         pkg.manifest.originalId ||
         pkg.manifest.publishedAt ||
         pkg.resolvedTable?.[pkgName];
 
+      // Address for build (compilation): original > published-at > latest
+      // ORIGINAL CLI SOURCE:
+      // In `external-crates/move/crates/move-package-alt-compilation/src/compilation.rs`, the compilation logic
+      // constructs the `PackagePaths` using `PackageInfo` which prioritizes the explicit address in the manifest
+      // (the "original" address) over other sources to ensuring deterministic builds across environments.
+      let buildId =
+        pkg.manifest.originalId ||
+        pkg.manifest.publishedAt ||
+        pkg.manifest.latestPublishedId ||
+        publishedIdForOutput;
+
+      // FIX: If buildId is 0x0 (unpublished), we strictly pass 0x0 to the compiler,
+      // matching the CLI behavior which uses AccountAddress::ZERO for unpublished deps.
+      if (!buildId) {
+        buildId = "0x0000000000000000000000000000000000000000000000000000000000000000";
+        publishedIdForOutput = buildId;
+      }
+
+      // Store the definitive build ID for this package
+      packageBuildIds.set(pkgName, buildId);
+      packageBuildIds.set(pkgName.toLowerCase(), buildId);
+
+      const addressMapping = { ...(pkg.resolvedTable || {}) };
+
+      // Update addressMapping with the definitive build IDs of known dependencies.
+      // This ensures that if a dependency was assigned a dummy address, its dependents see it.
+      for (const [depName, depAddr] of Object.entries(addressMapping)) {
+        // Check if we have a calculated build ID for this dependency (case-insensitive lookup)
+        // Prioritize exact match, then lowercase
+        const knownBuildId =
+          packageBuildIds.get(depName) ||
+          packageBuildIds.get(depName.toLowerCase());
+        if (knownBuildId) {
+          addressMapping[depName] = knownBuildId;
+        }
+      }
+
+      // Ensure specific linkage - SKIP system packages to avoid regressions
+      if (buildId && pkgName !== "Sui" && pkgName !== "MoveStdlib") {
+        // Force set the package name and alias to the build ID
+        // This ensures that even if Move.toml doesn't list itself in [addresses],
+        // it gets defined in the reconstructed TOML.
+        addressMapping[pkgName] = buildId;
+        addressMapping[pkgName.toLowerCase()] = buildId;
+      }
+
       const depInfo: DependencyInfo = {
         name: pkgName,
         isImmediate: immediateDeps.has(pkgName),
         sourcePaths,
-        addressMapping: pkg.resolvedTable || {},
+        addressMapping,
         compilerConfig: {
           edition: effectiveEdition,
           flavor: "sui",
@@ -131,10 +176,13 @@ export class CompilationDependencies {
       this.dependencies.push(depInfo);
     }
   }
-
   /**
-   * Extract .move source file paths from a package's files
+   * Get the published ID for a specific dependency by name.
    */
+  getDependencyAddress(name: string): string | undefined {
+    return this.dependencies.find((d) => d.name === name)?.publishedIdForOutput;
+  }
+
   private extractSourcePaths(
     packageName: string,
     files: Record<string, string>
@@ -205,6 +253,9 @@ export class CompilationDependencies {
       });
     }
 
+    // Sort package groups by name to match Sui CLI behavior (alphabetical order for compiler input)
+    // packageGroups.sort((a, b) => a.name.localeCompare(b.name));
+
     return packageGroups;
   }
 
@@ -218,62 +269,71 @@ export class CompilationDependencies {
     addresses: Record<string, string>
   ): string {
     const lines = (originalMoveToml || "").split("\n");
-    const packageSection: string[] = [];
-    const dependenciesSection: string[] = [];
-    let inPackage = false;
-    let inDependencies = false;
+    const preservedLines: string[] = [];
+
+    // Simple state machine
+    let currentSection = "none"; // package, addresses, dependencies, other
 
     for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed.startsWith("[package]")) {
-        inPackage = true;
-        inDependencies = false;
-        continue;
-      }
-      if (trimmed.startsWith("[dependencies]")) {
-        inPackage = false;
-        inDependencies = true;
-        continue;
-      }
+
       if (trimmed.startsWith("[")) {
-        inPackage = false;
-        inDependencies = false;
+        // Detect section
+        if (trimmed.startsWith("[package]")) {
+          currentSection = "package";
+        } else if (trimmed.startsWith("[addresses]")) {
+          currentSection = "addresses";
+        } else if (
+          trimmed.startsWith("[dependencies") ||
+          trimmed.startsWith("[dev-dependencies")
+        ) {
+          currentSection = "dependencies";
+          // Skip dependencies in reconstructed TOML.
+          // The compiler receives the full dependency graph via the `dependencies` argument (compiled from Move.lock).
+          // Keeping incorrect or local paths here causes resolution errors in the VFS.
+        } else {
+          // Keep other sections (e.g. [env])
+          currentSection = "other";
+          preservedLines.push(line);
+        }
         continue;
       }
-      if (inPackage && trimmed) packageSection.push(line);
-      if (inDependencies && trimmed) dependenciesSection.push(line);
-    }
 
-    let result = "[package]\n";
-    let hasName = false;
-    let hasVersion = false;
-
-    for (const line of packageSection) {
-      if (line.includes("name =")) {
-        result += line + "\n";
-        hasName = true;
-      } else if (line.includes("version =")) {
-        result += line + "\n";
-        hasVersion = true;
-      } else if (line.includes("edition =")) {
-        continue; // we will add edition below
+      // Handle content based on section
+      if (currentSection === "package") {
+        if (trimmed.includes("name =") || trimmed.includes("version =")) {
+          // We'll reconstruct these
+        }
+        // Skip valid properties we want to override/control
+      } else if (currentSection === "addresses") {
+        // Skip existing addresses
+        continue;
       } else {
-        result += line + "\n";
+        // Keep everything else (dependencies, comments, empty lines)
+        if (currentSection !== "none") {
+          preservedLines.push(line);
+        }
       }
     }
-    if (!hasName) result += `name = "${packageName}"\n`;
-    if (!hasVersion) result += 'version = "0.0.0"\n';
+
+    // Reconstruct
+    let result = "[package]\n";
+    result += `name = "${packageName}"\n`;
+    result += 'version = "0.0.0"\n'; // Placeholder, irrelevant for local builds usually
     result += `edition = "${edition}"\n`;
 
-    result += "\n[dependencies]\n";
-    for (const line of dependenciesSection) {
-      result += line + "\n";
-    }
+    result += "\n";
+    result += preservedLines.join("\n");
 
     result += "\n[addresses]\n";
-    for (const [name, addr] of Object.entries(addresses)) {
+    result += "\n[addresses]\n";
+    const sortedDetails = Object.entries(addresses).sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0
+    );
+    for (const [name, addr] of sortedDetails) {
       result += `${name} = "${addr}"\n`;
     }
+
     return result;
   }
 }

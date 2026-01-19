@@ -65,7 +65,7 @@ export function parseGitHubUrl(url: string): {
  * @example
  * ```ts
  * const files = await fetchPackageFromGitHub(
- *   'https://github.com/MystenLabs/deepbookv3/tree/main/packages/deepbook'
+ *   'https://github.com/org/repo/tree/main/packages/example_package'
  * );
  *
  * // files = {
@@ -135,12 +135,12 @@ export async function fetchPackageFromGitHub(
  * ```ts
  * const packages = await fetchPackagesFromGitHub([
  *   'https://github.com/MystenLabs/sui/tree/framework/mainnet/crates/sui-framework/packages/sui-framework',
- *   'https://github.com/MystenLabs/deepbookv3/tree/main/packages/deepbook'
+ *   'https://github.com/org/repo/tree/main/packages/example_package'
  * ]);
  *
  * // packages = {
  * //   'Sui': { 'Move.toml': '...', ... },
- * //   'deepbook': { 'Move.toml': '...', ... }
+ * //   'example_package': { 'Move.toml': '...', ... }
  * // }
  * ```
  */
