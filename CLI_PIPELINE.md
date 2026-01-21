@@ -79,10 +79,10 @@ The following address resolution logic replicates the original Sui CLI behavior 
 
 ### 10.1 Two Address Types
 
-| Address | Purpose | Source |
-|---------|---------|--------|
-| **`original_id`** | Compilation (bytecode address) | Move.lock `original-published-id` or Move.toml `original-id` |
-| **`published_at`** | Output metadata / linking | Move.lock `latest-published-id` or Move.toml `published-at` |
+| Address            | Purpose                        | Source                                                       |
+| ------------------ | ------------------------------ | ------------------------------------------------------------ |
+| **`original_id`**  | Compilation (bytecode address) | Move.lock `original-published-id` or Move.toml `original-id` |
+| **`published_at`** | Output metadata / linking      | Move.lock `latest-published-id` or Move.toml `published-at`  |
 
 ### 10.2 Resolution Priority
 
@@ -94,6 +94,7 @@ The following address resolution logic replicates the original Sui CLI behavior 
 ### 10.3 Move.toml `[addresses]` Parsing
 
 From `get_manifest_address_info()`:
+
 - If only `original_id` exists → `published_at = original_id`
 - If both exist → used separately
 - If `original_id = 0x0` → package treated as unpublished
@@ -124,10 +125,10 @@ Published.toml → legacy_data (from Move.lock) → None
 
 ### 11.3 Usage in Build
 
-| Context | Address Used |
-|---------|-------------|
-| WASM Compilation | `original_id` |
-| Output Metadata | `published_at` (latest) |
+| Context          | Address Used            |
+| ---------------- | ----------------------- |
+| WASM Compilation | `original_id`           |
+| Output Metadata  | `published_at` (latest) |
 
 ---
 
@@ -141,6 +142,7 @@ Published.toml → legacy_data (from Move.lock) → None
 ### 12.2 Topological Sort
 
 From `dependency_graph.rs`:
+
 ```rust
 pub fn topological_order(&self) -> Vec<PackageName> {
     algo::toposort(&self.package_graph, None)
@@ -157,10 +159,10 @@ Uses petgraph's `toposort` for deterministic compilation order.
 
 The following system packages are excluded from dependency output (matching CLI):
 
-| Address | Package |
-|---------|---------|
+| Address         | Package   |
+| --------------- | --------- |
 | `0x0000...0003` | SuiSystem |
-| `0x0000...000b` | Bridge |
+| `0x0000...000b` | Bridge    |
 
 ### 13.2 CLI Source Reference
 
@@ -171,6 +173,7 @@ The following system packages are excluded from dependency output (matching CLI)
 ### 13.3 Filter Logic
 
 CLI's `PackageDependencies::new()`:
+
 - Only includes packages where `p.published()` returns `Some`
 - System packages lack `published-at` → automatically excluded
 
@@ -180,13 +183,13 @@ CLI's `PackageDependencies::new()`:
 
 The following hardcoded values match the original CLI source:
 
-| Constant | Value | CLI Source |
-|----------|-------|------------|
-| Zero Address | `0x0000...0000` | `AccountAddress::ZERO` |
-| SuiSystem | `0x3` | `sui-types/src/lib.rs:130` |
-| Bridge | `0xb` | `sui-types/src/lib.rs:131` |
-| Mainnet Chain ID | `35834a8a` | docs, tests, `move-package-alt` |
-| Testnet Chain ID | `4c78adac` | tests |
+| Constant         | Value           | CLI Source                      |
+| ---------------- | --------------- | ------------------------------- |
+| Zero Address     | `0x0000...0000` | `AccountAddress::ZERO`          |
+| SuiSystem        | `0x3`           | `sui-types/src/lib.rs:130`      |
+| Bridge           | `0xb`           | `sui-types/src/lib.rs:131`      |
+| Mainnet Chain ID | `35834a8a`      | docs, tests, `move-package-alt` |
+| Testnet Chain ID | `4c78adac`      | tests                           |
 
 ---
 
@@ -204,12 +207,12 @@ Result A == Result B  →  WASM ≡ Rust
 
 ### 15.2 Comparison Targets
 
-| Item | Rust (CLI) | WASM | Comparison |
-|------|-----------|------|------------|
-| Module bytecode | `.mv` files | `modules[]` | Byte-level diff |
-| Dependencies | Lock order | Output order | Exact match |
-| Address resolution | `original_id` | named address | Same address |
-| published_at | Published.toml | metadata | Match |
+| Item               | Rust (CLI)     | WASM          | Comparison      |
+| ------------------ | -------------- | ------------- | --------------- |
+| Module bytecode    | `.mv` files    | `modules[]`   | Byte-level diff |
+| Dependencies       | Lock order     | Output order  | Exact match     |
+| Address resolution | `original_id`  | named address | Same address    |
+| published_at       | Published.toml | metadata      | Match           |
 
 ### 15.3 Test Scenarios
 
@@ -226,4 +229,3 @@ Result A == Result B  →  WASM ≡ Rust
 
 ✅ All fidelity tests passed!
 ```
-

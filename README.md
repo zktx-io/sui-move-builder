@@ -20,7 +20,6 @@ Build Move packages in web or Node.js with Sui CLI-compatible dependency resolut
 
 > 📖 For detailed CLI behavior documentation, see [CLI_PIPELINE.md](./CLI_PIPELINE.md)
 
-
 ## Install
 
 ```bash
@@ -259,11 +258,13 @@ npm test            # Run full integration tests
 ```
 
 **Test Cases (verified against Sui CLI):**
+
 - `nautilus.enclave` - Simple package with framework dependencies
 - `apps.kiosk` - Mysten Labs kiosk package
 - `deeptrade-core` - Complex package with Pyth/Deepbook dependencies
 
 All tests verify:
+
 - ✅ Module bytecode (identical to CLI `.mv` output)
 - ✅ Dependency IDs (exact match with CLI)
 - ✅ Dependency order (lexicographical, CLI-consistent)
@@ -271,4 +272,3 @@ All tests verify:
 ## Roadmap
 
 - **Return Build Artifacts**: Future updates will include generating and returning `Move.lock` and `Published.toml` files to the caller, facilitating deployment tracking and deterministic rebuilds.
-

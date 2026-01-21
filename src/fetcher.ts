@@ -139,13 +139,13 @@ export class GitHubFetcher extends Fetcher {
 
       let relativePath: string = item.path;
       if (subdir) {
-        if (!item.path.startsWith(subdir)) {
+        // Check for exact subdir match with trailing slash to avoid prefix collisions
+        // e.g., "packages/deepbook" should not match "packages/deepbook_v2"
+        const subdirWithSlash = subdir.endsWith("/") ? subdir : subdir + "/";
+        if (!item.path.startsWith(subdirWithSlash)) {
           continue;
         }
-        relativePath = item.path.slice(subdir.length);
-        if (relativePath.startsWith("/")) {
-          relativePath = relativePath.slice(1);
-        }
+        relativePath = item.path.slice(subdirWithSlash.length);
       }
 
       if (

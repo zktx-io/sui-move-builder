@@ -1,6 +1,5 @@
 import { promises as fs } from "fs";
 import path from "path";
-import { execSync } from "child_process";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -13,9 +12,8 @@ const DIST_DIR = path.resolve(__dirname, `../../dist/${MODE}`);
 console.log(`Running Fidelity Tests in [${MODE.toUpperCase()}] mode`);
 
 // Dynamic import from the correct distribution
-const { initMoveCompiler, buildMovePackage } = await import(
-  path.join(DIST_DIR, "index.js")
-);
+const { initMoveCompiler, buildMovePackage, fetchPackageFromGitHub } =
+  await import(path.join(DIST_DIR, "index.js"));
 
 const FIXTURES_DIR = path.join(__dirname, "fixtures");
 const JSON_DIR = path.join(__dirname, "json");
@@ -35,25 +33,21 @@ const REPOS = {
     goldenFile: "app.kiosk.json",
     network: "mainnet",
   },
+  deepbook: {
+    url: "https://github.com/MystenLabs/deepbookv3",
+    commit: "d3206b717c6f63593fae14d1ff9e1ec055f051bd",
+    packagePath: "packages/deepbook",
+    goldenFile: "deepbook.core.json",
+    network: "mainnet",
+  },
   deeptrade: {
     url: "https://github.com/DeeptradeProtocol/deeptrade-core",
     commit: "7838028ef9edf72f7dc82dc788ba06cd94ebdd9c",
     packagePath: "packages/deeptrade-core",
-    goldenFile: "deeptrade-core.json",
+    goldenFile: "deeptrade.core.json",
     network: "mainnet",
   },
 };
-
-async function setupRepo(name, config) {
-  const repoDir = path.join(FIXTURES_DIR, name);
-  if (await fs.stat(repoDir).catch(() => false)) {
-    return path.join(repoDir, config.packagePath);
-  }
-  await fs.mkdir(FIXTURES_DIR, { recursive: true });
-  execSync(`git clone ${config.url} ${repoDir}`, { stdio: "inherit" });
-  execSync(`git checkout ${config.commit}`, { cwd: repoDir, stdio: "inherit" });
-  return path.join(repoDir, config.packagePath);
-}
 
 function areDigestsEqual(digestA, digestB) {
   const normalize = (d) => {
@@ -64,13 +58,86 @@ function areDigestsEqual(digestA, digestB) {
   return normalize(digestA) === normalize(digestB);
 }
 
+// Read GitHub token from file if exists
+async function getGithubToken() {
+  try {
+    const tokenPath = path.join(__dirname, "../../test/.github_token");
+    if (await fs.stat(tokenPath).catch(() => false)) {
+      return (await fs.readFile(tokenPath, "utf-8")).trim();
+    }
+  } catch (e) {
+    // Ignore if token file doesn't exist
+  }
+  return process.env.GITHUB_TOKEN;
+}
+
+// Setup repo: check if cached in fixtures, if not fetch via packageFetcher and save
+async function setupRepo(name, config, githubToken) {
+  const packageDir = path.join(FIXTURES_DIR, name, config.packagePath);
+  const moveTomlPath = path.join(packageDir, "Move.toml");
+
+  // Check if already cached
+  if (await fs.stat(moveTomlPath).catch(() => false)) {
+    console.log(`[Cache] Using cached fixtures for ${name}`);
+    return await readLocalFiles(packageDir);
+  }
+
+  // Fetch via packageFetcher
+  console.log(`[Fetch] Downloading ${name} via GitHub API...`);
+  const githubUrl = `${config.url}/tree/${config.commit}/${config.packagePath}`;
+  const files = await fetchPackageFromGitHub(githubUrl, {
+    githubToken,
+    includeLock: true,
+  });
+
+  // Save to fixtures for future runs
+  await fs.mkdir(packageDir, { recursive: true });
+  for (const [filePath, content] of Object.entries(files)) {
+    const fullPath = path.join(packageDir, filePath);
+    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+    await fs.writeFile(fullPath, content, "utf-8");
+  }
+  console.log(`[Cache] Saved ${Object.keys(files).length} files to fixtures`);
+
+  return files;
+}
+
+// Read local files from directory
+async function readLocalFiles(dir) {
+  const files = {};
+
+  async function readDirRecursive(currentDir, baseDir = currentDir) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(currentDir, entry.name);
+      const relativePath = path.relative(baseDir, fullPath);
+      if (entry.isDirectory()) {
+        if (entry.name === "build" || entry.name === ".git") continue;
+        await readDirRecursive(fullPath, baseDir);
+      } else {
+        if (
+          entry.name.endsWith(".move") ||
+          entry.name.endsWith(".toml") ||
+          entry.name.endsWith(".lock")
+        ) {
+          files[relativePath] = await fs.readFile(fullPath, "utf-8");
+        }
+      }
+    }
+  }
+
+  await readDirRecursive(dir);
+  return files;
+}
+
 async function runTest() {
   console.log("Initializing compiler...");
   const start = performance.now();
   const wasmPath = path.resolve(DIST_DIR, "sui_move_wasm_bg.wasm");
   const wasmBuffer = await fs.readFile(wasmPath);
 
-  await initMoveCompiler({ wasm: wasmBuffer, token: process.env.GITHUB_TOKEN }); // GitHub Token used in both modes
+  const githubToken = await getGithubToken();
+  await initMoveCompiler({ wasm: wasmBuffer, token: githubToken });
   console.log(
     `Compiler initialized in ${(performance.now() - start).toFixed(2)}ms`
   );
@@ -79,43 +146,11 @@ async function runTest() {
 
   for (const [name, config] of Object.entries(REPOS)) {
     console.log(`\n=== Testing ${name} ===`);
-    const packageDir = await setupRepo(name, config);
-    const rootFiles = {};
 
-    async function readDirRecursive(dir, baseDir = dir) {
-      const entries = await fs.readdir(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-        const relativePath = path.relative(baseDir, fullPath);
-        if (entry.isDirectory()) {
-          if (entry.name === "build" || entry.name === ".git") continue;
-          await readDirRecursive(fullPath, baseDir);
-        } else {
-          if (
-            entry.name.endsWith(".move") ||
-            entry.name.endsWith(".toml") ||
-            entry.name.endsWith(".lock")
-          ) {
-            rootFiles[relativePath] = await fs.readFile(fullPath, "utf-8");
-          }
-        }
-      }
-    }
-
-    await readDirRecursive(packageDir);
+    const rootFiles = await setupRepo(name, config, githubToken);
     console.log(`[Build] Compiling ${Object.keys(rootFiles).length} files...`);
 
     try {
-      let githubToken;
-      try {
-        const tokenPath = path.join(__dirname, "../../test/.github_token");
-        if (await fs.stat(tokenPath).catch(() => false)) {
-          githubToken = (await fs.readFile(tokenPath, "utf-8")).trim();
-        }
-      } catch (e) {
-        // Ignore if token file doesn't exist
-      }
-
       const result = await buildMovePackage({
         files: rootFiles,
         network: config.network,
