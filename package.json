@@ -1,6 +1,6 @@
 {
   "name": "@zktx.io/sui-move-builder",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Build Move packages in web or Node.js with dependency fetching and dump outputs.",
   "keywords": [
     "sui",
@@ -52,8 +52,8 @@
     "build:js": "tsup --out-dir dist/full && tsup --out-dir dist/lite",
     "build": "npm run build:wasm && npm run build:js",
     "serve:test": "python3 -m http.server 8000 --directory .",
-    "test:integration": "node test/integration/fidelity_test.mjs",
-    "test:lite": "node test/integration/fidelity_test_lite.mjs",
+    "test:integration": "node test/integration/fidelity_test.mjs full",
+    "test:lite": "node test/integration/fidelity_test.mjs lite",
     "test": "npm run test:integration",
     "prepublishOnly": "npm run build"
   },

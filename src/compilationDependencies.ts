@@ -106,29 +106,45 @@ export class CompilationDependencies {
       const effectiveEdition = pkg.manifest.edition || "legacy";
 
       // Dependency ID for output: latest > original > published-at/address mapping
-      // Dependency ID for output: latest > original > published-at/address mapping
+      // Used for generating the dependency list in the binary metadata
       let publishedIdForOutput =
         pkg.manifest.latestPublishedId ||
-        pkg.manifest.originalId ||
         pkg.manifest.publishedAt ||
+        pkg.manifest.originalId ||
         pkg.resolvedTable?.[pkgName];
 
-      // Address for build (compilation): original > published-at > latest
-      // ORIGINAL CLI SOURCE:
-      // In `external-crates/move/crates/move-package-alt-compilation/src/compilation.rs`, the compilation logic
-      // constructs the `PackagePaths` using `PackageInfo` which prioritizes the explicit address in the manifest
-      // (the "original" address) over other sources to ensuring deterministic builds across environments.
-      let buildId =
-        pkg.manifest.originalId ||
-        pkg.manifest.publishedAt ||
-        pkg.manifest.latestPublishedId ||
-        publishedIdForOutput;
+      // Address for build (compilation): STRICTLY Original ID.
+      // ORIGINAL CLI SOURCE: `crates/move-package/src/compilation/build_plan.rs` & `resolution_graph.rs`
+      // The CLI compiles against the `original_published_id` to ensure deterministic builds (PackageID invariant).
+      // It does NOT upgrade the compile-time address even if `latest-published-id` is newer.
+      let buildId = pkg.manifest.originalId;
 
-      // FIX: If buildId is 0x0 (unpublished), we strictly pass 0x0 to the compiler,
+      // FIX: If buildId is 0x0 (unpublished) or undefined, we strictly pass 0x0 to the compiler,
       // matching the CLI behavior which uses AccountAddress::ZERO for unpublished deps.
+      // However, if the package has a `publishedAt` (latest) but NO `originalId` (e.g. freshly defined in Move.toml without lock history),
+      // we might need to consider if it's a "first publish" scenario where Original == Latest.
+      // But strictly speaking, if it's a dependency, it should have an Original ID from the lockfile if it's published.
+      // If we fall back to `publishedAt` here, we risk using the Latest ID for build, breaking verification.
+
+      // Fallback Strategy ensuring Strict Parsimony with CLI:
+      // 1. `originalId` (Primary)
+      // 2. If NO `originalId` and NO `publishedAt` => 0x0 (Unpublished Source)
+      // 3. If `publishedAt` exists but `originalId` missing:
+      //    In CLI, `original_published_id` is required for published packages in lockfile.
+      //    If we only have `publishedAt` (e.g. from Move.toml override), it acts as the original for that build context if it's a root/direct dep override.
+      if (!buildId && pkg.manifest.publishedAt) {
+        // Edge case: User defined [package] published-at = "0x..." in a dependency but no lockfile entry yet.
+        // Treat as original for this session.
+        buildId = pkg.manifest.publishedAt;
+      }
+
       if (!buildId) {
-        buildId = "0x0000000000000000000000000000000000000000000000000000000000000000";
-        publishedIdForOutput = buildId;
+        buildId =
+          "0x0000000000000000000000000000000000000000000000000000000000000000";
+        // If it's unpublished, the output ID is also 0x0
+        if (!publishedIdForOutput) {
+          publishedIdForOutput = buildId;
+        }
       }
 
       // Store the definitive build ID for this package
@@ -194,19 +210,20 @@ export class CompilationDependencies {
     });
 
     // Match CLI behavior: deterministic bytewise lexicographic ordering (like BTreeSet).
-    const encoder = new TextEncoder();
-    const byteCompare = (x: string, y: string): number => {
-      // Prefix with a pseudo-root so relative paths sort like CLI absolute paths.
-      const ax = encoder.encode(`/vfs/deps/${packageName}/${x}`);
-      const ay = encoder.encode(`/vfs/deps/${packageName}/${y}`);
-      const len = Math.min(ax.length, ay.length);
-      for (let i = 0; i < len; i++) {
-        if (ax[i] !== ay[i]) return ax[i] - ay[i];
-      }
-      return ax.length - ay.length;
-    };
+    // User Request: Do NOT sort source paths.
+    // const encoder = new TextEncoder();
+    // const byteCompare = (x: string, y: string): number => {
+    //   // Prefix with a pseudo-root so relative paths sort like CLI absolute paths.
+    //   const ax = encoder.encode(`/vfs/deps/${packageName}/${x}`);
+    //   const ay = encoder.encode(`/vfs/deps/${packageName}/${y}`);
+    //   const len = Math.min(ax.length, ay.length);
+    //   for (let i = 0; i < len; i++) {
+    //     if (ax[i] !== ay[i]) return ax[i] - ay[i];
+    //   }
+    //   return ax.length - ay.length;
+    // };
 
-    sourcePaths.sort(byteCompare);
+    // sourcePaths.sort(byteCompare);
 
     return sourcePaths;
   }
@@ -301,15 +318,34 @@ export class CompilationDependencies {
 
       // Handle content based on section
       if (currentSection === "package") {
-        if (trimmed.includes("name =") || trimmed.includes("version =")) {
-          // We'll reconstruct these
+        if (
+          trimmed.startsWith("name") ||
+          trimmed.startsWith("version") ||
+          trimmed.startsWith("edition") ||
+          trimmed.startsWith("published-at") ||
+          trimmed.startsWith("original-published-id")
+        ) {
+          // We'll reconstruct name/version/edition below, but we MUST preserve published-at info
+          // Actually, let's just NOT strip `published-at`.
+          // But we assume we write `name`, `version`, `edition` manually at the end (or begin).
+          // If we preserve them here, we might duplicate.
+          // The function writes: name, version, edition manually.
+          if (
+            trimmed.startsWith("published-at") ||
+            trimmed.startsWith("original-published-id")
+          ) {
+            preservedLines.push(line);
+          }
         }
-        // Skip valid properties we want to override/control
+        // Skip name, version, edition (re-added manually)
       } else if (currentSection === "addresses") {
         // Skip existing addresses
         continue;
+      } else if (currentSection === "dependencies") {
+        // Skip dependency definitions
+        continue;
       } else {
-        // Keep everything else (dependencies, comments, empty lines)
+        // Keep everything else (comments, empty lines, other sections)
         if (currentSection !== "none") {
           preservedLines.push(line);
         }
@@ -326,11 +362,9 @@ export class CompilationDependencies {
     result += preservedLines.join("\n");
 
     result += "\n[addresses]\n";
-    result += "\n[addresses]\n";
-    const sortedDetails = Object.entries(addresses).sort(([a], [b]) =>
-      a < b ? -1 : a > b ? 1 : 0
-    );
-    for (const [name, addr] of sortedDetails) {
+    // User Request: Do NOT sort addresses.
+    const details = Object.entries(addresses);
+    for (const [name, addr] of details) {
       result += `${name} = "${addr}"\n`;
     }
 

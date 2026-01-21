@@ -1,4 +1,3 @@
-import { buildMovePackage, initMoveCompiler } from "../../dist/full/index.js";
 import { promises as fs } from "fs";
 import path from "path";
 import { execSync } from "child_process";
@@ -6,6 +5,17 @@ import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// usage: node fidelity_test.mjs [full|lite]
+const MODE = process.argv[2] === "lite" ? "lite" : "full";
+const DIST_DIR = path.resolve(__dirname, `../../dist/${MODE}`);
+
+console.log(`Running Fidelity Tests in [${MODE.toUpperCase()}] mode`);
+
+// Dynamic import from the correct distribution
+const { initMoveCompiler, buildMovePackage } = await import(
+  path.join(DIST_DIR, "index.js")
+);
 
 const FIXTURES_DIR = path.join(__dirname, "fixtures");
 const JSON_DIR = path.join(__dirname, "json");
@@ -55,12 +65,15 @@ function areDigestsEqual(digestA, digestB) {
 }
 
 async function runTest() {
-  const wasmPath = path.resolve(
-    __dirname,
-    "../../dist/full/sui_move_wasm_bg.wasm"
-  );
+  console.log("Initializing compiler...");
+  const start = performance.now();
+  const wasmPath = path.resolve(DIST_DIR, "sui_move_wasm_bg.wasm");
   const wasmBuffer = await fs.readFile(wasmPath);
-  await initMoveCompiler({ wasm: wasmBuffer });
+
+  await initMoveCompiler({ wasm: wasmBuffer, token: process.env.GITHUB_TOKEN }); // GitHub Token used in both modes
+  console.log(
+    `Compiler initialized in ${(performance.now() - start).toFixed(2)}ms`
+  );
 
   let allPass = true;
 
@@ -138,20 +151,23 @@ async function runTest() {
         const actualCount = result.dependencies.length;
 
         if (expectedCount === actualCount) {
-          const expected = golden.dependencies.sort();
-          const actual = result.dependencies.sort();
-          const match = expected.every((val, index) => val === actual[index]);
+          // Strict Order Check: Do NOT sort
+          const expected = golden.dependencies;
+          const actual = result.dependencies;
+          let match = true;
+          for (let i = 0; i < expected.length; i++) {
+            if (expected[i] !== actual[i]) {
+              match = false;
+              // console.log(
+              //   `  Dependency [${i}] mismatch: Expected ${expected[i]}, Got ${actual[i]}`
+              // );
+            }
+          }
 
           if (match) {
             console.log(`Dependencies Count & Content: ✅`);
           } else {
-            console.log(`Dependencies Count: ✅, but Content: ❌`);
-            console.log("  Expected Addresses:", expected);
-            console.log("  Actual Addresses:", actual);
-            const missing = expected.filter((x) => !actual.includes(x));
-            if (missing.length) console.log("  Missing:", missing);
-            const extra = actual.filter((x) => !expected.includes(x));
-            if (extra.length) console.log("  Extra:", extra);
+            console.log(`Dependencies Content: ❌ (Order/Value mismatch)`);
             allPass = false;
           }
         } else {
@@ -159,19 +175,9 @@ async function runTest() {
             `Dependencies Count: ❌ (Got ${actualCount}, Expected ${expectedCount})`
           );
           allPass = false;
-
-          // Detailed Diff
-          const expected = golden.dependencies.sort();
-          const actual = result.dependencies.sort();
-
-          console.log("  Expected Addresses:", expected);
-          console.log("  Actual Addresses:", actual);
-
-          const missing = expected.filter((x) => !actual.includes(x));
-          if (missing.length) console.log("  Missing:", missing);
-
-          const extra = actual.filter((x) => !expected.includes(x));
-          if (extra.length) console.log("  Extra:", extra);
+          // Log arrays for debugging
+          // console.log("  Expected:", golden.dependencies);
+          // console.log("  Actual:", result.dependencies);
         }
       }
 
@@ -198,8 +204,49 @@ async function runTest() {
         }
 
         let modulesMatch = true;
-        // Binary comparison disabled as requested.
-        console.log(`Modules Content: ${modulesMatch ? "✅" : "⚠️ (Skipped)"}`);
+        for (let i = 0; i < golden.modules.length; i++) {
+          if (result.modules[i] !== golden.modules[i]) {
+            modulesMatch = false;
+            const actualBuf = Buffer.from(result.modules[i], "base64");
+            const expectedBuf = Buffer.from(golden.modules[i], "base64");
+
+            if (actualBuf.length !== expectedBuf.length) {
+              console.log(
+                `  Module ${i} mismatch: Content differs (Length mismatch: Got ${actualBuf.length}, Expected ${expectedBuf.length})`
+              );
+            } else {
+              let diffCount = 0;
+              let diffRanges = [];
+              let currentRange = null;
+
+              for (let j = 0; j < actualBuf.length; j++) {
+                if (actualBuf[j] !== expectedBuf[j]) {
+                  diffCount++;
+                  if (!currentRange) {
+                    currentRange = { start: j, length: 1 };
+                  } else if (j === currentRange.start + currentRange.length) {
+                    currentRange.length++;
+                  } else {
+                    diffRanges.push(currentRange);
+                    currentRange = { start: j, length: 1 };
+                  }
+                } else {
+                  if (currentRange) {
+                    diffRanges.push(currentRange);
+                    currentRange = null;
+                  }
+                }
+              }
+              if (currentRange) diffRanges.push(currentRange);
+
+              // console.log(`  Module ${i} mismatch: Content differs (Length matches: ${actualBuf.length})`);
+              // console.log(`    Total differing bytes: ${diffCount}`);
+              // console.log(`    Diff ranges (Start - Length):`);
+              // diffRanges.forEach(r => console.log(`      Offset ${r.start}: ${r.length} bytes`));
+            }
+          }
+        }
+        console.log(`Modules Content: ${modulesMatch ? "✅" : "❌"}`);
         if (!modulesMatch) allPass = false;
       }
     } catch (e) {

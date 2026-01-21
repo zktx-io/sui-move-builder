@@ -7,14 +7,19 @@ Build Move packages in web or Node.js with Sui CLI-compatible dependency resolut
 ## Features
 
 - ✅ **Sui CLI Compatible**: Identical dependency resolution algorithm as Sui CLI
-- ✅ **Verified Parity**: Audited against `sui-04dd` source code (Jan 2026)
-- ✅ **Lockfile Support**: Reads `Move.lock` for faster, deterministic builds
+- ✅ **Verified Parity**: Audited against `sui-04dd` source code (Jan 2026), byte-level module comparison
+- ✅ **Address Resolution**: Supports `original_id` for compilation, `published_at` for metadata (CLI-identical)
+- ✅ **Lockfile Support**: Reads `Move.lock` v0/v3/v4 for faster, deterministic builds
+- ✅ **Published.toml Support**: Reads deployment records per environment
 - ✅ **Per-Package Editions**: Each package can use its own Move edition (legacy, 2024.alpha, 2024.beta)
 - ✅ **Monorepo Support**: Handles local dependencies in monorepo structures
 - ✅ **Version Conflict Detection**: Matches Sui CLI behavior for conflicting dependency versions
 - ✅ **Browser & Node.js**: Works in both environments with WASM-based compilation
 - ✅ **GitHub Integration**: Fetches dependencies directly from git repositories
 - ✅ **GitHub Token Support**: Optional token to raise rate limits (API calls only; raw fetch remains CORS-safe)
+
+> 📖 For detailed CLI behavior documentation, see [CLI_PIPELINE.md](./CLI_PIPELINE.md)
+
 
 ## Install
 
@@ -244,6 +249,26 @@ npm run serve:test   # serves ./test via python -m http.server
 # open http://localhost:8000/test/index.html
 ```
 
+## Fidelity Tests
+
+This package includes byte-level comparison tests against the official Sui CLI output:
+
+```bash
+npm run test:lite   # Run fidelity tests (lite version)
+npm test            # Run full integration tests
+```
+
+**Test Cases (verified against Sui CLI):**
+- `nautilus.enclave` - Simple package with framework dependencies
+- `apps.kiosk` - Mysten Labs kiosk package
+- `deeptrade-core` - Complex package with Pyth/Deepbook dependencies
+
+All tests verify:
+- ✅ Module bytecode (identical to CLI `.mv` output)
+- ✅ Dependency IDs (exact match with CLI)
+- ✅ Dependency order (lexicographical, CLI-consistent)
+
 ## Roadmap
 
 - **Return Build Artifacts**: Future updates will include generating and returning `Move.lock` and `Published.toml` files to the caller, facilitating deployment tracking and deterministic rebuilds.
+

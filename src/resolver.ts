@@ -111,8 +111,6 @@ export class Resolver {
       await this.buildDependencyGraph(depGraph, rootPackage);
     }
 
-
-
     // Check for cycles
     const cycle = depGraph.detectCycle();
     if (cycle) {
@@ -151,10 +149,26 @@ export class Resolver {
         pkg.manifest.publishedAt ||
         pkg.manifest.latestPublishedId;
 
-      if (pkg.manifest.name === "Sui" || pkg.manifest.name === "sui") {
+      const isRoot = pkg.manifest.name === rootPackage.manifest.name;
 
+      // 1. Root Package Priority: Always respect explicit address in TOML (e.g. 0x0)
+      // This ensures that when building a package, we use the address strictly defined in its manifest.
+      if (isRoot) {
+        const selfAddressKey = Object.keys(pkg.manifest.addresses).find(
+          (key) => key.toLowerCase() === pkg.manifest.name.toLowerCase()
+        );
+        if (selfAddressKey && pkg.manifest.addresses[selfAddressKey]) {
+          const selfAddr = this.normalizeAddress(
+            pkg.manifest.addresses[selfAddressKey]
+          );
+          unifiedTable[pkg.manifest.name] = selfAddr;
+          unifiedTable[pkg.manifest.name.toLowerCase()] = selfAddr;
+          continue;
+        }
       }
 
+      // 2. Dependency Priority: Prefer Published ID from Lockfile
+      // For dependencies, we want the version that matches the lockfile/manifest 'published-at'.
       if (
         publishedId &&
         publishedId !== "0x0" &&
@@ -163,14 +177,29 @@ export class Resolver {
         )
       ) {
         const normalized = this.normalizeAddress(publishedId);
-        // Map both ExactName and lowercase_name just to be safe and cover common Move patterns
         unifiedTable[pkg.manifest.name] = normalized;
         unifiedTable[pkg.manifest.name.toLowerCase()] = normalized;
+        continue;
+      }
+
+      // 3. Fallback: Check overrides for dependencies if no published ID (e.g. local unpublished devs)
+      const selfAddressKey = Object.keys(pkg.manifest.addresses).find(
+        (key) => key.toLowerCase() === pkg.manifest.name.toLowerCase()
+      );
+
+      if (selfAddressKey && pkg.manifest.addresses[selfAddressKey]) {
+        const selfAddr = this.normalizeAddress(
+          pkg.manifest.addresses[selfAddressKey]
+        );
+        unifiedTable[pkg.manifest.name] = selfAddr;
+        unifiedTable[pkg.manifest.name.toLowerCase()] = selfAddr;
+        continue;
       }
     }
 
     const updatedRootToml = this.reconstructMoveToml(
       rootParsed,
+      rootPackage.manifest.dependencies, // Pass manifest deps
       unifiedTable,
       true,
       rootEdition
@@ -184,7 +213,6 @@ export class Resolver {
     const packageGroups = compilationDeps.toPackageGroupedFormat(
       this.packageFiles
     );
-
 
     return {
       files: JSON.stringify(updatedRootFiles),
@@ -257,7 +285,10 @@ export class Resolver {
       originalId: originalIdFromPublishedToml || publishedAtResult.originalId,
       latestPublishedId,
       addresses: parsed.addresses || {},
-      dependencies: parsed.dependencies || {},
+      dependencies: this.injectImplicitDependencies(
+        parsed.dependencies || {},
+        parsed.package?.name
+      ),
       devDependencies: parsed["dev-dependencies"],
     };
 
@@ -292,7 +323,9 @@ export class Resolver {
         ? this.normalizeAddress(addressToUse)
         : undefined;
 
-    const currentAddr = manifest.addresses[manifest.name];
+    const currentAddr =
+      manifest.addresses[manifest.name] ||
+      (selfAddressKey ? manifest.addresses[selfAddressKey] : undefined);
     const normalizedCurrent = currentAddr
       ? this.normalizeAddress(currentAddr)
       : undefined;
@@ -352,6 +385,9 @@ export class Resolver {
         rev: depInfo.rev,
         subdir: depInfo.subdir,
       };
+      if (depInfo.isImplicit) {
+        (dep.source as any).isImplicit = true;
+      }
     } else if (depInfo.local) {
       dep.source = {
         type: "local",
@@ -398,7 +434,17 @@ export class Resolver {
     graph: DependencyGraph,
     pkg: Package
   ): Promise<void> {
-    for (const [depName, dep] of pkg.dependencies.entries()) {
+    // Sort dependencies to ensure Implicit ones (System) are processed first.
+    // This allows the "Implicit wins" conflict logic to protect the System version.
+    const sortedDeps = Array.from(pkg.dependencies.entries()).sort(
+      ([, depA], [, depB]) => {
+        const isImplicitA = (depA.source as any).isImplicit ? 1 : 0;
+        const isImplicitB = (depB.source as any).isImplicit ? 1 : 0;
+        return isImplicitB - isImplicitA; // Descending: Implicit first
+      }
+    );
+
+    for (const [depName, dep] of sortedDeps) {
       // Convert local dependencies to git dependencies using parent's git info
       if (dep.source.type === "local") {
         if (pkg.id.source.type === "git" && dep.source.local) {
@@ -501,16 +547,31 @@ export class Resolver {
           depPackage.manifest.name
         );
         if (existingSource) {
-          // CLI behavior: same package name with different source is an error.
-          const describe = (src: DependencySource) => JSON.stringify(src);
-          throw new Error(
-            [
-              `Conflicting versions of package '${depPackage.manifest.name}' found`,
-              `Existing: ${describe(existingSource)}`,
-              `New: ${describe(dep.source)}`,
-              `When resolving dependencies for '${pkg.id.name}' -> '${depName}'`,
-            ].join("\n")
-          );
+          const isExistingImplicit = (existingSource as any).isImplicit;
+          const isNewImplicit = (dep.source as any).isImplicit;
+
+          if (isExistingImplicit && !isNewImplicit) {
+            // Existing is implicit (System Override), New is explicit.
+            // Implicit wins -> Keep existing, Ignore new.
+            continue;
+          } else if (!isExistingImplicit && isNewImplicit) {
+            // Existing is explicit, New is implicit (System Override).
+            // Implicit wins -> Overwrite existing with new.
+            // Proceed to set packageNameCache below.
+          } else if (
+            JSON.stringify(existingSource) !== JSON.stringify(dep.source)
+          ) {
+            // CLI behavior: same package name with different source is an error.
+            const describe = (src: DependencySource) => JSON.stringify(src);
+            throw new Error(
+              [
+                `Conflicting versions of package '${depPackage.manifest.name}' found`,
+                `Existing: ${describe(existingSource)}`,
+                `New: ${describe(dep.source)}`,
+                `When resolving dependencies for '${pkg.id.name}' -> '${depName}'`,
+              ].join("\n")
+            );
+          }
         }
         // Remember this package name's source for legacy lockfile handling
         this.packageNameCache.set(depPackage.manifest.name, dep.source);
@@ -626,19 +687,22 @@ export class Resolver {
 
     // Logic: Prefer Move.toml if present (it overrides).
     // Fallback to Move.lock for dependencies that don't have published-at in Manifest but have it in Lock.
-    // CRITICAL: Prefer original-published-id from lockfile over latest-published-id.
-    // This matches Sui CLI behavior where the address used for compilation is the original ID
-    // (ensuring stability across upgrades), while the latest ID is tracked for resolution.
-    // CRITICAL: Prefer original-published-id from lockfile over latest-published-id.
-    // This matches Sui CLI behavior where the address used for compilation is the original ID
-    // (ensuring stability across upgrades), while the latest ID is tracked for resolution.
-    // CRITICAL: We prioritize ORIGINAL-published-id to match compilationDependencies usage for BUILD.
-    const finalPublishedAt = lockOriginalId || manifestId || lockLatestId;
+
+    // CRITICAL: We explicitly distinguish between:
+    // 1. `originalId`: The address the package was ORIGINALLY published at. Used for COMPILATION (build consistency).
+    // 2. `latestId` (or `publishedAt`): The CURRENT address of the package. Used for LINKING/RESOLUTION.
+
+    // Move.toml [package] published-at overrides the "current" address.
+    const effectiveLatestId = manifestId || lockLatestId || lockOriginalId;
+
+    // Original ID primarily comes from Lockfile (history), but can be overridden/specified in Manifest.
+    // If not in manifest, fallback to lockfile.
+    const effectiveOriginalId = originalIdInManifest || lockOriginalId;
 
     const result = {
-      publishedAt: finalPublishedAt,
-      originalId: originalIdInManifest || lockOriginalId,
-      latestId: lockLatestId,
+      publishedAt: effectiveLatestId, // "publishedAt" generally means the current/latest address in this context
+      originalId: effectiveOriginalId,
+      latestId: effectiveLatestId,
     };
     return result;
   }
@@ -768,8 +832,8 @@ export class Resolver {
     // Lockfile order: use move.dependencies if present, otherwise package listing order
     const depsArray = Array.isArray(lockfile.move?.dependencies)
       ? lockfile.move.dependencies
-        .map((d: any) => d.name || d.id || d)
-        .filter(Boolean)
+          .map((d: any) => d.name || d.id || d)
+          .filter(Boolean)
       : [];
     const pkgArray = packages.map((p: any) => p.name || p.id).filter(Boolean);
     const lockfileOrder = [
@@ -1042,7 +1106,7 @@ export class Resolver {
       rootToml &&
       lockfile.move?.manifest_digest &&
       (await this.computeManifestDigest(rootToml)) !==
-      lockfile.move.manifest_digest
+        lockfile.move.manifest_digest
     ) {
       return false;
     }
@@ -1194,6 +1258,7 @@ export class Resolver {
    */
   private reconstructMoveToml(
     originalParsed: any,
+    dependencies: Record<string, any>,
     addresses: Record<string, string>,
     isRoot: boolean,
     editionOverride?: string
@@ -1209,11 +1274,10 @@ export class Resolver {
     }
 
     newToml += `\n[dependencies]\n`;
-    if (originalParsed.dependencies) {
-      const sortedDeps = Object.entries(originalParsed.dependencies).sort(
-        ([a], [b]) => a.localeCompare(b)
-      );
-      for (const [name, info] of sortedDeps) {
+    if (dependencies) {
+      // User Request: Do NOT sort dependencies. Preserve original/parsed order.
+      const deps = Object.entries(dependencies);
+      for (const [name, info] of deps) {
         const depInfo = info as any;
         if (depInfo.local) {
           newToml += `${name} = { local = "${depInfo.local}" }\n`;
@@ -1228,11 +1292,13 @@ export class Resolver {
     }
 
     newToml += `\n[addresses]\n`;
-    const sortedAddrs = Object.entries(addresses).sort(([a], [b]) =>
-      a.localeCompare(b)
-    );
-    for (const [addrName, addrVal] of sortedAddrs) {
+    // User Request: Do NOT sort addresses.
+    const addrs = Object.entries(addresses);
+    for (const [addrName, addrVal] of addrs) {
       newToml += `${addrName} = "${addrVal}"\n`;
+    }
+
+    if (isRoot) {
     }
 
     return newToml;
@@ -1275,6 +1341,38 @@ export class Resolver {
     return (
       suiPackageMap[packageName] || suiPackageMap[packageName.toLowerCase()]
     );
+  }
+
+  /**
+   * Helper to inject implicit dependencies (Sui) if missing
+   */
+  private injectImplicitDependencies(
+    dependencies: Record<string, any>,
+    packageName?: string
+  ): Record<string, any> {
+    // Basic implicit dependency logic for Sui
+    // If 'Sui' is not present, add it.
+    // We skip this if the package itself IS 'Sui' or 'MoveStdlib' or 'SuiSystem' (to avoid circularity or redundancy)
+    if (
+      packageName === "Sui" ||
+      packageName === "MoveStdlib" ||
+      packageName === "SuiSystem" ||
+      packageName === "sui" // Lowercase check
+    ) {
+      return dependencies;
+    }
+
+    if (!dependencies["Sui"] && !dependencies["sui"]) {
+      // Default to framework/mainnet as per typical usage
+      // Matches: https://github.com/MystenLabs/sui.git subdir crates/sui-framework/packages/sui-framework
+      dependencies["Sui"] = {
+        git: "https://github.com/MystenLabs/sui.git",
+        subdir: "crates/sui-framework/packages/sui-framework",
+        rev: "framework/mainnet",
+        isImplicit: true,
+      };
+    }
+    return dependencies;
   }
 }
 

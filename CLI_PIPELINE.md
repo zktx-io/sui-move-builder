@@ -5,7 +5,7 @@ This document maps the Sui CLI build steps to the JS + WASM implementation in th
 ## 1) Input / Source Loading
 
 - **CLI**: Reads `Move.toml`, optional `Move.lock`, and source files from disk.
-- **Here (JS)**: `buildMovePackage` receives in-memory `files` (Move.toml/Move.lock/*.move). No disk IO.
+- **Here (JS)**: `buildMovePackage` receives in-memory `files` (Move.toml/Move.lock/\*.move). No disk IO.
 
 ## 2) Dependency Resolution
 
@@ -70,3 +70,160 @@ A deep audit of the `sui-move-wasm` Rust source and JS Integration layer confirm
     - **Edition**: JS (`src/compilationDependencies.ts`) explicitly serializes `edition` into the package config, and Rust (`src/lib.rs`) deserializes it via the `PackageGroup` struct.
     - **Address Fidelity**: The system supports standard `0x0` addresses for unpublished dependencies, matching CLI default behavior verified in `build_config.rs`.
 3.  **Result**: Complex integration tests pass with this strict configuration.
+
+---
+
+## 10) Address Resolution Rules
+
+The following address resolution logic replicates the original Sui CLI behavior (`resolution_graph.rs`, `legacy_parser.rs`):
+
+### 10.1 Two Address Types
+
+| Address | Purpose | Source |
+|---------|---------|--------|
+| **`original_id`** | Compilation (bytecode address) | Move.lock `original-published-id` or Move.toml `original-id` |
+| **`published_at`** | Output metadata / linking | Move.lock `latest-published-id` or Move.toml `published-at` |
+
+### 10.2 Resolution Priority
+
+1. **Additional Named Addresses** (CLI option) - highest priority
+2. **dev-addresses** (root package only, dev mode only)
+3. **Move.lock** `[env.<chain_id>]` section (when Move.toml address is `0x0`)
+4. **Move.toml** `[addresses]` section - default
+
+### 10.3 Move.toml `[addresses]` Parsing
+
+From `get_manifest_address_info()`:
+- If only `original_id` exists → `published_at = original_id`
+- If both exist → used separately
+- If `original_id = 0x0` → package treated as unpublished
+
+### 10.4 dev-addresses Behavior
+
+- Applied **only in dev mode**
+- Applied **only to root package**, not dependencies
+- Cannot introduce new named addresses (override only)
+- Conflicting assignments cause errors
+
+---
+
+## 11) Published.toml Handling
+
+### 11.1 File Purpose
+
+Output record of deployment. Contains `original_id` and `published_at` per environment.
+
+### 11.2 Loading Priority (per package)
+
+```
+Published.toml → legacy_data (from Move.lock) → None
+```
+
+- **All packages** (root + dependencies) attempt to read their own `Published.toml`
+- Environment-specific: `[mainnet]`, `[testnet]`, etc.
+
+### 11.3 Usage in Build
+
+| Context | Address Used |
+|---------|-------------|
+| WASM Compilation | `original_id` |
+| Output Metadata | `published_at` (latest) |
+
+---
+
+## 12) Dependency Ordering
+
+### 12.1 Deterministic Ordering
+
+- Dependencies stored in `BTreeMap` → **lexicographical order** by package name
+- Not declaration order in Move.toml
+
+### 12.2 Topological Sort
+
+From `dependency_graph.rs`:
+```rust
+pub fn topological_order(&self) -> Vec<PackageName> {
+    algo::toposort(&self.package_graph, None)
+}
+```
+
+Uses petgraph's `toposort` for deterministic compilation order.
+
+---
+
+## 13) System Package Exclusion
+
+### 13.1 Excluded from Output
+
+The following system packages are excluded from dependency output (matching CLI):
+
+| Address | Package |
+|---------|---------|
+| `0x0000...0003` | SuiSystem |
+| `0x0000...000b` | Bridge |
+
+### 13.2 CLI Source Reference
+
+- `sui-types/src/lib.rs:130`: `SUI_SYSTEM_ADDRESS = 0x3`
+- `sui-types/src/lib.rs:131`: `BRIDGE_ADDRESS = 0xb`
+- `sui-move-build/src/lib.rs:616`: `p.published()` check filters unpublished deps
+
+### 13.3 Filter Logic
+
+CLI's `PackageDependencies::new()`:
+- Only includes packages where `p.published()` returns `Some`
+- System packages lack `published-at` → automatically excluded
+
+---
+
+## 14) Verified Constants
+
+The following hardcoded values match the original CLI source:
+
+| Constant | Value | CLI Source |
+|----------|-------|------------|
+| Zero Address | `0x0000...0000` | `AccountAddress::ZERO` |
+| SuiSystem | `0x3` | `sui-types/src/lib.rs:130` |
+| Bridge | `0xb` | `sui-types/src/lib.rs:131` |
+| Mainnet Chain ID | `35834a8a` | docs, tests, `move-package-alt` |
+| Testnet Chain ID | `4c78adac` | tests |
+
+---
+
+## 15) WASM-Rust Parity Verification
+
+### 15.1 Verification Method
+
+```
+[Same Input] ─┬─▶ [sui move build (Rust)]  ─▶ Result A
+              │
+              └─▶ [sui-move-builder (WASM)] ─▶ Result B
+
+Result A == Result B  →  WASM ≡ Rust
+```
+
+### 15.2 Comparison Targets
+
+| Item | Rust (CLI) | WASM | Comparison |
+|------|-----------|------|------------|
+| Module bytecode | `.mv` files | `modules[]` | Byte-level diff |
+| Dependencies | Lock order | Output order | Exact match |
+| Address resolution | `original_id` | named address | Same address |
+| published_at | Published.toml | metadata | Match |
+
+### 15.3 Test Scenarios
+
+1. **Move.toml only** (initial build): Both produce identical Lock
+2. **Move.toml + Lock** (rebuild): Same bytecode verification
+3. **+ Published.toml** (deployed package): Correct address compilation
+
+### 15.4 Fidelity Test Results (2026-01-21)
+
+```
+✅ nautilus: Dependencies ✅, Modules ✅
+✅ apps: Dependencies ✅, Modules ✅
+✅ deeptrade: Dependencies ✅, Modules ✅
+
+✅ All fidelity tests passed!
+```
+

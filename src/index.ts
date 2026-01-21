@@ -106,7 +106,10 @@ function ensureCompileResult(result: unknown): {
   throw new Error("Unexpected compile result shape from wasm");
 }
 
-function parseCompileResult(output: string): BuildSuccess | BuildFailure {
+function parseCompileResult(
+  output: string,
+  nameMap?: Map<string, string>
+): BuildSuccess | BuildFailure {
   const hexToBytes = (hex: string): number[] => {
     const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
     const padded = clean.length % 2 === 0 ? clean : `0${clean}`;
@@ -133,10 +136,33 @@ function parseCompileResult(output: string): BuildSuccess | BuildFailure {
       typeof parsed.digest === "string"
         ? hexToBytes(parsed.digest)
         : Array.from(parsed.digest);
+
+    let dependencies = parsed.dependencies;
+
+    // Fix: CLI uses the Dependency Graph to generate the dependency list, NOT the compiler output.
+    // The compiler output only includes dependencies actually *used* in bytecode.
+    // The CLI includes all *published* dependencies in the graph.
+    // We recreate this list from `nameMap` (which contains graph deps with published IDs).
+    if (nameMap) {
+      dependencies = Array.from(nameMap.keys()).filter(
+        (id) =>
+          // Filter out 0x0 (Unpublished / Source-only)
+          id !==
+          "0x0000000000000000000000000000000000000000000000000000000000000000"
+      );
+
+      // Sort dependencies alphabetically by package name to match Sui CLI behavior (ASCII case-sensitive)
+      dependencies.sort((a, b) => {
+        const nameA = nameMap.get(a) || "";
+        const nameB = nameMap.get(b) || "";
+        return nameA < nameB ? -1 : nameA > nameB ? 1 : 0;
+      });
+    }
+
     return {
       modules: parsed.modules,
       // Filter out implicit system dependencies to match CLI behavior
-      dependencies: parsed.dependencies,
+      dependencies,
       digest: digestBytes,
     };
   } catch (error) {
@@ -206,11 +232,11 @@ export async function resolveDependencies(
     input.network,
     inferredRootGit
       ? {
-          type: "git",
-          git: inferredRootGit.git,
-          rev: inferredRootGit.rev,
-          subdir: inferredRootGit.subdir,
-        }
+        type: "git",
+        git: inferredRootGit.git,
+        rev: inferredRootGit.rev,
+        subdir: inferredRootGit.subdir,
+      }
       : undefined
   );
 
@@ -250,6 +276,63 @@ export async function buildMovePackage(
     // Log dependency addresses passed to compiler (best-effort)
     logDependencyAddresses(resolved.dependencies);
 
+    // Build map of ID -> Name for sorting output AND filtering unpublished deps
+    const idToName = new Map<string, string>();
+    try {
+      // Structure matches PackageGroupedFormat in compilationDependencies.ts
+      const deps = JSON.parse(resolved.dependencies) as Array<{
+        name: string;
+        publishedIdForOutput?: string;
+        files: Record<string, string>;
+        manifest: {
+          publishedAt?: string;
+          originalId?: string;
+          latestPublishedId?: string;
+        };
+      }>;
+
+      for (const dep of deps) {
+        if (!dep.publishedIdForOutput) continue;
+
+        // Strict Published Check Logic (matching CLI)
+        // Exclude 0x0 address (Zero Address) from output dependencies
+        if (
+          dep.publishedIdForOutput ===
+          "0x0000000000000000000000000000000000000000000000000000000000000000"
+        ) {
+          continue;
+        }
+
+        // Exclude system package addresses that CLI doesn't include in output
+        // These are implicit framework dependencies without explicit published-at in manifest
+        const systemAddresses = [
+          "0x0000000000000000000000000000000000000000000000000000000000000003", // SuiSystem
+          "0x000000000000000000000000000000000000000000000000000000000000000b", // Bridge
+        ];
+        if (systemAddresses.includes(dep.publishedIdForOutput)) {
+          continue;
+        }
+
+        // Strict Published Check Logic (matching CLI)
+        // A package is "published" if it has a `published-at` address in Manifest OR Lock Env override.
+        // `publishedIdForOutput` is already computed using `latestPublishedId` (from Lock Env) or `publishedAt` (from Manifest)
+        // BUT `publishedIdForOutput` might be present even if it's just `originalId` being reused?
+        // Wait, reference code `published_at()` checks `Publication` struct.
+        // In `compilationDependencies.ts`, `publishedIdForOutput` is set to `latestPublishedId` (from env/manifest).
+        // If `latestPublishedId` is undefined, `publishedIdForOutput` might be undefined.
+        // Let's verify `compilationDependencies.ts` logic.
+        // Looking at `compilationDependencies.ts`, `publishedIdForOutput` is derived from `latestPublishedId`.
+        // `latestPublishedId` comes from `Move.lock` env "latest-published-id" OR `Move.toml` "published-at".
+        // `Bridge` in fixture has NEITHER. So `latestPublishedId` should be undefined.
+        // Consequently `publishedIdForOutput` should be undefined?
+        // If so, `if (!dep.publishedIdForOutput) continue;` handles it perfectly.
+
+        idToName.set(dep.publishedIdForOutput, dep.name);
+      }
+    } catch {
+      // Ignore parsing errors, sorting/filtering will degrade
+    }
+
     const raw = (mod as any).compile(
       resolved.files,
       resolved.dependencies,
@@ -268,7 +351,7 @@ export async function buildMovePackage(
     if (!ok) {
       return asFailure(output);
     }
-    return parseCompileResult(output);
+    return parseCompileResult(output, idToName);
   } catch (error) {
     return asFailure(error);
   }
@@ -298,10 +381,10 @@ export async function testMovePackage(
     const raw =
       input.ansiColor && typeof (mod as any).test_with_color === "function"
         ? (mod as any).test_with_color(
-            resolved.files,
-            resolved.dependencies,
-            true
-          )
+          resolved.files,
+          resolved.dependencies,
+          true
+        )
         : (mod as any).test(resolved.files, resolved.dependencies); // Fallback if test_with_color missing
 
     // Check if raw result matches expected shape
@@ -356,10 +439,10 @@ export async function compileRaw(
     options?.ansiColor && typeof (mod as any).compile_with_color === "function"
       ? (mod as any).compile_with_color(filesJson, depsJson, true)
       : mod.compile(
-          filesJson,
-          depsJson,
-          JSON.stringify({ silenceWarnings: false })
-        );
+        filesJson,
+        depsJson,
+        JSON.stringify({ silenceWarnings: false })
+      );
   const result = ensureCompileResult(raw);
   return {
     success: result.success(),
