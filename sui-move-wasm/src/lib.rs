@@ -1,6 +1,7 @@
 use base64::{Engine as _, engine::general_purpose};
 use blake2::digest::Update;
 use blake2::Blake2bVar;
+use sha2::{Sha256, Digest};
 use move_bytecode_utils::Modules;
 use move_compiler::{Compiler, Flags, editions::{Flavor, Edition}, shared::{NumericalAddress, PackageConfig, PackagePaths}, diagnostics::report_diagnostics_to_buffer};
 use move_core_types::{account_address::AccountAddress, language_storage::ModuleId};
@@ -1205,4 +1206,181 @@ pub fn test(
     dependencies_json: &str,
 ) -> MoveTestResult {
     test_impl(files_json, dependencies_json)
+}
+
+/// Compute manifest digest for Move.lock V4 generation.
+/// This matches the CLI's `compute_digest` implementation:
+/// - Takes a JSON object with full dependency info
+/// - Serializes to TOML format matching `RepinTriggers { deps: BTreeMap<PackageName, ReplacementDependency> }`
+/// - Returns uppercase hex SHA256 hash
+/// 
+/// Input format: `{ "deps": [ { "name": "Dep1", "git": "...", "subdir": "...", "rev": "..." }, ... ] }`
+/// Output format: `"E3A1B2C4...\"`  (64-char uppercase hex)
+#[wasm_bindgen]
+pub fn compute_manifest_digest(deps_json: &str) -> String {
+    use std::path::PathBuf;
+    use std::collections::BTreeMap as StdBTreeMap;
+    
+    // Structs matching CLI's ReplacementDependency/DefaultDependency/ManifestDependencyInfo exactly
+    // Order of fields MUST match CLI for identical serialization
+    
+    #[derive(Serialize)]
+    struct ManifestGitDependency {
+        #[serde(rename = "git")]
+        repo: String,
+        #[serde(default)]
+        rev: Option<String>,
+        #[serde(default)]
+        subdir: PathBuf,
+    }
+    
+    // LocalDepInfo: { local = "<path>" } - matches CLI's LocalDepInfo
+    #[derive(Serialize)]
+    struct LocalDepInfo {
+        local: PathBuf,
+    }
+    
+    // ManifestDependencyInfo enum - matches CLI's ManifestDependencyInfo
+    // CLI has: Git, External, Local, OnChain, System - we support Git and Local
+    // NOTE: CLI does NOT use #[serde(untagged)] - it uses default enum serialization
+    #[derive(Serialize)]
+    enum ManifestDependencyInfo {
+        Git(ManifestGitDependency),
+        Local(LocalDepInfo),
+    }
+    
+    #[derive(Serialize)]
+    #[serde(rename_all = "kebab-case")]
+    struct DefaultDependency {
+        #[serde(flatten)]
+        dependency_info: ManifestDependencyInfo,  // Now supports Git and Local!
+        // CLI does NOT use skip_serializing_if - these fields always serialize
+        #[serde(rename = "override", default)]
+        is_override: bool,
+        #[serde(default)]
+        rename_from: Option<String>,
+        #[serde(default)]
+        modes: Option<Vec<String>>,
+    }
+    
+    // PublishAddresses is BTreeMap<String, String> in CLI
+    type PublishAddresses = StdBTreeMap<String, String>;
+    
+    #[derive(Serialize)]
+    #[serde(rename_all = "kebab-case")]
+    struct ReplacementDependency {
+        #[serde(flatten, default)]
+        dependency: Option<DefaultDependency>,
+        #[serde(flatten, default)]
+        addresses: Option<PublishAddresses>,
+        #[serde(default)]
+        use_environment: Option<String>,
+    }
+    
+    #[derive(Serialize)]
+    struct RepinTriggers {
+        deps: BTreeMap<String, ReplacementDependency>,
+    }
+    
+    // Parse the JSON input
+    #[derive(Deserialize)]
+    struct DepInfo {
+        name: String,
+        #[serde(default)]
+        git: Option<String>,
+        #[serde(default)]
+        subdir: Option<String>,
+        #[serde(default)]
+        rev: Option<String>,
+        #[serde(default)]
+        local: Option<String>,  // For local dependencies: { local = "<path>" }
+        #[serde(default)]
+        use_environment: Option<String>,
+    }
+    
+    #[derive(Deserialize)]
+    struct Input {
+        deps: Vec<DepInfo>,
+    }
+    
+    let input: Input = match serde_json::from_str(deps_json) {
+        Ok(i) => i,
+        Err(_) => {
+            // Fallback: try parsing as simple string array (backward compat)
+            let simple: Vec<String> = match serde_json::from_str(deps_json) {
+                Ok(s) => s,
+                Err(_) => return String::new(),
+            };
+            // Build simple deps map
+            let mut deps_map: BTreeMap<String, ReplacementDependency> = BTreeMap::new();
+            for name in simple {
+                deps_map.insert(name.clone(), ReplacementDependency {
+                    dependency: None,
+                    addresses: None,
+                    use_environment: None,
+                });
+            }
+            let triggers = RepinTriggers { deps: deps_map };
+            let serialized = match toml_edit::ser::to_string(&triggers) {
+                Ok(s) => s,
+                Err(_) => return String::new(),
+            };
+            let hash = Sha256::digest(serialized.as_bytes());
+            return format!("{:X}", hash);
+        }
+    };
+    
+    // Build the deps map matching CLI structure
+    // CLI's ManifestDependencyInfo can be Git, Local, External, OnChain, or System
+    // We support Git and Local (the most common cases)
+    let mut deps_map: BTreeMap<String, ReplacementDependency> = BTreeMap::new();
+    for dep in input.deps {
+        // Determine dependency type based on input fields
+        let dep_info: Option<DefaultDependency> = if let Some(repo) = dep.git {
+            // Git dependency: { git = "...", subdir = "...", rev = "..." }
+            Some(DefaultDependency {
+                dependency_info: ManifestDependencyInfo::Git(ManifestGitDependency {
+                    repo,
+                    rev: dep.rev,
+                    subdir: PathBuf::from(dep.subdir.unwrap_or_default()),
+                }),
+                is_override: false,
+                rename_from: None,
+                modes: None,
+            })
+        } else if let Some(local_path) = dep.local {
+            // Local dependency: { local = "<path>" }
+            Some(DefaultDependency {
+                dependency_info: ManifestDependencyInfo::Local(LocalDepInfo {
+                    local: PathBuf::from(local_path),
+                }),
+                is_override: false,
+                rename_from: None,
+                modes: None,
+            })
+        } else {
+            // No specific dep info (system deps, etc.)
+            None
+        };
+        
+        deps_map.insert(dep.name, ReplacementDependency {
+            dependency: dep_info,
+            addresses: None,
+            use_environment: dep.use_environment,
+        });
+    }
+    
+    let triggers = RepinTriggers { deps: deps_map };
+    
+    // Serialize to TOML
+    let serialized = match toml_edit::ser::to_string(&triggers) {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    
+    // Compute SHA256 hash
+    let hash = Sha256::digest(serialized.as_bytes());
+    
+    // Format as uppercase hex
+    format!("{:X}", hash)
 }

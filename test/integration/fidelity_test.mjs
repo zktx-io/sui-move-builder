@@ -155,12 +155,50 @@ async function runTest() {
         files: rootFiles,
         network: config.network,
         githubToken,
+        onProgress: (event) => {
+          switch (event.type) {
+            case "resolve_start":
+              console.log("  → Resolving dependencies...");
+              break;
+            case "resolve_dep":
+              console.log(`    [${event.current}/${event.total}] ${event.name} (${event.source})`);
+              break;
+            case "resolve_complete":
+              console.log(`  → Resolved ${event.count} dependencies`);
+              break;
+            case "compile_start":
+              console.log("  → Compiling...");
+              break;
+            case "compile_complete":
+              console.log("  → Compilation complete");
+              break;
+            case "lockfile_generate":
+              console.log("  → Generating Move.lock");
+              break;
+          }
+        },
       });
 
       if ("error" in result) {
         console.error(`[Error] Build failed:`, result.error);
         allPass = false;
         continue;
+      }
+
+      // Compare Move.lock (generated V4 vs existing fixture)
+      const existingLock = rootFiles["Move.lock"];
+      if (existingLock && result.moveLock) {
+        console.log(`\n  📄 Move.lock Comparison:`);
+        console.log(`  ├─ Existing (V3): ${existingLock.split('\n').length} lines`);
+        console.log(`  └─ Generated (V4): ${result.moveLock.split('\n').length} lines`);
+      }
+      
+      // Always save generated Move.lock as MoveV4.lock for inspection
+      if (result.moveLock) {
+        const packageDir = path.join(FIXTURES_DIR, name, config.packagePath);
+        const generatedLockPath = path.join(packageDir, "MoveV4.lock");
+        await fs.writeFile(generatedLockPath, result.moveLock, "utf-8");
+        console.log(`  📝 Saved generated lock to: MoveV4.lock`);
       }
 
       const golden = JSON.parse(

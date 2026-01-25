@@ -1,6 +1,19 @@
 import { GitHubFetcher } from "./fetcher.js";
 import { resolve as resolveMoveToml } from "./resolver.js";
 import { parseToml } from "./tomlParser.js";
+import { generateMoveLockV4FromJson } from "./lockfileGenerator.js";
+
+/** Build progress event types for tracking build status */
+export type BuildProgressEvent =
+  | { type: "resolve_start" }
+  | { type: "resolve_dep"; name: string; source: string; current: number; total: number }
+  | { type: "resolve_complete"; count: number }
+  | { type: "compile_start" }
+  | { type: "compile_complete" }
+  | { type: "lockfile_generate" };
+
+/** Callback function for receiving build progress events */
+export type OnProgressCallback = (event: BuildProgressEvent) => void;
 
 export interface ResolvedDependencies {
   /** JSON string of resolved files for the root package */
@@ -32,6 +45,8 @@ export interface BuildInput {
   lintFlag?: string;
   /** Use this option to strip metadata from the output (e.g. for mainnet dep matching). */
   stripMetadata?: boolean;
+  /** Optional progress callback for build events */
+  onProgress?: OnProgressCallback;
 }
 
 export interface BuildSuccess {
@@ -41,6 +56,10 @@ export interface BuildSuccess {
   dependencies: string[];
   /** Blake2b-256 package digest as byte array (matches Sui CLI JSON). */
   digest: number[];
+  /** Move.lock V4 content (TOML string) */
+  moveLock: string;
+  /** Build environment used */
+  environment: string;
 }
 
 export interface BuildFailure {
@@ -108,7 +127,9 @@ function ensureCompileResult(result: unknown): {
 
 function parseCompileResult(
   output: string,
-  nameMap?: Map<string, string>
+  nameMap?: Map<string, string>,
+  moveLock?: string,
+  environment?: string
 ): BuildSuccess | BuildFailure {
   const hexToBytes = (hex: string): number[] => {
     const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
@@ -164,6 +185,8 @@ function parseCompileResult(
       // Filter out implicit system dependencies to match CLI behavior
       dependencies,
       digest: digestBytes,
+      moveLock: moveLock || "",
+      environment: environment || "mainnet",
     };
   } catch (error) {
     return asFailure(error);
@@ -232,11 +255,11 @@ export async function resolveDependencies(
     input.network,
     inferredRootGit
       ? {
-          type: "git",
-          git: inferredRootGit.git,
-          rev: inferredRootGit.rev,
-          subdir: inferredRootGit.subdir,
-        }
+        type: "git",
+        git: inferredRootGit.git,
+        rev: inferredRootGit.rev,
+        subdir: inferredRootGit.subdir,
+      }
       : undefined
   );
 
@@ -250,6 +273,8 @@ export async function resolveDependencies(
 export async function buildMovePackage(
   input: BuildInput
 ): Promise<BuildSuccess | BuildFailure> {
+  const environment = input.network || "mainnet";
+
   try {
     // Filter input files to only include valid Move package files
     // This mimics the CLI behavior of only processing relevant files from the directory
@@ -267,10 +292,23 @@ export async function buildMovePackage(
     }
     input.files = filteredFiles;
 
+    // Emit resolve_start event
+    input.onProgress?.({ type: "resolve_start" });
+
     // Use pre-resolved dependencies if provided, otherwise resolve them
     const resolved = input.resolvedDependencies
       ? input.resolvedDependencies
       : await resolveDependencies(input);
+
+    // Emit resolve_complete event
+    let depCount = 0;
+    try {
+      const deps = JSON.parse(resolved.dependencies) as Array<{ name: string }>;
+      depCount = deps.length;
+    } catch {
+      // Ignore
+    }
+    input.onProgress?.({ type: "resolve_complete", count: depCount });
 
     const mod = await loadWasm(input.wasm);
     // Log dependency addresses passed to compiler (best-effort)
@@ -278,6 +316,7 @@ export async function buildMovePackage(
 
     // Build map of ID -> Name for sorting output AND filtering unpublished deps
     const idToName = new Map<string, string>();
+    let rootPackageName = "Package";
     try {
       // Structure matches PackageGroupedFormat in compilationDependencies.ts
       const deps = JSON.parse(resolved.dependencies) as Array<{
@@ -290,6 +329,20 @@ export async function buildMovePackage(
           latestPublishedId?: string;
         };
       }>;
+
+      // Extract root package name and direct dependencies from Move.toml
+      const moveToml = input.files["Move.toml"];
+      let rootManifestDeps: string[] = [];
+      if (moveToml) {
+        const parsed = parseToml(moveToml);
+        if (parsed.package?.name) {
+          rootPackageName = parsed.package.name;
+        }
+        // Get direct dependencies from [dependencies] section
+        if (parsed.dependencies) {
+          rootManifestDeps = Object.keys(parsed.dependencies as Record<string, unknown>);
+        }
+      }
 
       for (const dep of deps) {
         if (!dep.publishedIdForOutput) continue;
@@ -313,25 +366,14 @@ export async function buildMovePackage(
           continue;
         }
 
-        // Strict Published Check Logic (matching CLI)
-        // A package is "published" if it has a `published-at` address in Manifest OR Lock Env override.
-        // `publishedIdForOutput` is already computed using `latestPublishedId` (from Lock Env) or `publishedAt` (from Manifest)
-        // BUT `publishedIdForOutput` might be present even if it's just `originalId` being reused?
-        // Wait, reference code `published_at()` checks `Publication` struct.
-        // In `compilationDependencies.ts`, `publishedIdForOutput` is set to `latestPublishedId` (from env/manifest).
-        // If `latestPublishedId` is undefined, `publishedIdForOutput` might be undefined.
-        // Let's verify `compilationDependencies.ts` logic.
-        // Looking at `compilationDependencies.ts`, `publishedIdForOutput` is derived from `latestPublishedId`.
-        // `latestPublishedId` comes from `Move.lock` env "latest-published-id" OR `Move.toml` "published-at".
-        // `Bridge` in fixture has NEITHER. So `latestPublishedId` should be undefined.
-        // Consequently `publishedIdForOutput` should be undefined?
-        // If so, `if (!dep.publishedIdForOutput) continue;` handles it perfectly.
-
         idToName.set(dep.publishedIdForOutput, dep.name);
       }
     } catch {
       // Ignore parsing errors, sorting/filtering will degrade
     }
+
+    // Emit compile_start event
+    input.onProgress?.({ type: "compile_start" });
 
     const raw = (mod as any).compile(
       resolved.files,
@@ -348,10 +390,43 @@ export async function buildMovePackage(
     const ok = result.success();
     const output = result.output();
 
+    // Emit compile_complete event
+    input.onProgress?.({ type: "compile_complete" });
+
     if (!ok) {
       return asFailure(output);
     }
-    return parseCompileResult(output, idToName);
+
+    // Emit lockfile_generate event
+    input.onProgress?.({ type: "lockfile_generate" });
+
+    // Get rootManifestDeps from Move.toml if not already extracted
+    let rootManifestDeps: string[] = [];
+    let rootManifestDepsInfo: Record<string, any> | undefined;
+    try {
+      const moveToml = input.files["Move.toml"];
+      if (moveToml) {
+        const parsed = parseToml(moveToml);
+        if (parsed.dependencies) {
+          rootManifestDeps = Object.keys(parsed.dependencies as Record<string, unknown>);
+          rootManifestDepsInfo = parsed.dependencies as Record<string, any>;
+        }
+      }
+    } catch {
+      // Ignore
+    }
+
+    // Generate Move.lock V4
+    const moveLock = generateMoveLockV4FromJson(
+      resolved.dependencies,
+      rootPackageName,
+      environment,
+      rootManifestDeps,
+      mod.compute_manifest_digest,
+      rootManifestDepsInfo
+    );
+
+    return parseCompileResult(output, idToName, moveLock, environment);
   } catch (error) {
     return asFailure(error);
   }
@@ -381,10 +456,10 @@ export async function testMovePackage(
     const raw =
       input.ansiColor && typeof (mod as any).test_with_color === "function"
         ? (mod as any).test_with_color(
-            resolved.files,
-            resolved.dependencies,
-            true
-          )
+          resolved.files,
+          resolved.dependencies,
+          true
+        )
         : (mod as any).test(resolved.files, resolved.dependencies); // Fallback if test_with_color missing
 
     // Check if raw result matches expected shape
@@ -439,10 +514,10 @@ export async function compileRaw(
     options?.ansiColor && typeof (mod as any).compile_with_color === "function"
       ? (mod as any).compile_with_color(filesJson, depsJson, true)
       : mod.compile(
-          filesJson,
-          depsJson,
-          JSON.stringify({ silenceWarnings: false })
-        );
+        filesJson,
+        depsJson,
+        JSON.stringify({ silenceWarnings: false })
+      );
   const result = ensureCompileResult(raw);
   return {
     success: result.success(),

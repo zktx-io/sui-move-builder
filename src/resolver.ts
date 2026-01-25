@@ -503,6 +503,12 @@ export class Resolver {
         subdir
       );
 
+      // Update rev with resolved commit SHA (resolves tags/branches to actual SHA)
+      const resolvedSha = this.fetcher.getResolvedSha(dep.source.git!, dep.source.rev!);
+      if (resolvedSha) {
+        dep.source.rev = resolvedSha;
+      }
+
       // Find Move.toml
       let moveTomlContent: string | null = null;
       const networkTomlName = `Move.${this.network}.toml`;
@@ -832,8 +838,8 @@ export class Resolver {
     // Lockfile order: use move.dependencies if present, otherwise package listing order
     const depsArray = Array.isArray(lockfile.move?.dependencies)
       ? lockfile.move.dependencies
-          .map((d: any) => d.name || d.id || d)
-          .filter(Boolean)
+        .map((d: any) => d.name || d.id || d)
+        .filter(Boolean)
       : [];
     const pkgArray = packages.map((p: any) => p.name || p.id).filter(Boolean);
     const lockfileOrder = [
@@ -1106,7 +1112,7 @@ export class Resolver {
       rootToml &&
       lockfile.move?.manifest_digest &&
       (await this.computeManifestDigest(rootToml)) !==
-        lockfile.move.manifest_digest
+      lockfile.move.manifest_digest
     ) {
       return false;
     }

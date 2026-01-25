@@ -10,6 +10,7 @@ Build Move packages in web or Node.js with Sui CLI-compatible dependency resolut
 - ✅ **Verified Parity**: Audited against `sui-04dd` source code (Jan 2026), byte-level module comparison
 - ✅ **Address Resolution**: Supports `original_id` for compilation, `published_at` for metadata (CLI-identical)
 - ✅ **Lockfile Support**: Reads `Move.lock` v0/v3/v4 for faster, deterministic builds
+- ✅ **Move.lock V4 Output**: Generates **V4 format** (`version = 4`) with CLI-compatible `manifest_digest`
 - ✅ **Published.toml Support**: Reads deployment records per environment
 - ✅ **Per-Package Editions**: Each package can use its own Move edition (legacy, 2024.alpha, 2024.beta)
 - ✅ **Monorepo Support**: Handles local dependencies in monorepo structures
@@ -93,6 +94,8 @@ const result = await buildMovePackage({
 if (result.success) {
   console.log("Digest:", result.digest);
   console.log("Modules:", result.modules); // Base64-encoded bytecode
+  console.log("Move.lock:", result.moveLock); // V4 lockfile content
+  console.log("Environment:", result.environment); // e.g., "mainnet"
 } else {
   console.error("Build failed:", result.error);
 }
@@ -271,4 +274,5 @@ All tests verify:
 
 ## Roadmap
 
-- **Return Build Artifacts**: Future updates will include generating and returning `Move.lock` and `Published.toml` files to the caller, facilitating deployment tracking and deterministic rebuilds.
+- ✅ **Move.lock V4 Generation**: Build results now include CLI-compatible `moveLock` field
+- **Published.toml Generation**: Future updates will include generating `Published.toml` for deployment tracking

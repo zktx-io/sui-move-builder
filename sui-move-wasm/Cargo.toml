@@ -226,7 +226,9 @@ hex = "0.4.3"
 console_error_panic_hook = "0.1.7"
 base64 = "0.21"
 toml = "0.7"
+toml_edit = { version = "0.22.24", features = ["serde"] }
 blake2 = "0.10"
+sha2 = "0.9.3"
 once_cell = "1.18.0"
 prometheus = { workspace = true }
 errno = "=0.3.99"

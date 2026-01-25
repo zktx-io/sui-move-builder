@@ -29,8 +29,8 @@ This document maps the Sui CLI build steps to the JS + WASM implementation in th
 
 ## 6) Output
 
-- **CLI**: Modules (topo-sorted), dependencies (hex IDs), digest.
-- **Here (WASM/Rust)**: Returns `{ modules, dependencies, digest }` with topo-sorted modules. Dependencies now match CLI ordering/content. Compilation uses the original-published-id for address resolution, while the emitted `dependencies` list prefers `latest-published-id` from Move.lock when available (mirrors CLI logs/JSON).
+- **CLI**: Modules (topo-sorted), dependencies (hex IDs), digest, Move.lock.
+- **Here (WASM/Rust + JS)**: Returns `{ modules, dependencies, digest, moveLock, environment }` with topo-sorted modules. Dependencies now match CLI ordering/content. Compilation uses the original-published-id for address resolution, while the emitted `dependencies` list prefers `latest-published-id` from Move.lock when available (mirrors CLI logs/JSON). **Move.lock V4** is generated with CLI-compatible `manifest_digest` values.
 
 ## Known Limitations
 
@@ -70,6 +70,43 @@ A deep audit of the `sui-move-wasm` Rust source and JS Integration layer confirm
     - **Edition**: JS (`src/compilationDependencies.ts`) explicitly serializes `edition` into the package config, and Rust (`src/lib.rs`) deserializes it via the `PackageGroup` struct.
     - **Address Fidelity**: The system supports standard `0x0` addresses for unpublished dependencies, matching CLI default behavior verified in `build_config.rs`.
 3.  **Result**: Complex integration tests pass with this strict configuration.
+
+---
+
+## 9.5) Move.lock V4 Generation
+
+### V4 Format (version = 4)
+
+The generated Move.lock uses **version 4 format**, which includes:
+- `use_environment` field per package
+- `manifest_digest` for change detection
+- CLI-compatible pinned sections
+
+Build results include CLI-compatible Move.lock V4 content:
+
+```typescript
+interface BuildSuccess {
+  modules: string[];           // Base64 bytecode
+  dependencies: string[];      // Hex IDs
+  digest: number[];            // Package digest
+  moveLock: string;            // V4 lockfile content
+  environment: string;         // e.g., "mainnet"
+}
+```
+
+### manifest_digest Calculation
+
+The `manifest_digest` field in Move.lock V4 is calculated identically to CLI:
+
+1. Build `RepinTriggers { deps: BTreeMap<PackageName, ReplacementDependency> }`
+2. Serialize with `toml_edit::ser::to_string()`
+3. Hash result with SHA256
+4. Format as uppercase hex
+
+**Key Implementation Details:**
+- `ManifestDependencyInfo` uses default enum serialization (NOT `#[serde(untagged)]`)
+- `ReplacementDependency` uses `#[serde(flatten, default)]` attributes
+- Produces identical digests to CLI for all package types
 
 ---
 

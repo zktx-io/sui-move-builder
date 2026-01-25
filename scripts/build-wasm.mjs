@@ -1452,6 +1452,7 @@ panic = "abort"
             "--root",
             localBin,
             "--force",
+            "--locked",
           ],
           { env: process.env }
         );

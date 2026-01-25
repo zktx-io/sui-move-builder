@@ -17,12 +17,18 @@ export class Fetcher {
   ): Promise<string | null> {
     throw new Error("Not implemented");
   }
+
+  /** Get the resolved commit SHA for a git URL and rev (after fetch). */
+  getResolvedSha(_gitUrl: string, _rev: string): string | undefined {
+    return undefined;
+  }
 }
 
 /** Fetcher that retrieves files from public GitHub repositories via fetch(). */
 export class GitHubFetcher extends Fetcher {
   private cache: Map<string, string>;
   private treeCache: Map<string, any>; // Cache tree API responses
+  private resolvedShaCache: Map<string, string>; // Cache resolved commit SHAs
   private rateLimitRemaining: number = 60; // GitHub unauthenticated limit: 60/hour
   private rateLimitReset: number = 0;
   private token: string | undefined;
@@ -31,7 +37,20 @@ export class GitHubFetcher extends Fetcher {
     super();
     this.cache = new Map();
     this.treeCache = new Map();
+    this.resolvedShaCache = new Map();
     this.token = token;
+  }
+
+  /**
+   * Get the resolved commit SHA for a git URL and rev.
+   * This returns the actual commit SHA that was fetched, resolving tags/branches.
+   * Must be called after fetch() to get the resolved SHA.
+   */
+  getResolvedSha(gitUrl: string, rev: string): string | undefined {
+    const { owner, repo } = this.parseGitUrl(gitUrl);
+    if (!owner || !repo) return undefined;
+    const key = `${owner}/${repo}@${rev}`;
+    return this.resolvedShaCache.get(key);
   }
 
   /**
@@ -115,6 +134,12 @@ export class GitHubFetcher extends Fetcher {
 
           // Cache the tree data
           this.treeCache.set(treeKey, treeData);
+
+          // Cache the resolved commit SHA (from treeData.sha or tree response)
+          // GitHub tree API returns the actual commit SHA in the response
+          if (treeData.sha) {
+            this.resolvedShaCache.set(treeKey, treeData.sha);
+          }
           break; // Success, exit retry loop
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));

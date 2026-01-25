@@ -19,6 +19,21 @@ export interface PackageGroupedFormat {
   addressMapping?: Record<string, string>;
   /** Dependency ID for output (prefer latest published ID) */
   publishedIdForOutput?: string;
+  /** Source information for Move.lock generation */
+  source?: {
+    type: string;
+    git?: string;
+    rev?: string;
+    subdir?: string;
+    local?: string;
+  };
+  /** Manifest dependencies for Move.lock */
+  manifestDeps?: string[];
+  /** Full manifest for digest computation */
+  manifest?: {
+    name?: string;
+    dependencies?: Record<string, unknown>;
+  };
 }
 
 type ModuleFormat = "Source" | "Bytecode";
@@ -50,6 +65,24 @@ interface DependencyInfo {
 
   /** ID to emit in dependencies list (latest preferred) */
   publishedIdForOutput?: string;
+
+  /** Source information for Move.lock generation */
+  source?: {
+    type: string;
+    git?: string;
+    rev?: string;
+    subdir?: string;
+    local?: string;
+  };
+
+  /** Manifest dependencies for Move.lock (keys only) */
+  manifestDeps?: string[];
+
+  /** Full manifest info including original dependencies (for digest computation) */
+  manifest?: {
+    name?: string;
+    dependencies?: Record<string, unknown>;
+  };
 }
 
 /**
@@ -175,6 +208,19 @@ export class CompilationDependencies {
         addressMapping[pkgName.toLowerCase()] = buildId;
       }
 
+      // Build source info from package identifier
+      const sourceInfo = pkg.id.source;
+      const source = {
+        type: sourceInfo.type,
+        git: sourceInfo.git,
+        rev: sourceInfo.rev,
+        subdir: sourceInfo.subdir,
+        local: sourceInfo.local,
+      };
+
+      // Extract manifest dependencies
+      const manifestDeps = Object.keys(pkg.manifest.dependencies || {});
+
       const depInfo: DependencyInfo = {
         name: pkgName,
         isImmediate: immediateDeps.has(pkgName),
@@ -187,6 +233,12 @@ export class CompilationDependencies {
         moduleFormat: sourcePaths.length > 0 ? "Source" : "Bytecode",
         edition: effectiveEdition,
         publishedIdForOutput,
+        source,
+        manifestDeps,
+        manifest: {
+          name: pkg.manifest.name,
+          dependencies: pkg.manifest.dependencies,
+        },
       };
 
       this.dependencies.push(depInfo);
@@ -267,6 +319,9 @@ export class CompilationDependencies {
         edition: dep.edition,
         addressMapping: dep.addressMapping,
         publishedIdForOutput: dep.publishedIdForOutput,
+        source: dep.source,
+        manifestDeps: dep.manifestDeps,
+        manifest: dep.manifest, // Include manifest for lockfileGenerator digest computation
       });
     }
 
