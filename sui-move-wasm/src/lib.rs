@@ -408,8 +408,6 @@ fn compile_impl(
                 // Extract Edition
                 if let Some(edition_str) = manifest.package.edition {
                     root_edition = parse_edition(&edition_str);
-                } else {
-                    // crate::log("Rust: Edition not found in SourceManifest.");
                 }
 
                 // Extract Published At
@@ -437,7 +435,7 @@ fn compile_impl(
             }
         }
     }
-    // log(&format!("Rust: Parsed root_package_name='{}'", root_package_name));
+
 
     // Collect all dependency file paths to exclude them from root targets
     let mut dependency_paths = std::collections::HashSet::new();
@@ -462,13 +460,6 @@ fn compile_impl(
         let wb = pb.starts_with("tests/") as u8;
         (wa, pa.as_bytes()).cmp(&(wb, pb.as_bytes()))
     });
-    // log(&format!(
-    //     "ROOT_INPUT: {:?}",
-    //     root_targets
-    //         .iter()
-    //         .map(|s| s.as_str().to_string())
-    //         .collect::<Vec<_>>()
-    // ));
 
 
     // Build PackagePaths for dependencies
@@ -824,10 +815,17 @@ fn compile_impl(
             }
 
             // 3. Filter dependency IDs
+            // FIX: Do NOT filter dependencies based on usage. CLI uses all resolved dependencies (Linkage Table)
+            // for digest calculation. Filtering causes digest mismatch.
+            //
+            // ORIGINAL SOURCE REFERENCE:
+            // - move-package-alt/src/graph/linkage.rs:40 - LinkageTable maps OriginalID -> PackageInfo
+            // - sui-move-build/src/lib.rs - dump_bytecode_as_base64() uses complete linkage table
+            // - Digest calculation includes ALL dependencies in the linkage table, not just used ones
             let mut dependency_ids_vec: Vec<[u8; 32]> = dependency_ids
-                .iter() // Iterate by reference to avoid moving early if needed, though clean here
+                .iter()
                 .cloned()
-                .filter(|bytes| kept_output_addresses.contains(&AccountAddress::new(*bytes)))
+                // .filter(|bytes| kept_output_addresses.contains(&AccountAddress::new(*bytes)))
                 .collect();
             
             // Sort dependency IDs to ensure deterministic order (matches CLI)
@@ -852,7 +850,7 @@ fn compile_impl(
                 // If package_name is None, we assume it's part of the compilation target (root).
                 // Dependencies usually            for unit in units {
                 let pkg_name = unit.named_module.package_name.map(|s| s.to_string()).unwrap_or("".to_string());
-                // log(&format!("Rust: root_package_name='{}', unit_pkg='{}'", root_package_name, pkg_name));
+
                 let is_root = pkg_name == "root" || pkg_name == root_package_name || unit.named_module.package_name.is_none();
                 
                 if is_root {
@@ -1220,6 +1218,8 @@ pub fn test(
 pub fn compute_manifest_digest(deps_json: &str) -> String {
     use std::path::PathBuf;
     use std::collections::BTreeMap as StdBTreeMap;
+    use sha2::{Digest, Sha256};
+    use serde::{Serialize, Deserialize};
     
     // Structs matching CLI's ReplacementDependency/DefaultDependency/ManifestDependencyInfo exactly
     // Order of fields MUST match CLI for identical serialization
@@ -1234,26 +1234,31 @@ pub fn compute_manifest_digest(deps_json: &str) -> String {
         subdir: PathBuf,
     }
     
-    // LocalDepInfo: { local = "<path>" } - matches CLI's LocalDepInfo
     #[derive(Serialize)]
     struct LocalDepInfo {
         local: PathBuf,
     }
+
+    #[derive(Serialize)]
+    struct SystemDependency {
+        system: String,
+    }
     
     // ManifestDependencyInfo enum - matches CLI's ManifestDependencyInfo
-    // CLI has: Git, External, Local, OnChain, System - we support Git and Local
+    // CLI has: Git, External, Local, OnChain, System
     // NOTE: CLI does NOT use #[serde(untagged)] - it uses default enum serialization
     #[derive(Serialize)]
     enum ManifestDependencyInfo {
         Git(ManifestGitDependency),
         Local(LocalDepInfo),
+        System(SystemDependency),
     }
     
     #[derive(Serialize)]
     #[serde(rename_all = "kebab-case")]
     struct DefaultDependency {
         #[serde(flatten)]
-        dependency_info: ManifestDependencyInfo,  // Now supports Git and Local!
+        dependency_info: ManifestDependencyInfo,
         // CLI does NOT use skip_serializing_if - these fields always serialize
         #[serde(rename = "override", default)]
         is_override: bool,
@@ -1293,7 +1298,11 @@ pub fn compute_manifest_digest(deps_json: &str) -> String {
         #[serde(default)]
         rev: Option<String>,
         #[serde(default)]
-        local: Option<String>,  // For local dependencies: { local = "<path>" }
+        local: Option<String>,
+        #[serde(default)]
+        system: Option<String>,  // For system dependencies: { system = "name" }
+        #[serde(default)]
+        is_override: Option<bool>, // Allows specifying override=true (default false)
         #[serde(default)]
         use_environment: Option<String>,
     }
@@ -1331,35 +1340,42 @@ pub fn compute_manifest_digest(deps_json: &str) -> String {
     };
     
     // Build the deps map matching CLI structure
-    // CLI's ManifestDependencyInfo can be Git, Local, External, OnChain, or System
-    // We support Git and Local (the most common cases)
     let mut deps_map: BTreeMap<String, ReplacementDependency> = BTreeMap::new();
     for dep in input.deps {
         // Determine dependency type based on input fields
         let dep_info: Option<DefaultDependency> = if let Some(repo) = dep.git {
-            // Git dependency: { git = "...", subdir = "...", rev = "..." }
+            // Git dependency
             Some(DefaultDependency {
                 dependency_info: ManifestDependencyInfo::Git(ManifestGitDependency {
                     repo,
                     rev: dep.rev,
                     subdir: PathBuf::from(dep.subdir.unwrap_or_default()),
                 }),
-                is_override: false,
+                is_override: dep.is_override.unwrap_or(false),
                 rename_from: None,
                 modes: None,
             })
         } else if let Some(local_path) = dep.local {
-            // Local dependency: { local = "<path>" }
+            // Local dependency
             Some(DefaultDependency {
                 dependency_info: ManifestDependencyInfo::Local(LocalDepInfo {
                     local: PathBuf::from(local_path),
                 }),
-                is_override: false,
+                is_override: dep.is_override.unwrap_or(false),
+                rename_from: None,
+                modes: None,
+            })
+        } else if let Some(system_name) = dep.system {
+            // System dependency
+            Some(DefaultDependency {
+                dependency_info: ManifestDependencyInfo::System(SystemDependency {
+                    system: system_name,
+                }),
+                is_override: dep.is_override.unwrap_or(true), // Implicit deps usually have override=true
                 rename_from: None,
                 modes: None,
             })
         } else {
-            // No specific dep info (system deps, etc.)
             None
         };
         
@@ -1372,7 +1388,7 @@ pub fn compute_manifest_digest(deps_json: &str) -> String {
     
     let triggers = RepinTriggers { deps: deps_map };
     
-    // Serialize to TOML
+    // Serialize to TOML using `toml_edit` to match CLI behavior (Inline Tables)
     let serialized = match toml_edit::ser::to_string(&triggers) {
         Ok(s) => s,
         Err(_) => return String::new(),

@@ -15,7 +15,7 @@ This document maps the Sui CLI build steps to the JS + WASM implementation in th
 ## 3) Dependency Inclusion & Serialization
 
 - **CLI**: Keeps reachable packages from the lock/manifest graph. Chooses Source vs Bytecode per package (uses .mv when sources are absent). Sorts `.move` paths (BTreeSet) before passing to the compiler. Packages become `PackagePaths` with named address maps and edition/flavor.
-- **Here (JS)**: Applies reachability filtering and drops unused system packages (Bridge, SuiSystem) to match observed CLI outputs. `.move` paths are lexicographically sorted in `CompilationDependencies.extractSourcePaths`. Packages are serialized as `PackageGroup` JSON in `toPackageGroupedFormat`, including `addressMapping` so WASM can use pre-resolved addresses/IDs without re-parsing Move.toml. **Difference:** Only source form is supported; bytecode (.mv) fallback is not implemented. Dependency IDs/order are passed through from JS as-serialized (no recompute/reorder in WASM).
+- **Here (JS)**: Applies reachability filtering and drops unused system packages (Bridge, SuiSystem) to match observed CLI outputs. `.move` paths are lexicographically sorted in `CompilationDependencies.extractSourcePaths`. Packages are serialized as `PackageGroup` JSON in `toPackageGroupedFormat`, including `addressMapping` so WASM can use pre-resolved addresses/IDs without re-parsing Move.toml. **Move.lock Generation**: Enforces strict alphabetical sorting of `[pinned]` sections to match CLI's `BTreeMap` behavior. **Difference:** Only source form is supported; bytecode (.mv) fallback is not implemented. Dependency IDs/order are passed through from JS as-serialized (no recompute/reorder in WASM).
 
 ## 4) Compiler Invocation
 
@@ -78,6 +78,7 @@ A deep audit of the `sui-move-wasm` Rust source and JS Integration layer confirm
 ### V4 Format (version = 4)
 
 The generated Move.lock uses **version 4 format**, which includes:
+
 - `use_environment` field per package
 - `manifest_digest` for change detection
 - CLI-compatible pinned sections
@@ -86,11 +87,11 @@ Build results include CLI-compatible Move.lock V4 content:
 
 ```typescript
 interface BuildSuccess {
-  modules: string[];           // Base64 bytecode
-  dependencies: string[];      // Hex IDs
-  digest: number[];            // Package digest
-  moveLock: string;            // V4 lockfile content
-  environment: string;         // e.g., "mainnet"
+  modules: string[]; // Base64 bytecode
+  dependencies: string[]; // Hex IDs
+  digest: number[]; // Package digest
+  moveLock: string; // V4 lockfile content
+  environment: string; // e.g., "mainnet"
 }
 ```
 
@@ -104,6 +105,7 @@ The `manifest_digest` field in Move.lock V4 is calculated identically to CLI:
 4. Format as uppercase hex
 
 **Key Implementation Details:**
+
 - `ManifestDependencyInfo` uses default enum serialization (NOT `#[serde(untagged)]`)
 - `ReplacementDependency` uses `#[serde(flatten, default)]` attributes
 - Produces identical digests to CLI for all package types
@@ -174,6 +176,7 @@ Published.toml → legacy_data (from Move.lock) → None
 ### 12.1 Deterministic Ordering
 
 - Dependencies stored in `BTreeMap` → **lexicographical order** by package name
+- JS `Move.lock` generator explicitly sorts keys (`allPackages.sort()`) to replicate this behavior.
 - Not declaration order in Move.toml
 
 ### 12.2 Topological Sort
@@ -257,12 +260,72 @@ Result A == Result B  →  WASM ≡ Rust
 2. **Move.toml + Lock** (rebuild): Same bytecode verification
 3. **+ Published.toml** (deployed package): Correct address compilation
 
-### 15.4 Fidelity Test Results (2026-01-21)
+### 15.4 Fidelity Test Results (2026-01-26)
 
 ```
-✅ nautilus: Dependencies ✅, Modules ✅
-✅ apps: Dependencies ✅, Modules ✅
-✅ deeptrade: Dependencies ✅, Modules ✅
+✅ nautilus: Modules ✅, Dependencies ✅, Digest ✅, Lockfile ✅
+✅ deepbook: Modules ✅, Dependencies ✅, Digest ✅, Lockfile ✅ (mainnet + testnet)
 
-✅ All fidelity tests passed!
+📊 Verified against sui-mainnet-v1.63.3 CLI
 ```
+
+---
+
+## 16) CLI Parity Fixes (2026-01-26)
+
+### 16.1 Git Revision SHA Resolution
+
+**CLI Source**: `pin.rs:61-63, 254-262`
+
+CLI converts git branch/tag revisions to 40-character SHA during pinning:
+
+```rust
+/// Replace all dependencies in `deps` with their pinned versions:
+///  - the revisions for git dependencies are replaced with 40-character shas
+```
+
+**WASM Implementation**: `resolver.ts` calls `getResolvedSha()` after fetching to convert tags/branches to SHA.
+
+### 16.2 Lockfile Dependency Source
+
+**CLI Source**: `dependency_graph.rs:1284-1289`
+
+CLI writes deps from `package_graph.edges()`, not from Move.toml:
+
+```rust
+let mut deps: Vec<_> = self
+    .package_graph
+    .edges(id)  // From graph edges, not manifest!
+    .collect();
+```
+
+**WASM Implementation**: Prioritizes `depAliasToPackageName` (lockfile) over Move.toml deps.
+
+### 16.3 Manifest Digest Calculation
+
+**CLI Source**: `package_impl.rs:287-308`, `manifest.rs:155-170`
+
+CLI computes `manifest_digest` from `CombinedDependency` which includes implicit deps:
+
+```rust
+fn compute_digest(deps: &[CombinedDependency]) -> String {
+    // ... deps includes implicit system deps like sui, std ...
+}
+```
+
+**WASM Implementation**: `buildDigestInputFromManifest` adds system dep format for implicit deps not in Move.toml.
+
+### 16.4 Multi-Environment Preservation
+
+**CLI Source**: `root_package.rs:272-282`
+
+CLI reads existing lockfile and only updates current environment:
+
+```rust
+lockfile.pinned.insert(
+    self.environment.name.clone(),  // Only current env
+    self.unfiltered_graph.to_pins()?,
+);
+```
+
+**WASM Implementation**: `generateMoveLockV4FromJson` parses existing lockfile and preserves other environment sections.

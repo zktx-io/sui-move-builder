@@ -34,6 +34,8 @@ export interface PackageGroupedFormat {
     name?: string;
     dependencies?: Record<string, unknown>;
   };
+  /** Maps Move.toml deps key (alias) → resolved package name */
+  depAliasToPackageName?: Record<string, string>;
 }
 
 type ModuleFormat = "Source" | "Bytecode";
@@ -83,6 +85,9 @@ interface DependencyInfo {
     name?: string;
     dependencies?: Record<string, unknown>;
   };
+
+  /** Maps Move.toml deps key (alias) → resolved package name */
+  depAliasToPackageName?: Record<string, string>;
 }
 
 /**
@@ -188,7 +193,7 @@ export class CompilationDependencies {
 
       // Update addressMapping with the definitive build IDs of known dependencies.
       // This ensures that if a dependency was assigned a dummy address, its dependents see it.
-      for (const [depName, depAddr] of Object.entries(addressMapping)) {
+      for (const [depName, _depAddr] of Object.entries(addressMapping)) {
         // Check if we have a calculated build ID for this dependency (case-insensitive lookup)
         // Prioritize exact match, then lowercase
         const knownBuildId =
@@ -239,6 +244,7 @@ export class CompilationDependencies {
           name: pkg.manifest.name,
           dependencies: pkg.manifest.dependencies,
         },
+        depAliasToPackageName: pkg.depAliasToPackageName,
       };
 
       this.dependencies.push(depInfo);
@@ -322,6 +328,7 @@ export class CompilationDependencies {
         source: dep.source,
         manifestDeps: dep.manifestDeps,
         manifest: dep.manifest, // Include manifest for lockfileGenerator digest computation
+        depAliasToPackageName: dep.depAliasToPackageName,
       });
     }
 

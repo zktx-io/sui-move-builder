@@ -2,7 +2,13 @@
  * DependencyGraph Layer (Layer 1)
  *
  * Builds a directed acyclic graph (DAG) of all packages and their relationships.
- * Corresponds to Sui's `resolution/dependency_graph.rs`
+ *
+ * ORIGINAL SOURCE REFERENCES:
+ * - move-package-alt/src/graph/mod.rs - PackageGraph struct and operations
+ *   Uses petgraph::DiGraph<Arc<Package<F>>, PinnedDependencyInfo>
+ * - move-package-alt/src/graph/mod.rs:120-124 - sorted_packages() uses petgraph::algo::toposort
+ * - move-package-alt/src/graph/builder.rs - PackageGraphBuilder for construction
+ * - move-package-alt/src/dependency/mod.rs - Dependency types
  */
 
 export interface PackageIdentifier {
@@ -36,6 +42,8 @@ export interface Package {
   dependencies: Map<string, Dependency>;
   devDependencies: Map<string, Dependency>;
   resolvedTable?: Record<string, string>; // Will be filled in ResolvedGraph
+  /** Maps Move.toml deps key (alias) → resolved package name */
+  depAliasToPackageName?: Record<string, string>;
 }
 
 export interface PackageManifest {
@@ -193,11 +201,17 @@ export class DependencyGraph {
   /**
    * Get packages in strict topological dependency order
    *
+   * ORIGINAL SOURCE REFERENCE: move-package-alt/src/graph/mod.rs:120-124
+   *
+   * Implementation:
+   * - Uses petgraph::algo::toposort() which produces DFS post-order
+   * - Dependencies are visited BEFORE dependents
+   * - Tie-breaking: alphabetical order (from BTreeMap insertion order)
+   *
+   * Input: Dependency graph rooted at this.root
+   * Output: Array of package names in topological order (root excluded)
+   *
    * CRITICAL: This MUST match Sui CLI's compilation order.
-   * Logic:
-   * 1. Dependencies MUST come before their dependents (Post-Order DFS).
-   * 2. Tie-breaking: Sort siblings by Package Name (alphabetical) before traversing.
-   * 3. Move.lock list order is arbitrary/alphabetical and CANNOT be used as topological order.
    */
   topologicalOrder(): string[] {
     const visited = new Set<string>();
@@ -229,24 +243,22 @@ export class DependencyGraph {
   }
 
   /**
-   * Get packages in Compiler Input Order (Pre-order DFS)
-   * CORRESPONDS TO: `move-package-alt` FilteredGraph construction.
-   * Logic:
-   * 1. Root is visited first.
-   * 2. Dependencies (neighbors) are visited recursively.
-   * 3. Neighbors are visited in Alphabetical Order.
+   * Get packages in Compiler Input Order
    *
-   * This structure (Root -> A -> B...) is what `move-package-alt-compilation` expects.
+   * ORIGINAL SOURCE REFERENCE:
+   * - move-package-alt/src/graph/mod.rs:120-124 - sorted_packages() uses toposort
+   * - move-package-alt/src/graph/builder.rs - BTreeMap gives alphabetical insertion
+   * - move-package-alt-compilation/src/compilation.rs - Uses sorted_packages for compile
+   *
+   * Implementation:
+   * - Post-order DFS (same as petgraph::algo::toposort)
+   * - Dependencies visited BEFORE dependents (dependency-first order)
+   * - Siblings sorted alphabetically (matches BTreeMap insertion order)
+   *
+   * Input: Dependency graph rooted at this.root
+   * Output: Array of package names including root, in compilation order
    */
   compilerInputOrder(): string[] {
-    // ORIGINAL CLI SOURCE:
-    // Analysis of test failure shows that `Move.lock` order (Alphabetical) violates topological dependencies.
-    // In `external-crates/move/crates/move-package-alt/src/graph/mod.rs`, the construction of the `filtered_graph`
-    // utilizes `petgraph::algo::toposort` (via `check_cycles` and eventual linearization), which ensures that
-    // compilation proceeds in a topological order (Dependencies first).
-    // Given the alphabetical insertion order in `builder.rs`, `petgraph`'s toposort (DFS-based) naturally follows
-    // a Post-order traversal where neighbors are visited in insertion (alphabetical) order.
-
     const visited = new Set<string>();
     const result: string[] = [];
 

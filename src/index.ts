@@ -6,7 +6,13 @@ import { generateMoveLockV4FromJson } from "./lockfileGenerator.js";
 /** Build progress event types for tracking build status */
 export type BuildProgressEvent =
   | { type: "resolve_start" }
-  | { type: "resolve_dep"; name: string; source: string; current: number; total: number }
+  | {
+    type: "resolve_dep";
+    name: string;
+    source: string;
+    current: number;
+    total: number;
+  }
   | { type: "resolve_complete"; count: number }
   | { type: "compile_start" }
   | { type: "compile_complete" }
@@ -60,11 +66,26 @@ export interface BuildSuccess {
   moveLock: string;
   /** Build environment used */
   environment: string;
+  /** Generated Published.toml content (if migration occurred) */
+  publishedToml?: string;
 }
 
 export interface BuildFailure {
   error: string;
 }
+
+import { migrateLegacyLockToPublishedToml } from "./lockfileMigration.js";
+
+// ORIGINAL SOURCE REFERENCE: sui-types/src/digests.rs:164-165, 262-269
+// Chain IDs are first 4 bytes of genesis checkpoint digest as hex
+// MAINNET_CHAIN_IDENTIFIER_BASE58 = "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S"
+// TESTNET_CHAIN_IDENTIFIER_BASE58 = "69WiPg3DAQiwdxfncX6wYQ2siKwAe6L9BZthQea3JNMD"
+const CHAIN_IDS: Record<string, string> = {
+  mainnet: "35834a8a",
+  testnet: "4c78adac",
+  devnet: "2",
+  localnet: "localnet",
+};
 
 type WasmModule = typeof import("./sui_move_wasm.js");
 
@@ -332,7 +353,7 @@ export async function buildMovePackage(
 
       // Extract root package name and direct dependencies from Move.toml
       const moveToml = input.files["Move.toml"];
-      let rootManifestDeps: string[] = [];
+      let _rootManifestDeps: string[] = [];
       if (moveToml) {
         const parsed = parseToml(moveToml);
         if (parsed.package?.name) {
@@ -340,7 +361,9 @@ export async function buildMovePackage(
         }
         // Get direct dependencies from [dependencies] section
         if (parsed.dependencies) {
-          rootManifestDeps = Object.keys(parsed.dependencies as Record<string, unknown>);
+          _rootManifestDeps = Object.keys(
+            parsed.dependencies as Record<string, unknown>
+          );
         }
       }
 
@@ -358,9 +381,20 @@ export async function buildMovePackage(
 
         // Exclude system package addresses that CLI doesn't include in output
         // These are implicit framework dependencies without explicit published-at in manifest
+        //
+        // ORIGINAL SOURCE REFERENCE: sui-types/src/lib.rs:127-133 (built_in_pkgs! macro)
+        //   MOVE_STDLIB_ADDRESS = 0x1
+        //   SUI_FRAMEWORK_ADDRESS = 0x2
+        //   SUI_SYSTEM_ADDRESS = 0x3
+        //   BRIDGE_ADDRESS = 0xb
+        //   DEEPBOOK_ADDRESS = 0xdee9
+        //
+        // Note: We only filter out SuiSystem (0x3) and Bridge (0xb) because they are
+        // implicitly added by the CLI when not explicitly declared in the manifest.
+        // Sui (0x2) and Std (0x1) are handled separately as default implicit deps.
         const systemAddresses = [
-          "0x0000000000000000000000000000000000000000000000000000000000000003", // SuiSystem
-          "0x000000000000000000000000000000000000000000000000000000000000000b", // Bridge
+          "0x0000000000000000000000000000000000000000000000000000000000000003", // SUI_SYSTEM_ADDRESS
+          "0x000000000000000000000000000000000000000000000000000000000000000b", // BRIDGE_ADDRESS
         ];
         if (systemAddresses.includes(dep.publishedIdForOutput)) {
           continue;
@@ -403,12 +437,16 @@ export async function buildMovePackage(
     // Get rootManifestDeps from Move.toml if not already extracted
     let rootManifestDeps: string[] = [];
     let rootManifestDepsInfo: Record<string, any> | undefined;
+    let rootDepAliasToPackageName: Record<string, string> | undefined;
+
     try {
       const moveToml = input.files["Move.toml"];
       if (moveToml) {
         const parsed = parseToml(moveToml);
         if (parsed.dependencies) {
-          rootManifestDeps = Object.keys(parsed.dependencies as Record<string, unknown>);
+          rootManifestDeps = Object.keys(
+            parsed.dependencies as Record<string, unknown>
+          );
           rootManifestDepsInfo = parsed.dependencies as Record<string, any>;
         }
       }
@@ -416,17 +454,61 @@ export async function buildMovePackage(
       // Ignore
     }
 
+    // Extract rootDepAliasToPackageName from resolved dependencies
+    // First entry in dependencies array is root package (or find by name match)
+    try {
+      const depsArray = JSON.parse(resolved.dependencies) as Array<{
+        name: string;
+        depAliasToPackageName?: Record<string, string>;
+      }>;
+
+      // Find root package entry
+      const rootEntry = depsArray.find((d) => d.name === rootPackageName);
+      if (rootEntry?.depAliasToPackageName) {
+        rootDepAliasToPackageName = rootEntry.depAliasToPackageName;
+      }
+    } catch {
+      // Ignore parsing errors
+    }
+
     // Generate Move.lock V4
+    // ORIGINAL: root_package.rs:272-282 - Pass existing lockfile to preserve other environments
+    const existingLockfile = input.files["Move.lock"];
     const moveLock = generateMoveLockV4FromJson(
       resolved.dependencies,
       rootPackageName,
       environment,
       rootManifestDeps,
       mod.compute_manifest_digest,
-      rootManifestDepsInfo
+      rootManifestDepsInfo,
+      rootDepAliasToPackageName,
+      existingLockfile // Preserve other environments from existing lockfile
     );
 
-    return parseCompileResult(output, idToName, moveLock, environment);
+    const buildResult = parseCompileResult(
+      output,
+      idToName,
+      moveLock,
+      environment
+    );
+
+    if (!("error" in buildResult)) {
+      // Attempt migration if Legacy Lockfile exists
+      const legacyLock = input.files["Move.lock"];
+      if (legacyLock) {
+        const chainId = CHAIN_IDS[environment] || environment;
+        const migratedPublishedToml = migrateLegacyLockToPublishedToml(
+          legacyLock,
+          environment,
+          chainId
+        );
+        if (migratedPublishedToml) {
+          buildResult.publishedToml = migratedPublishedToml;
+        }
+      }
+    }
+
+    return buildResult;
   } catch (error) {
     return asFailure(error);
   }

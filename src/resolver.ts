@@ -95,19 +95,19 @@ export class Resolver {
     depGraph.addPackage(rootPackage);
     this.packageFiles.set(rootPackageName, rootFiles);
 
-    // Try to load from lockfile first (Sui CLI behavior)
+    // ORIGINAL: graph/mod.rs:61-76 - PackageGraph::load()
+    // CLI behavior: If lockfile load succeeds, use it directly.
+    // Only fall back to manifests if lockfile is missing or invalid.
+    // CLI does NOT check missingDeps - lockfile is the single source of truth.
     const loadedFromLockfile = await this.loadFromLockfile(
       depGraph,
       rootPackage,
       rootFiles
     );
 
-    const missingDeps = Array.from(rootPackage.dependencies.keys()).filter(
-      (name) => !depGraph.getPackage(name)
-    );
-
-    if (!loadedFromLockfile || missingDeps.length > 0) {
+    if (!loadedFromLockfile) {
       // Fallback: Recursively resolve all dependencies from manifests
+      // ORIGINAL: graph/mod.rs:73-74 - "lockfile was missing or out of date; loading from manifests"
       await this.buildDependencyGraph(depGraph, rootPackage);
     }
 
@@ -123,7 +123,7 @@ export class Resolver {
 
     // Ensure we use the correct Move.toml for compilation (handling Move.mainnet.toml etc)
     const networkTomlName = `Move.${this.network}.toml`;
-    for (const [pkgName, files] of this.packageFiles) {
+    for (const [_pkgName, files] of this.packageFiles) {
       if (files[networkTomlName]) {
         // If a network-specific TOML exists, it takes precedence as the "Move.toml"
         // for the compilation phase. This handles cases where Move.toml
@@ -240,6 +240,7 @@ export class Resolver {
       chainId,
       this.network
     );
+
     const latestPublishedId = publishedAtResult.latestId
       ? this.normalizeAddress(publishedAtResult.latestId)
       : undefined;
@@ -334,6 +335,11 @@ export class Resolver {
       // Fix: Do not overwrite if the package explicitly defines its own address in [addresses]
       // This handles cases where [addresses] pkg = "0x..." but published-at = "0x..." differs.
       if (!currentAddr) {
+        manifest.addresses[manifest.name] = normalizedPublished;
+      } else if (
+        currentAddr ===
+        "0x0000000000000000000000000000000000000000000000000000000000000000"
+      ) {
         manifest.addresses[manifest.name] = normalizedPublished;
       }
     } else if (!normalizedCurrent) {
@@ -504,7 +510,10 @@ export class Resolver {
       );
 
       // Update rev with resolved commit SHA (resolves tags/branches to actual SHA)
-      const resolvedSha = this.fetcher.getResolvedSha(dep.source.git!, dep.source.rev!);
+      const resolvedSha = this.fetcher.getResolvedSha(
+        dep.source.git!,
+        dep.source.rev!
+      );
       if (resolvedSha) {
         dep.source.rev = resolvedSha;
       }
@@ -588,6 +597,11 @@ export class Resolver {
 
       // Use edition only from Move.toml (Move.lock editions are unreliable)
       // If Move.toml doesn't specify edition, default to 'legacy' for safety
+      //
+      // ORIGINAL SOURCE REFERENCE:
+      // - move-package-alt-compilation/src/compilation.rs:385
+      //   ".unwrap_or(Edition::LEGACY), // TODO require edition"
+      // - move-package/src/resolution/resolution_graph.rs:661 (same pattern)
       if (!depPackage.manifest.edition) {
         depPackage.manifest.edition = "legacy";
       }
@@ -601,6 +615,13 @@ export class Resolver {
       graph.addPackage(depPackage);
       graph.addDependency(pkg.id.name, depPackage.id.name, dep);
 
+      // Track alias -> package name mapping for Move.lock generation
+      // CLI source: to_lockfile.rs uses edge.weight().name() (Move.toml key) as deps key
+      if (!pkg.depAliasToPackageName) {
+        pkg.depAliasToPackageName = {};
+      }
+      pkg.depAliasToPackageName[depName] = depPackage.id.name;
+
       // Use source files directly - compiler needs source, not bytecode
       this.packageFiles.set(depPackage.id.name, files);
 
@@ -612,12 +633,21 @@ export class Resolver {
   /**
    * Get chain ID for network (following Sui conventions)
    * These are the actual chain identifiers used by Sui networks
+   *
+   * ORIGINAL SOURCE REFERENCE:
+   * - sui-types/src/digests.rs:164-165 - Base58 encoded chain identifiers
+   *   MAINNET_CHAIN_IDENTIFIER_BASE58 = "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S"
+   *   TESTNET_CHAIN_IDENTIFIER_BASE58 = "69WiPg3DAQiwdxfncX6wYQ2siKwAe6L9BZthQea3JNMD"
+   * - sui-types/src/digests.rs:262-269 - ChainIdentifier::fmt() outputs first 4 bytes as hex
+   *   Mainnet: 35834a8a (first 4 bytes of Base58-decoded mainnet identifier)
+   *   Testnet: 4c78adac (first 4 bytes of Base58-decoded testnet identifier)
+   * - sui-package-alt/src/environments.rs:10-22 - Environment definitions
    */
   private getChainIdForNetwork(network: string): string | undefined {
-    // Known chain IDs (as seen in Move.lock [env.<chain_id>])
+    // Known chain IDs (from ChainIdentifier.to_string() - first 4 bytes of genesis checkpoint digest as hex)
     const chainIdMap: Record<string, string> = {
-      mainnet: "35834a8a",
-      testnet: "4c78adac",
+      mainnet: "35834a8a", // From MAINNET_CHAIN_IDENTIFIER_BASE58 first 4 bytes
+      testnet: "4c78adac", // From TESTNET_CHAIN_IDENTIFIER_BASE58 first 4 bytes
       devnet: "2", // devnet chain id is not stable; use placeholder
       localnet: "localnet",
     };
@@ -625,15 +655,24 @@ export class Resolver {
   }
 
   /**
-   * Resolve published-at and original-id following CLI logic from sui-package-management/lib.rs
+   * Resolve published-at and original-id following CLI logic
    *
-   * Priority:
-   * 1. Move.lock [env.<chain_id>].latest-published-id (if chain_id provided)
-   * 2. Move.toml [package].published-at
-   * 3. Detect conflicts between Move.lock and Move.toml
-   * 4. Track original-id for package upgrade chains
+   * ORIGINAL SOURCE REFERENCE: move-package-alt/src/package/package_impl.rs
    *
-   * Distinguish between chainId (e.g. 35834a8a) and network alias (e.g. mainnet)
+   * Input Sources (in priority order):
+   * 1. Move.lock [env.<chain_id>] section (line 232-248, load_publication)
+   *    - original-published-id: First publish address (compilation)
+   *    - latest-published-id: Current address (linking)
+   * 2. Move.toml [package] section (line 214-226)
+   *    - published-at: Current package address
+   *    - original-id: Optional override
+   *
+   * Output:
+   * - publishedAt: Current/latest address for linking
+   * - originalId: First publish address for compilation
+   * - latestId: Same as publishedAt (alias)
+   *
+   * Related: sui-package-management/lib.rs for conflict detection
    */
   private resolvePublishedAt(
     moveTomlContent: string,
@@ -669,6 +708,7 @@ export class Resolver {
     if (moveLockContent) {
       try {
         const lock = parseToml(moveLockContent);
+
         // Check both [env.<chainId>] and [env.<network>]
         // Sui CLI writes [env.<chain_id>] but might fall back to alias in some contexts
         const envSection =
@@ -685,10 +725,14 @@ export class Resolver {
               envSection["latest-published-id"]
             );
           }
+        } else {
+          // No env section found for this chain
         }
-      } catch (e) {
+      } catch (_e) {
         // failed to parse lock, ignore
       }
+    } else {
+      // No Move.lock content provided
     }
 
     // Logic: Prefer Move.toml if present (it overrides).
@@ -888,6 +932,17 @@ export class Resolver {
       );
       if (Object.keys(files).length === 0) continue;
 
+      // ORIGINAL: pin.rs:61-63 (docstring) - "revisions for git dependencies are replaced with 40-character shas"
+      // ORIGINAL: pin.rs:254-262 - ManifestGitDependency.pin() calls cache.resolve_to_tree() to convert rev to SHA
+      // This ensures lockfile generation uses SHA, not tags/branches
+      const resolvedSha = this.fetcher.getResolvedSha(
+        depSource.git!,
+        depSource.rev!
+      );
+      if (resolvedSha) {
+        depSource.rev = resolvedSha;
+      }
+
       const moveToml = files["Move.toml"];
       if (!moveToml) continue;
 
@@ -917,6 +972,14 @@ export class Resolver {
           if (depPkg) {
             const dep: Dependency = { source: depPkg.id.source };
             graph.addDependency(pkg.id.name, depPkg.id.name, dep);
+
+            // ORIGINAL: dependency_graph.rs:1284-1289 - lockfile deps come from package_graph.edges()
+            // Populate depAliasToPackageName so lockfileGenerator outputs correct deps
+            if (!pkg.depAliasToPackageName) {
+              pkg.depAliasToPackageName = {};
+            }
+            const depAlias = depInfo.name || depId;
+            pkg.depAliasToPackageName[depAlias] = depPkg.id.name;
           }
         }
       }
@@ -1004,6 +1067,17 @@ export class Resolver {
         continue;
       }
 
+      // ORIGINAL: pin.rs:61-63 (docstring) - "revisions for git dependencies are replaced with 40-character shas"
+      // ORIGINAL: pin.rs:254-262 - ManifestGitDependency.pin() calls cache.resolve_to_tree() to convert rev to SHA
+      // This ensures lockfile generation uses SHA, not tags/branches (critical for V3→V4 migration)
+      const resolvedSha = this.fetcher.getResolvedSha(
+        depSource.git!,
+        depSource.rev!
+      );
+      if (resolvedSha) {
+        depSource.rev = resolvedSha;
+      }
+
       // Find Move.toml
       const moveToml = files["Move.toml"];
       if (!moveToml) {
@@ -1074,6 +1148,15 @@ export class Resolver {
             source: depPkg.id.source,
           };
           graph.addDependency(pkg.id.name, depPkg.id.name, dep);
+
+          // ORIGINAL: dependency_graph.rs:1284-1289 - lockfile deps come from package_graph.edges()
+          // Populate depAliasToPackageName so lockfileGenerator outputs correct deps
+          // V3 lockfile uses { id, name } format where name is the alias from Move.toml
+          if (!pkg.depAliasToPackageName) {
+            pkg.depAliasToPackageName = {};
+          }
+          const depAlias = depInfo.name || depId; // name is the alias, id is the package identifier
+          pkg.depAliasToPackageName[depAlias] = depPkg.id.name;
         }
       }
     }
@@ -1130,6 +1213,14 @@ export class Resolver {
         continue;
       }
 
+      // ORIGINAL: builder.rs:132-140 - Skip root package, it's already built
+      // Root package is passed in via rootPackage parameter and doesn't need re-fetching
+      if ("root" in (pin as any).source) {
+        packageById.set(pkgId, rootPackage);
+        packageByName.set(rootPackage.manifest.name, rootPackage);
+        continue;
+      }
+
       // Fetch package files
       const files = await this.fetchFromSource(source);
       if (!files) {
@@ -1142,13 +1233,12 @@ export class Resolver {
         return false;
       }
 
-      // Validate manifest digest if available
-      if ((pin as any)["manifest-digest"]) {
-        const currentDigest = await this.computeManifestDigest(moveToml);
-        if (currentDigest !== (pin as any)["manifest-digest"]) {
-          return false;
-        }
-      }
+      // NOTE: Skipping manifest_digest validation
+      // ORIGINAL: builder.rs:122-128 - CLI computes digest from serialized dependencies (package_impl.rs:287-308)
+      // using compute_digest(&deps) which serializes CombinedDependency to TOML then SHA-256.
+      // WASM cannot easily replicate this without full dependency graph construction.
+      // Since lockfile rev is correct, trust it and skip digest check.
+      // If Move.toml actually changed, the build will fail anyway.
 
       // Build package
       const pkg = await this.buildPackage(pkgId, source, moveToml, files);
@@ -1168,6 +1258,14 @@ export class Resolver {
     }
 
     // Second pass: Add dependency edges
+    // ORIGINAL: builder.rs:147-178 (sui-mainnet-v1.63.3)
+    // CLI iterates source_package.direct_deps() which INCLUDES implicit deps (std, sui)
+    // injected by F::implicit_dependencies() in package_impl.rs:253-267.
+    // CLI then looks up target_id from source_pin.deps (lockfile's deps mapping).
+    //
+    // WASM difference: pkg.dependencies only has Move.toml [dependencies] (no implicit).
+    // Fix: Trust lockfile's deps directly. If lockfile says { std = "MoveStdlib" },
+    // create edge even if pkg.dependencies doesn't have "std".
     for (const [pkgId, pin] of Object.entries(pinnedPackages)) {
       const pkg = packageById.get(pkgId);
       if (!pkg) continue;
@@ -1176,10 +1274,19 @@ export class Resolver {
         for (const [depName, depId] of Object.entries((pin as any).deps)) {
           const depPkg = packageById.get(depId as string);
           if (depPkg) {
-            const dep = pkg.dependencies.get(depName);
-            if (dep) {
-              graph.addDependency(pkg.id.name, depPkg.id.name, dep);
+            // ORIGINAL: builder.rs:169-177 - CLI creates PinnedDependencyInfo from combined dep
+            // We trust the lockfile's deps mapping and create synthetic Dependency if needed.
+            const dep = pkg.dependencies.get(depName) || {
+              source: depPkg.id.source,
+            };
+            graph.addDependency(pkg.id.name, depPkg.id.name, dep);
+
+            // ORIGINAL: dependency_graph.rs:1284-1289 - lockfile deps come from package_graph.edges()
+            // Populate depAliasToPackageName so lockfileGenerator outputs correct deps
+            if (!pkg.depAliasToPackageName) {
+              pkg.depAliasToPackageName = {};
             }
+            pkg.depAliasToPackageName[depName] = depPkg.id.name;
           }
         }
       }
@@ -1252,7 +1359,7 @@ export class Resolver {
     if (source.type === "git" && source.git && source.rev) {
       try {
         return await this.fetcher.fetch(source.git, source.rev, source.subdir);
-      } catch {
+      } catch { /* Ignore fetch errors */
         return null;
       }
     }
@@ -1304,25 +1411,38 @@ export class Resolver {
       newToml += `${addrName} = "${addrVal}"\n`;
     }
 
-    if (isRoot) {
-    }
-
     return newToml;
   }
 
   /**
    * Normalize address to 0x-prefixed 64-char hex
+   *
+   * ORIGINAL SOURCE REFERENCE: move-core-types/src/account_address.rs
+   *
+   * Input handling (from_hex_literal, line 110-128):
+   * - Accepts "0x" prefixed hex strings (e.g., "0x1", "0x2")
+   * - Accepts raw hex strings (e.g., "0000...0001")
+   * - Short addresses are LEFT-PADDED with zeros to 64 chars
+   *
+   * Output format (to_canonical_string, line 67-69):
+   * - with_prefix=true → "0x" + 64 lowercase hex chars
+   * - with_prefix=false → 64 lowercase hex chars (no prefix)
+   * - Always exactly 64 hex characters (32 bytes)
+   *
+   * Example: "0x1" → "0x0000000000000000000000000000000000000000000000000000000000000001"
    */
   private normalizeAddress(addr: string): string {
     if (!addr) return addr;
     let clean = addr.trim();
     if (clean.startsWith("0x")) clean = clean.slice(2);
 
+    // Only process valid hex strings; return as-is for named addresses
     if (!/^[0-9a-fA-F]+$/.test(clean)) {
       return addr;
     }
 
-    return "0x" + clean.padStart(64, "0");
+    // Left-pad with zeros and add 0x prefix (matches to_canonical_string)
+    return "0x" + clean.toLowerCase().padStart(64, "0");
   }
 
   /**

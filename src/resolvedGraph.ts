@@ -2,7 +2,13 @@
  * ResolvedGraph Layer (Layer 2)
  *
  * Assigns concrete addresses to all named addresses and creates a unified resolution table.
- * Corresponds to Sui's `resolution/resolution_graph.rs`
+ *
+ * ORIGINAL SOURCE REFERENCES:
+ * - move-package-alt/src/graph/linkage.rs - LinkageTable and linkage resolution
+ *   LinkageTable maps OriginalID -> PackageInfo for consistent dependency resolution
+ * - move-package-alt/src/graph/linkage.rs:42-82 - PackageGraph::linkage() creates linked graph
+ * - move-package-alt/src/graph/package_info.rs - NamedAddress handling
+ * - move-package-alt-compilation/src/compilation.rs - Address resolution for compiler
  */
 
 import { DependencyGraph, Package } from "./dependencyGraph.js";

@@ -2,13 +2,21 @@
  * Move.lock V4 Generator
  *
  * Generates Move.lock files in the V4 format for the new package management system.
- * 
+ *
+ * ORIGINAL SOURCE REFERENCES:
+ * - move-package-alt/src/graph/to_lockfile.rs - PackageGraph::to_pins() generates lockfile pins
+ * - move-package-alt/src/schema/lockfile.rs - Pin struct definition (source, manifest_digest, deps)
+ * - move-package-alt/src/package/root_package.rs:279-283 - save_lockfile_to_disk() writes lockfile
+ *
  * NOTE: manifest_digest is left empty because exact CLI-compatible digest computation
- * requires Rust struct serialization. This can be addressed when WASM exposes 
+ * requires Rust struct serialization. This can be addressed when WASM exposes
  * lockfile generation functionality.
  */
 
-import { DependencyGraph, Package, DependencySource } from "./dependencyGraph.js";
+import {
+    DependencyGraph,
+    DependencySource,
+} from "./dependencyGraph.js";
 
 /** Move.lock V4 schema version */
 export const LOCKFILE_VERSION = 4;
@@ -35,7 +43,10 @@ export interface MoveLockV4 {
 /**
  * Convert a DependencySource to PinnedSource format
  */
-function toPinnedSource(source: DependencySource, isRoot: boolean): PinnedSource {
+function toPinnedSource(
+    source: DependencySource,
+    isRoot: boolean
+): PinnedSource {
     if (isRoot) {
         return { root: true };
     }
@@ -137,13 +148,20 @@ export function generateMoveLockV4(
  * This is an alternative entry point when working with serialized data
  * @param digestFn Optional function to compute manifest digest (from WASM)
  */
+/**
+ * Generate Move.lock V4 from resolved dependencies JSON
+ * This is an alternative entry point when working with serialized data
+ * @param digestFn Optional function to compute manifest digest (from WASM)
+ */
 export function generateMoveLockV4FromJson(
     depsJson: string,
     rootPackageName: string,
     environment: string,
     rootManifestDeps?: string[],
     digestFn?: (depsJson: string) => string,
-    rootManifestDepsInfo?: Record<string, any>
+    rootManifestDepsInfo?: Record<string, any>,
+    rootDepAliasToPackageName?: Record<string, string>,
+    existingLockfile?: string // ORIGINAL: root_package.rs:269-283 - CLI reads existing lockfile and preserves other environments
 ): string {
     const lines: string[] = [];
 
@@ -171,18 +189,21 @@ export function generateMoveLockV4FromJson(
                 local?: string;
             };
             manifestDeps?: string[];
+            /** Maps Move.toml deps key (alias) → resolved package name */
+            depAliasToPackageName?: Record<string, string>;
         }>;
 
         // Build a map of package name to full dep info for digest computation
-        const depsByName = new Map(deps.map(d => [d.name, d]));
+        const depsByName = new Map(deps.map((d) => [d.name, d]));
 
         // Helper to build digest input JSON using ORIGINAL Move.toml dependency info
         // CLI uses original manifest deps - preserves both git and local dep types
         const buildDigestInputFromManifest = (
             manifestDeps: Record<string, any> | undefined,
-            depNames: string[]
+            depNames: string[],
+            packageName: string
         ): string => {
-            const depsInfo = depNames.map(name => {
+            const depsInfo = depNames.map((name) => {
                 const depInfo = manifestDeps?.[name];
                 if (depInfo?.git) {
                     // Git dependency: { git = "...", subdir = "...", rev = "..." }
@@ -191,78 +212,257 @@ export function generateMoveLockV4FromJson(
                         git: depInfo.git,
                         subdir: depInfo.subdir || "",
                         rev: depInfo.rev || "",
-                        use_environment: environment
+                        use_environment: environment,
                     };
                 } else if (depInfo?.local) {
                     // Local dependency: { local = "..." }
                     return {
                         name,
                         local: depInfo.local,
-                        use_environment: environment
+                        use_environment: environment,
                     };
                 }
-                // For other deps (system, on-chain, etc.), just include name
+                // ORIGINAL: package_impl.rs:287-308 - compute_digest() serializes CombinedDependency to TOML
+                // ORIGINAL: manifest.rs:155-170 - override_system_dep() returns { system: name, is_override: true }
+                // For implicit deps (std, sui) not in manifestDeps, return system dep format for digest compatibility
+                // If dep is not in manifestDeps, check if it's an implicit dep and add system info
+                const lowerName = name.toLowerCase();
+                if (
+                    lowerName === "sui" ||
+                    lowerName === "std" ||
+                    lowerName === "movestdlib"
+                ) {
+                    // Implicit/system dependency - add system dep format for digest compatibility
+                    return {
+                        name,
+                        system: lowerName === "movestdlib" ? "std" : lowerName,
+                        is_override: true,
+                        use_environment: environment,
+                    };
+                }
+                // For other deps (on-chain, etc.), just include name
                 return { name, use_environment: environment };
             });
-            return JSON.stringify({ deps: depsInfo });
+
+            // [FIX] Strict adherence to `move-package` Rust logic.
+            // If ANY implicit dependency is explicitly present, DO NOT add defaults.
+            //
+            // ORIGINAL SOURCE REFERENCE:
+            // - sui-package-alt/src/sui_flavor.rs:96-108 - SuiFlavor::implicit_dependencies()
+            //   Returns { "sui" -> override_system_dep("sui"), "std" -> override_system_dep("std") }
+            // - sui-package-alt/src/sui_flavor.rs:55-60 - default_system_dep_names()
+            //   Returns BTreeSet::from([PackageName::new("sui"), PackageName::new("std")])
+            // - sui-package-alt/src/sui_flavor.rs:44-51 - system_deps_names_map()
+            //   Maps legacy names: Sui->sui, SuiSystem->sui_system, MoveStdlib->std, Bridge->bridge, DeepBook->deepbook
+            //
+            const explicitDepNames = depNames; // alias
+            const implicitsFound = explicitDepNames.some((n) => {
+                const lower = n.toLowerCase();
+                // Check against known implicit dep names from sui_flavor.rs
+                return lower === "sui" || lower === "std" || lower === "movestdlib";
+            });
+            const lowerPkgName = packageName.toLowerCase();
+            const implicitDeps: any[] = [];
+
+            // Add implicit deps only if:
+            // 1. No implicit deps are explicitly listed in manifest
+            // 2. Package itself is not an implicit/system package
+            if (
+                !implicitsFound &&
+                lowerPkgName !== "sui" &&
+                lowerPkgName !== "std" &&
+                lowerPkgName !== "movestdlib"
+            ) {
+                implicitDeps.push({
+                    name: "sui",
+                    system: "sui",
+                    is_override: true,
+                    use_environment: environment,
+                });
+                implicitDeps.push({
+                    name: "std",
+                    system: "std",
+                    is_override: true,
+                    use_environment: environment,
+                });
+            }
+
+            const combined = [...depsInfo, ...implicitDeps];
+
+            return JSON.stringify({ deps: combined });
         };
 
-        // Root package: deps should only include DIRECT dependencies from Move.toml
-        // not all transitive dependencies
-        const directDeps = rootManifestDeps || [];
+        // Collect all packages (root + deps) to sort them by name
+        // CLI behavior: [pinned] table keys are sorted lexicographically
+        const allPackages: Array<{
+            name: string;
+            isRoot: boolean;
+            dep?: (typeof deps)[0];
+        }> = [];
 
-        // Root package first
-        lines.push(`[pinned.${environment}.${rootPackageName}]`);
-        lines.push("source = { root = true }");
-        lines.push(`use_environment = "${environment}"`);
-        const rootDigest = digestFn ? digestFn(buildDigestInputFromManifest(rootManifestDepsInfo, directDeps)) : "";
-        lines.push(`manifest_digest = "${rootDigest}"`);
-        if (directDeps.length > 0) {
-            const depParts = directDeps.sort().map((name) => `${name} = "${name}"`);
-            lines.push(`deps = { ${depParts.join(", ")} }`);
-        } else {
-            lines.push("deps = {}");
-        }
-        lines.push("");
+        // Add Root Package
+        allPackages.push({ name: rootPackageName, isRoot: true });
 
-        // Then each dependency
+        // Add Dependencies
         for (const dep of deps) {
-            const pkgName = dep.name;
-            const sectionKey = `pinned.${environment}.${pkgName}`;
+            allPackages.push({ name: dep.name, isRoot: false, dep });
+        }
 
+        // Sort by package name (ASCII)
+        allPackages.sort((a, b) =>
+            a.name < b.name ? -1 : a.name > b.name ? 1 : 0
+        );
+
+        // Generate sections in sorted order
+        for (const pkg of allPackages) {
+            const sectionKey = `pinned.${environment}.${pkg.name}`;
             lines.push(`[${sectionKey}]`);
 
-            // Determine source from the source field
-            const source = dep.source;
-            if (source?.type === "git" && source?.git && source?.rev) {
-                lines.push(
-                    `source = { git = "${escapeTomlString(source.git)}", subdir = "${escapeTomlString(source.subdir || "")}", rev = "${escapeTomlString(source.rev)}" }`
-                );
-            } else if (source?.type === "local" && source?.local) {
-                lines.push(`source = { local = "${escapeTomlString(source.local)}" }`);
-            } else {
-                // Fallback for system packages or unknown sources
+            // Helper to determine implicit deps for this package
+            const _depsInfo = pkg.isRoot
+                ? rootManifestDepsInfo
+                    ? Object.keys(rootManifestDepsInfo).map(
+                        (k) => rootManifestDepsInfo[k]
+                    )
+                    : []
+                : [];
+
+            // Reconstruct depsInfo for non-root packages from manifest
+            // This is duplicative but necessary since we don't have the normalized object easily handy above without refactoring
+            // Actually, we can just use the logic from buildDigestInputFromManifest if we extract it.
+            // Let's inline the logic cleanly.
+
+            // 1. Get Explicit Deps Names
+            // ORIGINAL: dependency_graph.rs:1284-1289 - CLI writes deps from package_graph.edges()
+            // For lockfile-loaded packages, use depAliasToPackageName (from lockfile deps)
+            // For manifest-fallback packages, use manifestDeps (from Move.toml)
+            const explicitDepNames = pkg.isRoot
+                ? rootManifestDeps || []
+                : pkg.dep!.depAliasToPackageName
+                    ? Object.keys(pkg.dep!.depAliasToPackageName)
+                    : pkg.dep!.manifestDeps ||
+                    Object.keys(pkg.dep!.manifest?.dependencies || {});
+
+            // 2. Identify Implicits (Strict adherence to move-package logic)
+            const implicitsFound = explicitDepNames.some((n) => {
+                const lower = n.toLowerCase();
+                return lower === "sui" || lower === "std" || lower === "movestdlib";
+            });
+
+            const lowerPkgName = pkg.name.toLowerCase();
+
+            const implicitDepsForOutput: string[] = [];
+            // If no implicit deps are explicitly present, and we are not a system package, add defaults.
+            if (
+                !implicitsFound &&
+                lowerPkgName !== "sui" &&
+                lowerPkgName !== "std" &&
+                lowerPkgName !== "movestdlib"
+            ) {
+                implicitDepsForOutput.push("sui");
+                implicitDepsForOutput.push("std");
+            }
+
+            if (pkg.isRoot) {
+                // Root Package Logic
                 lines.push("source = { root = true }");
-            }
+                lines.push(`use_environment = "${environment}"`);
 
-            // Dependencies from manifestDeps or manifest.dependencies
-            const depNames = dep.manifestDeps || Object.keys(dep.manifest?.dependencies || {});
+                const rootDigest = digestFn
+                    ? digestFn(
+                        buildDigestInputFromManifest(
+                            rootManifestDepsInfo,
+                            explicitDepNames,
+                            rootPackageName
+                        )
+                    )
+                    : "";
+                lines.push(`manifest_digest = "${rootDigest}"`);
 
-            // use_environment and manifest_digest (required by V4 schema)
-            lines.push(`use_environment = "${environment}"`);
-            const depDigest = digestFn ? digestFn(buildDigestInputFromManifest(dep.manifest?.dependencies as Record<string, any>, depNames)) : "";
-            lines.push(`manifest_digest = "${depDigest}"`);
+                const finalDeps = [
+                    ...explicitDepNames,
+                    ...implicitDepsForOutput,
+                ].sort();
 
-            if (depNames.length > 0) {
-                const depParts = depNames.sort().map((name) => `${name} = "${name}"`);
-                lines.push(`deps = { ${depParts.join(", ")} }`);
+                if (finalDeps.length > 0) {
+                    const rootAliasMap = rootDepAliasToPackageName || {};
+                    const depParts = finalDeps.map((alias) => {
+                        // Resolve alias to package name
+                        // For explicit deps, use map.
+                        // For implicit deps, map "sui"->"Sui", "std"->"MoveStdlib".
+                        let pkgName = rootAliasMap[alias] || alias;
+                        if (alias === "sui" && !rootAliasMap[alias]) {
+                            // Try to find if 'Sui' package exists in the graph to confirm casing?
+                            // Default to 'Sui' if map missing? Or 'sui'?
+                            // Ref lockfile uses 'Sui'.
+                            if (depsByName.has("Sui")) pkgName = "Sui";
+                        }
+                        if (alias === "std" && !rootAliasMap[alias]) {
+                            if (depsByName.has("MoveStdlib")) pkgName = "MoveStdlib";
+                        }
+                        return `${alias} = "${pkgName}"`;
+                    });
+                    lines.push(`deps = { ${depParts.join(", ")} }`);
+                } else {
+                    lines.push("deps = {}");
+                }
             } else {
-                lines.push("deps = {}");
-            }
+                // Dependency Logic
+                const dep = pkg.dep!;
+                const source = dep.source;
+                if (source?.type === "git" && source?.git && source?.rev) {
+                    lines.push(
+                        `source = { git = "${escapeTomlString(source?.git)}", subdir = "${escapeTomlString(source?.subdir || "")}", rev = "${escapeTomlString(source?.rev)}" }`
+                    );
+                } else if (source?.type === "local" && source?.local) {
+                    lines.push(
+                        `source = { local = "${escapeTomlString(source?.local)}" }`
+                    );
+                } else {
+                    lines.push("source = { root = true }");
+                }
 
+                lines.push(`use_environment = "${environment}"`);
+
+                // Digest Calculation (uses built-in logic I added previously)
+                const depDigest = digestFn
+                    ? digestFn(
+                        buildDigestInputFromManifest(
+                            dep.manifest?.dependencies as Record<string, any>,
+                            explicitDepNames,
+                            pkg.name
+                        )
+                    )
+                    : "";
+                lines.push(`manifest_digest = "${depDigest}"`);
+
+                // Deps Generation
+                const finalDeps = [
+                    ...explicitDepNames,
+                    ...implicitDepsForOutput,
+                ].sort();
+
+                if (finalDeps.length > 0) {
+                    const aliasMap = dep.depAliasToPackageName || {};
+                    const depParts = finalDeps.map((alias) => {
+                        let pkgName = aliasMap[alias] || alias;
+                        if (alias === "sui" && !aliasMap[alias]) {
+                            if (depsByName.has("Sui")) pkgName = "Sui";
+                        }
+                        if (alias === "std" && !aliasMap[alias]) {
+                            if (depsByName.has("MoveStdlib")) pkgName = "MoveStdlib";
+                        }
+                        return `${alias} = "${pkgName}"`;
+                    });
+                    lines.push(`deps = { ${depParts.join(", ")} }`);
+                } else {
+                    lines.push("deps = {}");
+                }
+            }
             lines.push("");
         }
-    } catch {
+    } catch (e: any) {
+        console.error("Lockfile generation error:", e);
         // If parsing fails, return minimal valid lockfile
         lines.push(`[pinned.${environment}.${rootPackageName}]`);
         lines.push("source = { root = true }");
@@ -270,6 +470,47 @@ export function generateMoveLockV4FromJson(
         lines.push(`manifest_digest = ""`);
         lines.push("deps = {}");
         lines.push("");
+    }
+
+    // ORIGINAL: root_package.rs:272-282 - CLI reads existing lockfile and preserves other environments
+    // lockfile.pinned.insert(current_env, pins) only updates current environment
+    // Other environments in existing lockfile are preserved
+    if (existingLockfile) {
+        try {
+            // Parse existing lockfile to find sections from other environments
+            const existingLines = existingLockfile.split("\n");
+            let currentSection: string[] = [];
+            let currentEnvName = "";
+            let inOtherEnv = false;
+
+            for (const line of existingLines) {
+                const sectionMatch = line.match(/^\[pinned\.([^.]+)\./);
+                if (sectionMatch) {
+                    // If we were collecting a section from another env, add it
+                    if (inOtherEnv && currentSection.length > 0) {
+                        lines.push(...currentSection);
+                        lines.push("");
+                    }
+
+                    currentEnvName = sectionMatch[1];
+                    inOtherEnv = currentEnvName !== environment;
+                    currentSection = inOtherEnv ? [line] : [];
+                } else if (inOtherEnv) {
+                    // Continue collecting lines for other environment section
+                    if (line.trim() !== "" || currentSection.length > 0) {
+                        currentSection.push(line);
+                    }
+                }
+            }
+
+            // Don't forget the last section
+            if (inOtherEnv && currentSection.length > 0) {
+                lines.push(...currentSection);
+                lines.push("");
+            }
+        } catch {
+            // If parsing fails, continue with just current environment
+        }
     }
 
     return lines.join("\n");

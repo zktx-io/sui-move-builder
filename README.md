@@ -10,7 +10,7 @@ Build Move packages in web or Node.js with Sui CLI-compatible dependency resolut
 - ✅ **Verified Parity**: Audited against `sui-04dd` source code (Jan 2026), byte-level module comparison
 - ✅ **Address Resolution**: Supports `original_id` for compilation, `published_at` for metadata (CLI-identical)
 - ✅ **Lockfile Support**: Reads `Move.lock` v0/v3/v4 for faster, deterministic builds
-- ✅ **Move.lock V4 Output**: Generates **V4 format** (`version = 4`) with CLI-compatible `manifest_digest`
+- ✅ **Move.lock V4 Output**: Generates **V4 format** with CLI-compatible **lexicographical sorting** and `manifest_digest`
 - ✅ **Published.toml Support**: Reads deployment records per environment
 - ✅ **Per-Package Editions**: Each package can use its own Move edition (legacy, 2024.alpha, 2024.beta)
 - ✅ **Monorepo Support**: Handles local dependencies in monorepo structures
@@ -92,14 +92,34 @@ const result = await buildMovePackage({
 });
 
 if (result.success) {
-  console.log("Digest:", result.digest);
-  console.log("Modules:", result.modules); // Base64-encoded bytecode
-  console.log("Move.lock:", result.moveLock); // V4 lockfile content
-  console.log("Environment:", result.environment); // e.g., "mainnet"
+  // Compilation outputs
+  console.log("Modules:", result.modules); // Array<string>: Base64-encoded bytecode
+  console.log("Dependencies:", result.dependencies); // Array<string>: Hex-encoded package IDs
+  console.log("Digest:", result.digest); // Array<number>: Package digest bytes
+
+  // Lockfile outputs
+  console.log("Move.lock:", result.moveLock); // string: V4 lockfile content (CLI-compatible)
+  console.log("Environment:", result.environment); // string: e.g., "mainnet"
+
+  // Migration output (V3 → V4)
+  if (result.publishedToml) {
+    console.log("Published.toml:", result.publishedToml); // string: Migrated from legacy Move.lock
+  }
 } else {
   console.error("Build failed:", result.error);
 }
 ```
+
+### Build Output Reference
+
+| Field           | Type       | Description                                    |
+| --------------- | ---------- | ---------------------------------------------- |
+| `modules`       | `string[]` | Base64-encoded compiled bytecode modules       |
+| `dependencies`  | `string[]` | Hex-encoded package IDs for linking            |
+| `digest`        | `number[]` | Package digest bytes (32 bytes)                |
+| `moveLock`      | `string`   | Generated Move.lock V4 content                 |
+| `environment`   | `string`   | Build environment (e.g., "mainnet", "testnet") |
+| `publishedToml` | `string?`  | Migrated Published.toml (if V3→V4 migration)   |
 
 ## Fetching packages from GitHub
 
@@ -260,19 +280,26 @@ npm run test:lite   # Run fidelity tests (lite version)
 npm test            # Run full integration tests
 ```
 
-**Test Cases (verified against Sui CLI):**
+**Test Cases (verified against sui-mainnet-v1.63.3):**
 
-- `nautilus.enclave` - Simple package with framework dependencies
-- `apps.kiosk` - Mysten Labs kiosk package
-- `deeptrade-core` - Complex package with Pyth/Deepbook dependencies
+| Package    | Modules | Dependencies | Digest | Lockfile               |
+| ---------- | ------- | ------------ | ------ | ---------------------- |
+| `nautilus` | ✅      | ✅           | ✅     | ✅                     |
+| `deepbook` | ✅      | ✅           | ✅     | ✅ (mainnet + testnet) |
 
 All tests verify:
 
 - ✅ Module bytecode (identical to CLI `.mv` output)
 - ✅ Dependency IDs (exact match with CLI)
-- ✅ Dependency order (lexicographical, CLI-consistent)
+- ✅ Package digest (identical hash)
+- ✅ Move.lock V4 content (all environments preserved)
+- ✅ manifest_digest calculation (CLI-compatible)
 
 ## Roadmap
 
-- ✅ **Move.lock V4 Generation**: Build results now include CLI-compatible `moveLock` field
-- **Published.toml Generation**: Future updates will include generating `Published.toml` for deployment tracking
+- ✅ **Move.lock V4 Generation**: CLI-compatible with deterministic sorting and manifest_digest
+- ✅ **Multi-Environment Support**: Preserves all environments from existing Move.lock
+- ✅ **V3→V4 Migration**: Automatically generates Published.toml from legacy Move.lock
+- **Published.toml Generation**: Generate Published.toml after successful deployment
+- **Bytecode Dependencies**: Support for .mv-only dependencies (CLI fallback path)
+
