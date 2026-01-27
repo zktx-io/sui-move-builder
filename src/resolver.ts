@@ -20,6 +20,16 @@ import {
 import { ResolvedGraph } from "./resolvedGraph.js";
 import { CompilationDependencies } from "./compilationDependencies.js";
 
+/**
+ * Default Sui framework revision for WASM builds when building without lockfile.
+ * 
+ * TODO: This should be shared with scripts/build-wasm.mjs:SUI_COMMIT.
+ * Consider creating a shared config file (e.g., sui-version.json) that both
+ * the build script and runtime can import.
+ * Current value: v1.63.3 framework/mainnet
+ */
+const WASM_BUILD_FRAMEWORK_REV = "22f9fc9781732d651e18384c9a8eb1dabddf73a6";
+
 export class Resolver {
   private fetcher: Fetcher;
   private network: "mainnet" | "testnet" | "devnet";
@@ -28,14 +38,37 @@ export class Resolver {
   // Track visited dependencies by git source to avoid duplicates
   private visited: Set<string> = new Set();
 
-  // Track visited package names to handle version conflicts
-  // Maps package name -> first seen source
-  private packageNameCache: Map<string, DependencySource> = new Map();
+  // CLI compat: suffix counter for create_ids logic
+  // ORIGINAL: builder.rs:232-265 - adds suffix to packages with same name (MoveStdlib, MoveStdlib_1, ...)
+  // Maps package name -> suffix counter (0 = no suffix, 1 = _1, etc.)
+  private packageNameToSuffix: Map<string, number> = new Map();
+
+  // Track which Sui framework revision each git repo+rev combo uses
+  // This ensures sibling packages (e.g., deepbook and token from same repo)
+  // share the same Sui version (Sui_2 instead of different Sui instances)
+  // Key: "git|rev" (excluding subdir), Value: resolved Sui framework revision
+  private repoRevToSuiRev: Map<string, string> = new Map();
+
+  // Cache for resolved Sui framework tag→SHA mappings
+  // Ensures same tag (e.g., "framework/mainnet") always resolves to same SHA within a build
+  // Key: "git|tag|subdir", Value: resolved SHA
+  private suiTagToShaCache: Map<string, string> = new Map();
 
   // Store fetched package files: packageName -> files
   private packageFiles: Map<string, Record<string, string>> = new Map();
 
   private lockfileVersion: number | undefined;
+
+  // CLI compat: store diamond package info for lockfile generation
+  // ORIGINAL: builder.rs:286 - visited key = (env, PackagePath)
+  // CLI adds all rev-specific packages to graph and records them in lockfile
+  // Key: cacheKey (git|rev|subdir), Value: { name, source, manifestDigestDeps }
+  private diamondPackages: Map<string, {
+    name: string;
+    source: DependencySource;
+    manifestDeps: string[];
+    depAliasToSource: Record<string, DependencySource>;
+  }> = new Map();
 
   constructor(
     fetcher: Fetcher,
@@ -53,7 +86,7 @@ export class Resolver {
   async resolve(
     rootMoveToml: string,
     rootFiles: Record<string, string>
-  ): Promise<{ files: string; dependencies: string }> {
+  ): Promise<{ files: string; dependencies: string; lockfileDependencies: string }> {
     // Parse root Move.toml
     const rootParsed = parseToml(rootMoveToml);
     const rootPackageName = rootParsed.package?.name || "RootPackage";
@@ -64,12 +97,13 @@ export class Resolver {
     // === LAYER 1: Build DependencyGraph ===
     const depGraph = new DependencyGraph(rootPackageName);
 
-    // Build root package
+    // Build root package (isRoot: true enables implicit dependency injection)
     const rootPackage = await this.buildPackage(
       rootPackageName,
       this.rootSource,
       rootMoveToml,
-      rootFiles
+      rootFiles,
+      true // isRoot - inject implicit dependencies for root only
     );
 
     // Update root package edition from Move.lock
@@ -109,6 +143,7 @@ export class Resolver {
       // Fallback: Recursively resolve all dependencies from manifests
       // ORIGINAL: graph/mod.rs:73-74 - "lockfile was missing or out of date; loading from manifests"
       await this.buildDependencyGraph(depGraph, rootPackage);
+
     }
 
     // Check for cycles
@@ -214,20 +249,28 @@ export class Resolver {
       this.packageFiles
     );
 
+    // Lockfile needs ALL packages including diamond duplicates (no linkage filtering)
+    const lockfilePackageGroups = compilationDeps.toPackageGroupedFormatForLockfile(
+      this.packageFiles
+    );
+
     return {
       files: JSON.stringify(updatedRootFiles),
       dependencies: JSON.stringify(packageGroups),
+      lockfileDependencies: JSON.stringify(lockfilePackageGroups),
     };
   }
 
   /**
    * Build a Package object from Move.toml and files
+   * @param isRoot - If true, inject implicit dependencies (CLI behavior: implicit deps only for root)
    */
   private async buildPackage(
     name: string,
     source: DependencySource | null,
     moveTomlContent: string,
-    files: Record<string, string>
+    files: Record<string, string>,
+    isRoot: boolean = false
   ): Promise<Package> {
     const parsed = parseToml(moveTomlContent);
 
@@ -286,10 +329,15 @@ export class Resolver {
       originalId: originalIdFromPublishedToml || publishedAtResult.originalId,
       latestPublishedId,
       addresses: parsed.addresses || {},
-      dependencies: this.injectImplicitDependencies(
-        parsed.dependencies || {},
-        parsed.package?.name
-      ),
+      // CLI compat: implicit dependencies only apply to root package
+      // ORIGINAL: sui_flavor.rs:96-109 - implicit_dependencies apply as root's dep replacement only
+      // Each dependency package must use the version specified in its own Move.toml
+      dependencies: isRoot
+        ? this.injectImplicitDependencies(
+          parsed.dependencies || {},
+          parsed.package?.name
+        )
+        : parsed.dependencies || {},
       devDependencies: parsed["dev-dependencies"],
     };
 
@@ -440,15 +488,25 @@ export class Resolver {
     graph: DependencyGraph,
     pkg: Package
   ): Promise<void> {
-    // Sort dependencies to ensure Implicit ones (System) are processed first.
-    // This allows the "Implicit wins" conflict logic to protect the System version.
+    // Sort dependencies to match CLI's BTreeMap iteration order:
+    // 1. Alphabetical by name (BTreeMap's natural ASCII ordering)
+    // 2. Implicit deps processed first (System packages take priority)
+    // ORIGINAL: builder.rs uses BTreeMap which provides lexicographic ASCII ordering
     const sortedDeps = Array.from(pkg.dependencies.entries()).sort(
-      ([, depA], [, depB]) => {
+      ([nameA, depA], [nameB, depB]) => {
+        // First: Implicit deps come first (descending)
         const isImplicitA = (depA.source as any).isImplicit ? 1 : 0;
         const isImplicitB = (depB.source as any).isImplicit ? 1 : 0;
-        return isImplicitB - isImplicitA; // Descending: Implicit first
+        if (isImplicitA !== isImplicitB) {
+          return isImplicitB - isImplicitA;
+        }
+        // Second: ASCII order (CLI's BTreeMap behavior, not localeCompare)
+        // ASCII: 'P' (80) < 'd' (100) < 'm' (109)
+        return nameA < nameB ? -1 : nameA > nameB ? 1 : 0;
       }
     );
+
+
 
     for (const [depName, dep] of sortedDeps) {
       // Convert local dependencies to git dependencies using parent's git info
@@ -480,27 +538,85 @@ export class Resolver {
         continue;
       }
 
+      // CLI behavior: local deps from same git repo share parent's framework version
+      // Override Sui rev BEFORE cacheKey generation so sibling packages hit same visited entry
+      // ORIGINAL: pin.rs:283-285 - local dep inherits parent's git tree including rev
+      if (dep.source.git && this.isSuiRepo(dep.source.git)) {
+        // Infer subdir for Sui framework packages
+        if (!dep.source.subdir) {
+          const inferredSubdir = this.inferSuiFrameworkSubdir(depName);
+          if (inferredSubdir) {
+            dep.source.subdir = inferredSubdir;
+          }
+        }
+
+        // If parent package came from a git repo, check if sibling already resolved Sui
+        const parentRepoKey = pkg.id.source.type === "git"
+          ? `${pkg.id.source.git}|${pkg.id.source.rev}`
+          : null;
+        if (parentRepoKey) {
+          const cachedSuiRev = this.repoRevToSuiRev.get(parentRepoKey);
+          if (cachedSuiRev && dep.source.rev !== cachedSuiRev) {
+            // Override with sibling's Sui revision (e.g., token uses deepbook's Sui_2)
+            dep.source.rev = cachedSuiRev;
+          }
+        }
+
+        // Pre-resolve Sui tags to SHA for consistent cacheKey generation
+        // This ensures deepbook's Sui (framework/mainnet) and token's Sui use same SHA in cacheKey
+        const suiTagKey = `${dep.source.git}|${dep.source.rev}|${dep.source.subdir || ""}`;
+        const cachedSha = this.suiTagToShaCache.get(suiTagKey);
+        if (cachedSha) {
+          // Use cached SHA from previous resolution
+          dep.source.rev = cachedSha;
+        } else {
+          // Pre-fetch to resolve tag/branch to SHA
+          // This is necessary because cacheKey must use resolved SHA, not tag
+          await this.fetcher.fetch(dep.source.git!, dep.source.rev!, dep.source.subdir);
+          const resolvedSha = this.fetcher.getResolvedSha(dep.source.git!, dep.source.rev!);
+          if (resolvedSha && resolvedSha !== dep.source.rev) {
+            this.suiTagToShaCache.set(suiTagKey, resolvedSha);
+            dep.source.rev = resolvedSha;
+          }
+        }
+      }
+
       const cacheKey = `${dep.source.git}|${dep.source.rev}|${dep.source.subdir || ""}`;
 
       if (this.visited.has(cacheKey)) {
         // Already processed, just add edge
+        // ORIGINAL: builder.rs:330 - graph.add_edge(index, dep_index, dep.clone())
+        // edge stores PinnedDependencyInfo with original source
         const existingPkg = this.findPackageBySource(graph, dep.source);
         if (existingPkg) {
           graph.addDependency(pkg.id.name, existingPkg.id.name, dep);
+
+          // ORIGINAL: to_lockfile.rs:27-35 - deps = { alias = "PackageID" }
+          // Store original source for lockfile diamond dependency tracking
+          if (!pkg.depAliasToPackageName) {
+            pkg.depAliasToPackageName = {};
+          }
+          pkg.depAliasToPackageName[depName] = existingPkg.id.name;
+
+          // Store original source info for diamond dependency lockfile generation
+          // ORIGINAL: builder.rs:286 - visited key includes PackagePath (git+rev+subdir)
+          if (!(pkg as any).depAliasToSource) {
+            (pkg as any).depAliasToSource = {};
+          }
+          (pkg as any).depAliasToSource[depName] = {
+            name: existingPkg.id.name,
+            git: dep.source.git,
+            rev: dep.source.rev,
+            subdir: dep.source.subdir
+          };
         }
         continue;
       }
 
       this.visited.add(cacheKey);
 
-      // Infer subdir for Sui framework packages
+      // Subdir already set in pre-cacheKey Sui handling above
       let subdir = dep.source.subdir;
-      if (!subdir && dep.source.git && this.isSuiRepo(dep.source.git)) {
-        subdir = this.inferSuiFrameworkSubdir(depName);
-        if (subdir) {
-          dep.source.subdir = subdir;
-        }
-      }
 
       // Fetch dependency files
       const files = await this.fetcher.fetch(
@@ -516,6 +632,21 @@ export class Resolver {
       );
       if (resolvedSha) {
         dep.source.rev = resolvedSha;
+      }
+
+      // Store Sui framework revision for sibling packages from same git repo
+      // ORIGINAL: CLI's visited map shares nodes for same fetched path
+      // If this is a Sui framework dep, store its resolved rev for sibling packages to use
+      if (dep.source.git && this.isSuiRepo(dep.source.git)) {
+        const parentRepoKey = pkg.id.source.type === "git"
+          ? `${pkg.id.source.git}|${pkg.id.source.rev}`
+          : null;
+        if (parentRepoKey && dep.source.rev) {
+          // Only set if not already set (first sibling's Sui wins)
+          if (!this.repoRevToSuiRev.has(parentRepoKey)) {
+            this.repoRevToSuiRev.set(parentRepoKey, dep.source.rev);
+          }
+        }
       }
 
       // Find Move.toml
@@ -555,42 +686,19 @@ export class Resolver {
         files
       );
 
-      // Check if we already have a package with this name (version conflict)
-      // For lockfile v4+, package IDs are already unique (Sui, Sui_1...), so skip name-based dedupe.
-      if (!this.lockfileVersion || this.lockfileVersion < 4) {
-        const existingSource = this.packageNameCache.get(
-          depPackage.manifest.name
-        );
-        if (existingSource) {
-          const isExistingImplicit = (existingSource as any).isImplicit;
-          const isNewImplicit = (dep.source as any).isImplicit;
+      // CLI compat: create_ids logic - add suffix to packages with same name
+      // ORIGINAL: builder.rs:232-265 - diamond dependency support
+      // CLI treats packages with same name but different sources as separate nodes
+      // and records them in lockfile as MoveStdlib, MoveStdlib_1, MoveStdlib_2
+      const pkgBaseName = depPackage.manifest.name;
+      const suffix = this.packageNameToSuffix.get(pkgBaseName) ?? 0;
 
-          if (isExistingImplicit && !isNewImplicit) {
-            // Existing is implicit (System Override), New is explicit.
-            // Implicit wins -> Keep existing, Ignore new.
-            continue;
-          } else if (!isExistingImplicit && isNewImplicit) {
-            // Existing is explicit, New is implicit (System Override).
-            // Implicit wins -> Overwrite existing with new.
-            // Proceed to set packageNameCache below.
-          } else if (
-            JSON.stringify(existingSource) !== JSON.stringify(dep.source)
-          ) {
-            // CLI behavior: same package name with different source is an error.
-            const describe = (src: DependencySource) => JSON.stringify(src);
-            throw new Error(
-              [
-                `Conflicting versions of package '${depPackage.manifest.name}' found`,
-                `Existing: ${describe(existingSource)}`,
-                `New: ${describe(dep.source)}`,
-                `When resolving dependencies for '${pkg.id.name}' -> '${depName}'`,
-              ].join("\n")
-            );
-          }
-        }
-        // Remember this package name's source for legacy lockfile handling
-        this.packageNameCache.set(depPackage.manifest.name, dep.source);
-      }
+      // Generate unique ID: first uses original name, subsequent uses _1, _2 suffix
+      const pkgId = suffix === 0 ? pkgBaseName : `${pkgBaseName}_${suffix}`;
+      this.packageNameToSuffix.set(pkgBaseName, suffix + 1);
+
+      // Update package ID (used as unique identifier in graph)
+      depPackage.id.name = pkgId;
 
       // published-at is already resolved in buildPackage via resolvePublishedAt
       // We rely on buildPackage to populate manifest.addresses correctly
@@ -616,11 +724,23 @@ export class Resolver {
       graph.addDependency(pkg.id.name, depPackage.id.name, dep);
 
       // Track alias -> package name mapping for Move.lock generation
-      // CLI source: to_lockfile.rs uses edge.weight().name() (Move.toml key) as deps key
+      // ORIGINAL: to_lockfile.rs:27-35 - deps = { alias = "PackageID" }
       if (!pkg.depAliasToPackageName) {
         pkg.depAliasToPackageName = {};
       }
       pkg.depAliasToPackageName[depName] = depPackage.id.name;
+
+      // ORIGINAL: builder.rs:330 - edge stores PinnedDependencyInfo with original source
+      // Store original source info for diamond dependency lockfile generation
+      if (!(pkg as any).depAliasToSource) {
+        (pkg as any).depAliasToSource = {};
+      }
+      (pkg as any).depAliasToSource[depName] = {
+        name: depPackage.id.name,
+        git: dep.source.git,
+        rev: dep.source.rev,
+        subdir: dep.source.subdir
+      };
 
       // Use source files directly - compiler needs source, not bytecode
       this.packageFiles.set(depPackage.id.name, files);
@@ -841,11 +961,16 @@ export class Resolver {
     const lockfile = parseToml(moveLockContent) as any;
     this.lockfileVersion = lockfile.move?.version;
 
+    console.log(`[Lockfile] version=${this.lockfileVersion}, hasPinned=${!!lockfile.pinned}`);
+
     // Support both version 3 ([[move.package]]) and version 4 (pinned) formats
     const lockfileVersion = lockfile.move?.version;
     if (lockfileVersion === 3) {
-      // Version 3 format: Use [[move.package]] array
-      return await this.loadFromLockfileV3(graph, lockfile, rootPackage);
+      // ORIGINAL: schema/lockfile.rs:21 - V3 lockfile has no `pinned` section
+      // ORIGINAL: lockfile.rs:35-37 - pins_for_env(env) returns None for V3
+      // ORIGINAL: mod.rs:69-75 - None means re-resolve from manifests
+      // CLI behavior: V3 lockfile is ignored, dependencies are re-resolved from Move.toml
+      return false;  // fallback to buildDependencyGraph (re-resolve from manifests)
     } else if (lockfileVersion && lockfileVersion >= 4) {
       // Try v4+ format first (pinned)
       if (lockfile.pinned) {
@@ -1206,7 +1331,10 @@ export class Resolver {
     const lockfileOrder: string[] = [];
 
     // First pass: Create all packages
+    // ORIGINAL: builder.rs:108-145 - iterate over lockfile pins
+    console.log(`[V4 Load] Loading ${Object.keys(pinnedPackages).length} packages from lockfile`);
     for (const [pkgId, pin] of Object.entries(pinnedPackages)) {
+      console.log(`[V4 Load] Processing: ${pkgId}`);
       lockfileOrder.push(pkgId);
       const source = this.lockfileSourceToDependencySource((pin as any).source);
       if (!source) {
@@ -1241,10 +1369,18 @@ export class Resolver {
       // If Move.toml actually changed, the build will fail anyway.
 
       // Build package
+      // ORIGINAL: builder.rs:132-140 - Package is created with ID from lockfile (including suffix)
       const pkg = await this.buildPackage(pkgId, source, moveToml, files);
+
+      // CLI compat: use pkgId from lockfile (including suffix)
+      // ORIGINAL: builder.rs:232-265 create_ids() - lockfile already has suffix-applied ID
+      // pkg.manifest.name is original name (MoveStdlib), pkg.id.name is lockfile ID (MoveStdlib_1)
+      pkg.id.name = pkgId;
+
       packageById.set(pkgId, pkg);
-      packageByName.set(pkg.manifest.name, pkg);
-      this.packageFiles.set(pkg.manifest.name, files);
+      // Use pkgId (including suffix) as key to avoid overwriting diamond packages
+      packageByName.set(pkgId, pkg);
+      this.packageFiles.set(pkgId, files);
 
       // Add to graph (if not root)
       if (source.type !== "local" || !("root" in (pin as any).source)) {
@@ -1489,12 +1625,12 @@ export class Resolver {
     }
 
     if (!dependencies["Sui"] && !dependencies["sui"]) {
-      // Default to framework/mainnet as per typical usage
-      // Matches: https://github.com/MystenLabs/sui.git subdir crates/sui-framework/packages/sui-framework
+      // Use WASM build-time SHA (like CLI's latest_system_packages().git_revision)
+      // This ensures lockfile structure matches CLI when built from same framework version
       dependencies["Sui"] = {
         git: "https://github.com/MystenLabs/sui.git",
         subdir: "crates/sui-framework/packages/sui-framework",
-        rev: "framework/mainnet",
+        rev: WASM_BUILD_FRAMEWORK_REV,
         isImplicit: true,
       };
     }
@@ -1511,7 +1647,7 @@ export async function resolve(
   fetcher: Fetcher,
   network: "mainnet" | "testnet" | "devnet" = "mainnet",
   rootSource?: DependencySource
-): Promise<{ files: string; dependencies: string }> {
+): Promise<{ files: string; dependencies: string; lockfileDependencies: string }> {
   const resolver = new Resolver(fetcher, network, rootSource || null);
   return resolver.resolve(rootMoveTomlContent, rootSourceFiles);
 }

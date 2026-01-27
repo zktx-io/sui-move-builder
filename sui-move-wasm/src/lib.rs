@@ -65,11 +65,24 @@ impl MoveCompilerResult {
     }
 }
 
+/// Compilation output containing bytecode, dependencies, and lockfile.
+///
+/// ORIGINAL SOURCE REFERENCES:
+/// - sui/crates/sui-move-build/src/lib.rs - CompiledPackage struct
+/// - move-package-alt/src/graph/to_lockfile.rs - to_pins() generates lockfile
+/// - move-package-alt/src/graph/builder.rs:232-265 - create_ids() assigns package IDs
+///
+/// The lockfile field is generated internally during compilation to match CLI behavior:
+/// - V4 format with [pinned.{env}.{pkg_id}] sections
+/// - Package IDs with suffix for diamond dependencies (MoveStdlib, MoveStdlib_1, etc.)
 #[derive(Serialize)]
 pub struct CompilationOutput {
     modules: Vec<String>, // Base64 encoded bytecode
     dependencies: Vec<String>, // Hex encoded dependency IDs
     digest: Vec<u8>, // Blake2b-256 package digest
+    /// V4 Move.lock content generated during compilation.
+    /// ORIGINAL: move-package-alt/src/package/root_package.rs:251 - save_lockfile_to_disk()
+    lockfile: String,
 }
 
 // [REMOVED] Manual MoveToml structs definition
@@ -102,6 +115,10 @@ struct CompileOptions {
     test_mode: bool,
     #[serde(default, rename = "lintFlag")]
     lint_flag: Option<String>,
+    /// DependencyGraph JSON for V4 lockfile generation
+    /// Passed from TypeScript resolver
+    #[serde(default, rename = "dependencyGraph")]
+    dependency_graph: Option<String>,
 }
 
 fn package_version_from_lock(lock_contents: &str, package_name: &str) -> Option<String> {
@@ -370,6 +387,7 @@ fn compile_impl(
     files_json: &str,
     dependencies_json: &str,
     options_json: Option<String>,
+    graph_json: Option<String>,  // DependencyGraph JSON for lockfile generation
 ) -> MoveCompilerResult {
     #[cfg(debug_assertions)]
     #[cfg(debug_assertions)]
@@ -916,6 +934,13 @@ fn compile_impl(
                 true // hash_modules matches default behavior usually
             );
 
+            // ORIGINAL SOURCE: root_package.rs:251 - save_lockfile_to_disk()
+            // Generate V4 lockfile using DependencyGraph JSON from TypeScript
+            let lockfile = match &graph_json {
+                Some(graph) => generate_lockfile_v4_internal(graph),
+                None => String::new(),  // No graph provided, skip lockfile
+            };
+
             let output_data = CompilationOutput {
                 modules,
                 dependencies: dependency_ids_vec
@@ -923,6 +948,7 @@ fn compile_impl(
                     .map(|bytes| AccountAddress::new(*bytes).to_canonical_string(true))
                     .collect(),
                 digest: package_digest.to_vec(),
+                lockfile,
             };
 
             MoveCompilerResult {
@@ -946,8 +972,9 @@ pub fn compile(
     files_json: &str,
     dependencies_json: &str,
     options_json: Option<String>,
+    graph_json: Option<String>,  // DependencyGraph JSON for lockfile generation
 ) -> MoveCompilerResult {
-    compile_impl(files_json, dependencies_json, options_json)
+    compile_impl(files_json, dependencies_json, options_json, graph_json)
 }
 
 
@@ -1400,3 +1427,131 @@ pub fn compute_manifest_digest(deps_json: &str) -> String {
     // Format as uppercase hex
     format!("{:X}", hash)
 }
+
+/// Generate a Move.lock V4 lockfile from dependency information.
+///
+/// ORIGINAL SOURCE REFERENCES:
+/// - move-package-alt/src/graph/to_lockfile.rs - to_pins() function
+/// - move-package-alt/src/graph/builder.rs:232-265 - create_ids() function
+/// - move-package-alt/src/schema/lockfile.rs - ParsedLockfile struct
+///
+/// This function generates a CLI-compatible V4 lockfile from DependencyGraph JSON.
+///
+/// DependencyGraph JSON format (from TypeScript resolver):
+/// {
+///   "environment": "mainnet",
+///   "root": "deeptrade_core",
+///   "packages": [
+///     { "id": "MoveStdlib", "name": "MoveStdlib", "source": {...}, "deps": {...} },
+///     { "id": "MoveStdlib_1", "name": "MoveStdlib", "source": {...}, "deps": {...} }
+///   ]
+/// }
+///
+/// Called internally from compile_impl - not exposed to JS.
+fn generate_lockfile_v4_internal(graph_json: &str) -> String {
+    /// DependencyGraph - the main input structure
+    #[derive(Deserialize, Debug)]
+    struct DependencyGraph {
+        environment: String,
+        root: String,
+        packages: Vec<PackagePin>,
+    }
+    
+    /// PackagePin - matches CLI's Pin structure
+    #[derive(Deserialize, Serialize, Debug, Clone)]
+    struct PackagePin {
+        id: String,                    // Unique ID (MoveStdlib, MoveStdlib_1)
+        name: String,                  // Original name
+        source: SourceInfo,
+        #[serde(default)]
+        deps: BTreeMap<String, String>,  // alias -> package ID
+        #[serde(default, rename = "manifestDigest")]
+        manifest_digest: Option<String>,
+        // Root package marker
+        #[serde(default)]
+        is_root: bool,
+    }
+    
+    #[derive(Deserialize, Serialize, Debug, Clone)]
+    struct SourceInfo {
+        #[serde(default)]
+        git: Option<String>,
+        #[serde(default)]
+        rev: Option<String>,
+        #[serde(default)]
+        subdir: Option<String>,
+        #[serde(default)]
+        local: Option<String>,
+        #[serde(default)]
+        root: Option<bool>,
+    }
+    
+    // Parse DependencyGraph JSON
+    let graph: DependencyGraph = match serde_json::from_str(graph_json) {
+        Ok(g) => g,
+        Err(e) => {
+            error(&format!("Failed to parse graph_json: {}", e));
+            return String::new();
+        }
+    };
+    
+    let environment = &graph.environment;
+    
+    // Packages are already sorted and have IDs assigned by TypeScript
+    // Just use them directly for lockfile generation
+    
+    // Build lockfile content
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("# Generated by move; do not edit".to_string());
+    lines.push("# This file should be checked in.".to_string());
+    lines.push(String::new());
+    lines.push("[move]".to_string());
+    lines.push("version = 4".to_string());
+    lines.push(String::new());
+    
+    // Generate [pinned.{env}.{id}] sections for each package
+    for pkg in &graph.packages {
+        let section_key = format!("pinned.{}.{}", environment, pkg.id);
+        lines.push(format!("[{}]", section_key));
+        
+        // Source field
+        if pkg.source.root.unwrap_or(false) || pkg.is_root {
+            // Root package
+            lines.push("source = { root = true }".to_string());
+        } else if let Some(ref git) = pkg.source.git {
+            let rev = pkg.source.rev.as_deref().unwrap_or("");
+            let subdir = pkg.source.subdir.as_deref().unwrap_or("");
+            lines.push(format!(
+                "source = {{ git = \"{}\", subdir = \"{}\", rev = \"{}\" }}",
+                git, subdir, rev
+            ));
+        } else if let Some(ref local) = pkg.source.local {
+            lines.push(format!("source = {{ local = \"{}\" }}", local));
+        }
+        
+        // use_environment
+        lines.push(format!("use_environment = \"{}\"", environment));
+        
+        // manifest_digest - use pre-computed digest from TypeScript
+        let digest = pkg.manifest_digest.as_deref().unwrap_or("");
+        lines.push(format!("manifest_digest = \"{}\"", digest));
+        
+        // deps - already alias -> packageId mapping from TypeScript
+        if pkg.deps.is_empty() {
+            lines.push("deps = {}".to_string());
+        } else {
+            let deps_strs: Vec<String> = pkg.deps.iter()
+                .map(|(alias, pkg_id)| format!("{} = \"{}\"", alias, pkg_id))
+                .collect();
+            // Sort for deterministic output
+            let mut sorted = deps_strs;
+            sorted.sort();
+            lines.push(format!("deps = {{ {} }}", sorted.join(", ")));
+        }
+        
+        lines.push(String::new());
+    }
+    
+    lines.join("\n")
+}
+

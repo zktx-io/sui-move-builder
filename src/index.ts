@@ -24,8 +24,10 @@ export type OnProgressCallback = (event: BuildProgressEvent) => void;
 export interface ResolvedDependencies {
   /** JSON string of resolved files for the root package */
   files: string;
-  /** JSON string of resolved dependencies */
+  /** JSON string of resolved dependencies (linkage applied, for compilation) */
   dependencies: string;
+  /** JSON string of all dependencies including diamond duplicates (for lockfile) */
+  lockfileDependencies: string;
 }
 
 export interface BuildInput {
@@ -74,7 +76,7 @@ export interface BuildFailure {
   error: string;
 }
 
-import { migrateLegacyLockToPublishedToml } from "./lockfileMigration.js";
+import { migrateLegacyLockToPublishedToml, stripEnvSectionsFromV3Lockfile, convertV3MovePackageToV4Pinned } from "./lockfileMigration.js";
 
 // ORIGINAL SOURCE REFERENCE: sui-types/src/digests.rs:164-165, 262-269
 // Chain IDs are first 4 bytes of genesis checkpoint digest as hex
@@ -287,6 +289,7 @@ export async function resolveDependencies(
   return {
     files: resolved.files,
     dependencies: resolved.dependencies,
+    lockfileDependencies: resolved.lockfileDependencies,
   };
 }
 
@@ -312,6 +315,53 @@ export async function buildMovePackage(
       }
     }
     input.files = filteredFiles;
+
+    // ORIGINAL CLI SOURCE:
+    // - external-crates/move/crates/move-package-alt/src/package/root_package.rs:249-267
+    //   save_lockfile_to_disk() migrates legacy lockfile pubs to modern pubfile BEFORE overwriting
+    // - external-crates/move/crates/move-package-alt/src/compatibility/legacy_lockfile.rs
+    //   load_legacy_lockfile() extracts publish info from V3 [env] sections
+    //
+    // CLI migration flow:
+    // 1. Reads legacy Move.lock (V3 format with [env] sections containing publish info)
+    // 2. Extracts publish info and writes to Published.toml
+    // 3. Updates Move.lock to V4 format (removes publish info, keeps only dependency resolution)
+    //
+    // This WASM implementation:
+    // - Extracts Published.toml content and applies it BEFORE resolve/build
+    // - This ensures packages with legacy lockfiles use correct addresses during compilation
+    // - Note: Move.lock V4 generation happens separately in lockfileGenerator.ts
+    let migratedPublishedToml: string | undefined;
+    const legacyLock = input.files["Move.lock"];
+    if (legacyLock) {
+      const chainId = CHAIN_IDS[environment] || environment;
+      const migrationResult = migrateLegacyLockToPublishedToml(
+        legacyLock,
+        environment,
+        chainId
+      );
+      migratedPublishedToml = migrationResult ?? undefined;
+      if (migratedPublishedToml) {
+        // Apply migration: update files to use migrated Published.toml and V4 lockfile
+        // This ensures resolve/build uses the same state as CLI after migration
+        if (!input.files["Published.toml"]) {
+          input.files["Published.toml"] = migratedPublishedToml;
+        }
+
+        // CRITICAL: Also convert Move.lock to V4 format (strip [env] sections)
+        // CLI does this during migration, and the lockfile content affects the build digest
+        // Without this, first build produces different digest than CLI
+        const strippedLock = stripEnvSectionsFromV3Lockfile(legacyLock);
+        if (strippedLock) {
+          input.files["Move.lock"] = strippedLock;
+        }
+      } else {
+        // V3 lockfile without [env] sections (unpublished package)
+        // CLI compat: V3 lockfile's [[move.package]] array is not used
+        // CLI's pins_for_env() returns None → re-resolve from manifest (builder.rs:109-111)
+        // Instead of converting V3 to V4, use buildDependencyGraph fallback in resolver.ts
+      }
+    }
 
     // Emit resolve_start event
     input.onProgress?.({ type: "resolve_start" });
@@ -409,15 +459,61 @@ export async function buildMovePackage(
     // Emit compile_start event
     input.onProgress?.({ type: "compile_start" });
 
+    // Convert dependencies to DependencyGraph format for WASM lockfile generation
+    // ORIGINAL SOURCE: builder.rs:232-265 (create_ids), to_lockfile.rs
+    const depsArray = JSON.parse(resolved.dependencies) as Array<{
+      name: string;
+      source?: { type: string; git?: string; rev?: string; subdir?: string; local?: string };
+      deps?: Record<string, string>;
+      manifestDigest?: string;
+      depAliasToPackageName?: Record<string, string>;
+    }>;
+
+    // Build PackagePin array with unique IDs (suffix for same-name packages)
+    const nameToSuffix = new Map<string, number>();
+    const packages = depsArray.map((dep) => {
+      const suffix = nameToSuffix.get(dep.name) ?? 0;
+      const id = suffix === 0 ? dep.name : `${dep.name}_${suffix}`;
+      nameToSuffix.set(dep.name, suffix + 1);
+      return {
+        id,
+        name: dep.name,
+        source: dep.source ?? { root: true },
+        deps: dep.deps ?? {},
+        manifestDigest: dep.manifestDigest ?? "",
+        is_root: false,
+      };
+    });
+
+    // Add root package
+    packages.unshift({
+      id: rootPackageName,
+      name: rootPackageName,
+      source: { root: true },
+      deps: {},  // TODO: add root deps
+      manifestDigest: "",  // TODO: compute
+      is_root: true,
+    });
+
+    // Sort by ID for consistent output
+    packages.sort((a, b) => a.id.localeCompare(b.id));
+
+    const dependencyGraph = {
+      environment,
+      root: rootPackageName,
+      packages,
+    };
+
     const raw = (mod as any).compile(
       resolved.files,
-      resolved.dependencies,
+      resolved.dependencies,  // Pass original array for compilation
       JSON.stringify({
         silenceWarnings: input.silenceWarnings,
         testMode: input.testMode,
         lintFlag: input.lintFlag,
         stripMetadata: input.stripMetadata,
-      })
+      }),
+      JSON.stringify(dependencyGraph)  // 4th param: graph for lockfile generation
     );
 
     const result = ensureCompileResult(raw);
@@ -473,9 +569,10 @@ export async function buildMovePackage(
 
     // Generate Move.lock V4
     // ORIGINAL: root_package.rs:272-282 - Pass existing lockfile to preserve other environments
+    // Use lockfileDependencies which includes ALL packages (no linkage filtering)
     const existingLockfile = input.files["Move.lock"];
     const moveLock = generateMoveLockV4FromJson(
-      resolved.dependencies,
+      resolved.lockfileDependencies,
       rootPackageName,
       environment,
       rootManifestDeps,

@@ -97,6 +97,9 @@ export class CompilationDependencies {
   private resolvedGraph: ResolvedGraph;
   private rootPackageName: string;
   private dependencies: DependencyInfo[] = [];
+  // All dependencies including diamond duplicates (for lockfile generation)
+  private lockfileDependencies: DependencyInfo[] = [];
+
 
   constructor(resolvedGraph: ResolvedGraph) {
     this.resolvedGraph = resolvedGraph;
@@ -119,7 +122,9 @@ export class CompilationDependencies {
       this.rootPackageName
     );
 
-    const packageOrder = this.resolvedGraph.compilerInputOrder();
+    // Get package order with indices for diamond dependency support
+    // ORIGINAL: builder.rs:222-227 - PackageGraph { inner, package_ids, root_index }
+    const { ids: packageOrder, indices: packageIndices } = this.resolvedGraph.compilerInputOrderWithIndices();
 
     // Registry of build IDs (addresses) assigned to each package.
     // This allows us to propagate dummy addresses (assigned to unpublished dependencies)
@@ -129,14 +134,21 @@ export class CompilationDependencies {
     // System packages that we exclude when not explicitly needed.
     // Matches observed CLI outputs where Bridge/SuiSystem IDs are omitted.
     // Build DependencyInfo for each package (excluding root)
-    for (const pkgName of packageOrder) {
+    for (let i = 0; i < packageOrder.length; i++) {
+      const pkgId = packageOrder[i];  // Unique ID (MoveStdlib, MoveStdlib_1, etc.)
+      const pkgIndex = packageIndices[i];
+
+      // Use index to get package (handles same-name packages correctly)
+      const pkg = this.resolvedGraph.getPackageByIndex(pkgIndex);
+      if (!pkg) continue;
+
+      const pkgName = pkg.id.name;  // Actual name (MoveStdlib for all variants)
+
       if (pkgName === this.rootPackageName) {
         continue; // Skip root, it's not a dependency
       }
 
-      const pkg = this.resolvedGraph.getPackage(pkgName);
-      if (!pkg) continue;
-
+      // Use pkgName for file lookup (files are stored by actual name)
       const files = packageFiles.get(pkgName) || {};
       const sourcePaths = this.extractSourcePaths(pkgName, files);
 
@@ -227,7 +239,9 @@ export class CompilationDependencies {
       const manifestDeps = Object.keys(pkg.manifest.dependencies || {});
 
       const depInfo: DependencyInfo = {
-        name: pkgName,
+        // Use unique ID (MoveStdlib_1) for diamond dep support
+        // ORIGINAL: builder.rs:232-265 - create_ids() generates unique IDs
+        name: pkgId,
         isImmediate: immediateDeps.has(pkgName),
         sourcePaths,
         addressMapping,
@@ -248,6 +262,74 @@ export class CompilationDependencies {
       };
 
       this.dependencies.push(depInfo);
+    }
+
+    // Compute lockfile dependencies (all packages, no linkage filtering)
+    // ORIGINAL: CLI lockfile includes all packages including diamond duplicates
+    const { ids: allPackageOrder, indices: allPackageIndices } = this.resolvedGraph.allPackagesOrderWithIndices();
+
+    for (let i = 0; i < allPackageOrder.length; i++) {
+      const pkgId = allPackageOrder[i];
+      const pkgIndex = allPackageIndices[i];
+
+      const pkg = this.resolvedGraph.getPackageByIndex(pkgIndex);
+      if (!pkg) continue;
+
+      const pkgName = pkg.id.name;
+      if (pkgName === this.rootPackageName) continue;
+
+      const files = packageFiles.get(pkgName) || {};
+      const sourcePaths = this.extractSourcePaths(pkgName, files);
+      const effectiveEdition = pkg.manifest.edition || "legacy";
+
+      let publishedIdForOutput =
+        pkg.manifest.latestPublishedId ||
+        pkg.manifest.publishedAt ||
+        pkg.manifest.originalId ||
+        pkg.resolvedTable?.[pkgName];
+
+      // Build source info from package identifier
+      const sourceInfo = pkg.id.source;
+      const source = {
+        type: sourceInfo.type,
+        git: sourceInfo.git,
+        rev: sourceInfo.rev,
+        subdir: sourceInfo.subdir,
+        local: sourceInfo.local,
+      };
+      const manifestDeps = Object.keys(pkg.manifest.dependencies);
+
+      // For lockfile, we need simplified addressMapping
+      const addressMapping: Record<string, string> = {};
+      for (const [key, value] of Object.entries(pkg.manifest.addresses)) {
+        if (value) addressMapping[key] = value;
+      }
+      if (pkg.manifest.originalId) {
+        addressMapping[pkgName] = pkg.manifest.originalId;
+      }
+
+      const lockfileDepInfo: DependencyInfo = {
+        name: pkgId,
+        isImmediate: immediateDeps.has(pkgName),
+        sourcePaths,
+        addressMapping,
+        compilerConfig: {
+          edition: effectiveEdition,
+          flavor: "sui",
+        },
+        moduleFormat: sourcePaths.length > 0 ? "Source" : "Bytecode",
+        edition: effectiveEdition,
+        publishedIdForOutput,
+        source,
+        manifestDeps,
+        manifest: {
+          name: pkg.manifest.name,
+          dependencies: pkg.manifest.dependencies,
+        },
+        depAliasToPackageName: pkg.depAliasToPackageName,
+      };
+
+      this.lockfileDependencies.push(lockfileDepInfo);
     }
   }
   /**
@@ -334,6 +416,43 @@ export class CompilationDependencies {
 
     // Sort package groups by name to match Sui CLI behavior (alphabetical order for compiler input)
     // packageGroups.sort((a, b) => a.name.localeCompare(b.name));
+
+    return packageGroups;
+  }
+
+  /**
+   * Convert to package-grouped format for lockfile generation (ALL packages, no linkage)
+   * This includes all packages including diamond duplicates (Sui_1, Sui_2, etc.)
+   */
+  toPackageGroupedFormatForLockfile(
+    allPackageFiles: Map<string, Record<string, string>>
+  ): Array<PackageGroupedFormat> {
+    const packageGroups: Array<PackageGroupedFormat> = [];
+
+    for (const dep of this.lockfileDependencies) {
+      // Use base name for file lookup (files stored by actual name, not suffixed)
+      const baseName = dep.name.replace(/_\d+$/, '');
+      const pkgFiles = allPackageFiles.get(baseName) || {};
+      const groupedFiles: Record<string, string> = {};
+
+      for (const [path, content] of Object.entries(pkgFiles)) {
+        if (path.endsWith("Move.lock")) continue;
+        const depPath = `dependencies/${dep.name}/${path}`;
+        groupedFiles[depPath] = content;
+      }
+
+      packageGroups.push({
+        name: dep.name,
+        files: groupedFiles,
+        edition: dep.edition,
+        addressMapping: dep.addressMapping,
+        publishedIdForOutput: dep.publishedIdForOutput,
+        source: dep.source,
+        manifestDeps: dep.manifestDeps,
+        manifest: dep.manifest,
+        depAliasToPackageName: dep.depAliasToPackageName,
+      });
+    }
 
     return packageGroups;
   }

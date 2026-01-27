@@ -267,12 +267,13 @@ export function generateMoveLockV4FromJson(
             // Add implicit deps only if:
             // 1. No implicit deps are explicitly listed in manifest
             // 2. Package itself is not an implicit/system package
-            if (
-                !implicitsFound &&
-                lowerPkgName !== "sui" &&
-                lowerPkgName !== "std" &&
-                lowerPkgName !== "movestdlib"
-            ) {
+            // ORIGINAL: sui_flavor.rs:96-108 - System packages don't get implicit deps
+            // Use startsWith to handle suffixed names (MoveStdlib_1, Sui_2, etc.)
+            const isSystemPackage =
+                lowerPkgName === "sui" || lowerPkgName.startsWith("sui_") ||
+                lowerPkgName === "std" ||
+                lowerPkgName === "movestdlib" || lowerPkgName.startsWith("movestdlib_");
+            if (!implicitsFound && !isSystemPackage) {
                 implicitDeps.push({
                     name: "sui",
                     system: "sui",
@@ -353,12 +354,13 @@ export function generateMoveLockV4FromJson(
 
             const implicitDepsForOutput: string[] = [];
             // If no implicit deps are explicitly present, and we are not a system package, add defaults.
-            if (
-                !implicitsFound &&
-                lowerPkgName !== "sui" &&
-                lowerPkgName !== "std" &&
-                lowerPkgName !== "movestdlib"
-            ) {
+            // Use startsWith to handle suffixed names (e.g., MoveStdlib_1, Sui_1)
+            // ORIGINAL: CLI doesn't add implicit deps to system packages
+            const isSystemPackage =
+                lowerPkgName === "sui" || lowerPkgName.startsWith("sui_") ||
+                lowerPkgName === "std" ||
+                lowerPkgName === "movestdlib" || lowerPkgName.startsWith("movestdlib_");
+            if (!implicitsFound && !isSystemPackage) {
                 implicitDepsForOutput.push("sui");
                 implicitDepsForOutput.push("std");
             }

@@ -165,4 +165,29 @@ export class ResolvedGraph {
   getImmediateDependencies(packageName: string): Set<string> {
     return this.graph.getImmediateDependencies(packageName);
   }
+
+  /**
+   * Get package by index (for diamond dependency support)
+   * ORIGINAL: builder.rs:289 - Packages are accessed by NodeIndex
+   */
+  getPackageByIndex(index: number): Package | undefined {
+    return this.graph.getPackageByIndex(index);
+  }
+
+  /**
+   * Get compiler input order with both unique IDs and indices
+   * For CompilationDependencies to properly handle diamond deps
+   * ORIGINAL: builder.rs:222-227 - PackageGraph { inner, package_ids, root_index }
+   */
+  compilerInputOrderWithIndices(): { ids: string[], indices: number[] } {
+    return this.graph.compilerInputOrderWithIndices();
+  }
+
+  /**
+   * Get ALL packages in topological order with indices (NO linkage filtering)
+   * Used for lockfile generation which needs all packages including diamond duplicates.
+   */
+  allPackagesOrderWithIndices(): { ids: string[], indices: number[] } {
+    return this.graph.allPackagesOrderWithIndices();
+  }
 }

@@ -329,3 +329,45 @@ lockfile.pinned.insert(
 ```
 
 **WASM Implementation**: `generateMoveLockV4FromJson` parses existing lockfile and preserves other environment sections.
+
+### 16.5 Diamond Dependency Support
+
+**CLI Source**: `builder.rs:232-265`
+
+CLI supports diamond dependencies where multiple packages may depend on the same package at different versions:
+
+```rust
+// create_ids logic
+// CLI treats packages with same name but different sources as separate nodes
+// and records them in lockfile as MoveStdlib, MoveStdlib_1, MoveStdlib_2
+```
+
+**WASM Implementation**: `resolver.ts` tracks `packageNameToSuffix` counter. First package gets original name, subsequent get `_1`, `_2` suffixes.
+
+### 16.6 Sibling Package Sui Framework Sharing
+
+**CLI Source**: `builder.rs:286`, `pin.rs:283-285`
+
+When packages from the same git repository (e.g., `deepbook` and `token` from `deepbookv3.git`) depend on Sui framework, CLI ensures they share the same resolved Sui instance:
+
+- CLI's `visited` map uses `(env, PackagePath)` as key
+- `PackagePath` includes resolved SHA (not tag) from git cache
+- Same `framework/mainnet` tag resolves to same SHA → same visited entry → same Sui node
+
+**WASM Implementation**: Uses two caches:
+
+1. `repoRevToSuiRev`: Maps `git|rev` → resolved Sui SHA for sibling packages
+2. `suiTagToShaCache`: Pre-resolves tags to SHA before cacheKey generation
+
+This ensures `token` correctly references `Sui_2` (same as `deepbook`) instead of creating `Sui_3`.
+
+---
+
+## 17) Reference Versions
+
+| Component | Version |
+|-----------|---------|
+| Reference CLI | sui-mainnet-v1.63.3 |
+| Test Fixtures | `test/integration/fixtures/sui-mainnet-v1.63.3` |
+| WASM Build Framework | See `scripts/build-wasm.mjs:SUI_COMMIT` |
+
