@@ -20,15 +20,19 @@ import {
 import { ResolvedGraph } from "./resolvedGraph.js";
 import { CompilationDependencies } from "./compilationDependencies.js";
 
+// Load from shared config (synchronized with scripts/build-wasm.mjs)
+import suiVersionConfig from "../sui-version.json" with { type: "json" };
+
 /**
  * Default Sui framework revision for WASM builds when building without lockfile.
- * 
- * TODO: This should be shared with scripts/build-wasm.mjs:SUI_COMMIT.
- * Consider creating a shared config file (e.g., sui-version.json) that both
- * the build script and runtime can import.
- * Current value: v1.63.3 framework/mainnet
+ *
+ * ORIGINAL SOURCE REFERENCE: sui-package-alt/src/environments.rs:10-22
+ * - latest_system_packages().git_revision provides framework version
+ * - Used when no lockfile exists and Sui dependency is implicit
+ *
+ * Value loaded from sui-version.json (shared with build script)
  */
-const WASM_BUILD_FRAMEWORK_REV = "22f9fc9781732d651e18384c9a8eb1dabddf73a6";
+const WASM_BUILD_FRAMEWORK_REV = suiVersionConfig.commit;
 
 export class Resolver {
   private fetcher: Fetcher;
@@ -63,12 +67,15 @@ export class Resolver {
   // ORIGINAL: builder.rs:286 - visited key = (env, PackagePath)
   // CLI adds all rev-specific packages to graph and records them in lockfile
   // Key: cacheKey (git|rev|subdir), Value: { name, source, manifestDigestDeps }
-  private diamondPackages: Map<string, {
-    name: string;
-    source: DependencySource;
-    manifestDeps: string[];
-    depAliasToSource: Record<string, DependencySource>;
-  }> = new Map();
+  private diamondPackages: Map<
+    string,
+    {
+      name: string;
+      source: DependencySource;
+      manifestDeps: string[];
+      depAliasToSource: Record<string, DependencySource>;
+    }
+  > = new Map();
 
   constructor(
     fetcher: Fetcher,
@@ -86,7 +93,11 @@ export class Resolver {
   async resolve(
     rootMoveToml: string,
     rootFiles: Record<string, string>
-  ): Promise<{ files: string; dependencies: string; lockfileDependencies: string }> {
+  ): Promise<{
+    files: string;
+    dependencies: string;
+    lockfileDependencies: string;
+  }> {
     // Parse root Move.toml
     const rootParsed = parseToml(rootMoveToml);
     const rootPackageName = rootParsed.package?.name || "RootPackage";
@@ -143,7 +154,6 @@ export class Resolver {
       // Fallback: Recursively resolve all dependencies from manifests
       // ORIGINAL: graph/mod.rs:73-74 - "lockfile was missing or out of date; loading from manifests"
       await this.buildDependencyGraph(depGraph, rootPackage);
-
     }
 
     // Check for cycles
@@ -250,9 +260,8 @@ export class Resolver {
     );
 
     // Lockfile needs ALL packages including diamond duplicates (no linkage filtering)
-    const lockfilePackageGroups = compilationDeps.toPackageGroupedFormatForLockfile(
-      this.packageFiles
-    );
+    const lockfilePackageGroups =
+      compilationDeps.toPackageGroupedFormatForLockfile(this.packageFiles);
 
     return {
       files: JSON.stringify(updatedRootFiles),
@@ -334,9 +343,9 @@ export class Resolver {
       // Each dependency package must use the version specified in its own Move.toml
       dependencies: isRoot
         ? this.injectImplicitDependencies(
-          parsed.dependencies || {},
-          parsed.package?.name
-        )
+            parsed.dependencies || {},
+            parsed.package?.name
+          )
         : parsed.dependencies || {},
       devDependencies: parsed["dev-dependencies"],
     };
@@ -506,8 +515,6 @@ export class Resolver {
       }
     );
 
-
-
     for (const [depName, dep] of sortedDeps) {
       // Convert local dependencies to git dependencies using parent's git info
       if (dep.source.type === "local") {
@@ -551,9 +558,10 @@ export class Resolver {
         }
 
         // If parent package came from a git repo, check if sibling already resolved Sui
-        const parentRepoKey = pkg.id.source.type === "git"
-          ? `${pkg.id.source.git}|${pkg.id.source.rev}`
-          : null;
+        const parentRepoKey =
+          pkg.id.source.type === "git"
+            ? `${pkg.id.source.git}|${pkg.id.source.rev}`
+            : null;
         if (parentRepoKey) {
           const cachedSuiRev = this.repoRevToSuiRev.get(parentRepoKey);
           if (cachedSuiRev && dep.source.rev !== cachedSuiRev) {
@@ -572,8 +580,15 @@ export class Resolver {
         } else {
           // Pre-fetch to resolve tag/branch to SHA
           // This is necessary because cacheKey must use resolved SHA, not tag
-          await this.fetcher.fetch(dep.source.git!, dep.source.rev!, dep.source.subdir);
-          const resolvedSha = this.fetcher.getResolvedSha(dep.source.git!, dep.source.rev!);
+          await this.fetcher.fetch(
+            dep.source.git!,
+            dep.source.rev!,
+            dep.source.subdir
+          );
+          const resolvedSha = this.fetcher.getResolvedSha(
+            dep.source.git!,
+            dep.source.rev!
+          );
           if (resolvedSha && resolvedSha !== dep.source.rev) {
             this.suiTagToShaCache.set(suiTagKey, resolvedSha);
             dep.source.rev = resolvedSha;
@@ -607,7 +622,7 @@ export class Resolver {
             name: existingPkg.id.name,
             git: dep.source.git,
             rev: dep.source.rev,
-            subdir: dep.source.subdir
+            subdir: dep.source.subdir,
           };
         }
         continue;
@@ -616,7 +631,7 @@ export class Resolver {
       this.visited.add(cacheKey);
 
       // Subdir already set in pre-cacheKey Sui handling above
-      let subdir = dep.source.subdir;
+      const subdir = dep.source.subdir;
 
       // Fetch dependency files
       const files = await this.fetcher.fetch(
@@ -638,9 +653,10 @@ export class Resolver {
       // ORIGINAL: CLI's visited map shares nodes for same fetched path
       // If this is a Sui framework dep, store its resolved rev for sibling packages to use
       if (dep.source.git && this.isSuiRepo(dep.source.git)) {
-        const parentRepoKey = pkg.id.source.type === "git"
-          ? `${pkg.id.source.git}|${pkg.id.source.rev}`
-          : null;
+        const parentRepoKey =
+          pkg.id.source.type === "git"
+            ? `${pkg.id.source.git}|${pkg.id.source.rev}`
+            : null;
         if (parentRepoKey && dep.source.rev) {
           // Only set if not already set (first sibling's Sui wins)
           if (!this.repoRevToSuiRev.has(parentRepoKey)) {
@@ -739,10 +755,13 @@ export class Resolver {
         name: depPackage.id.name,
         git: dep.source.git,
         rev: dep.source.rev,
-        subdir: dep.source.subdir
+        subdir: dep.source.subdir,
       };
 
       // Use source files directly - compiler needs source, not bytecode
+      console.log(
+        `[V3 Files] Storing: ${depPackage.id.name} (manifest: ${depPackage.manifest.name})`
+      );
       this.packageFiles.set(depPackage.id.name, files);
 
       // Recursively resolve this package's dependencies
@@ -961,7 +980,9 @@ export class Resolver {
     const lockfile = parseToml(moveLockContent) as any;
     this.lockfileVersion = lockfile.move?.version;
 
-    console.log(`[Lockfile] version=${this.lockfileVersion}, hasPinned=${!!lockfile.pinned}`);
+    console.log(
+      `[Lockfile] version=${this.lockfileVersion}, hasPinned=${!!lockfile.pinned}`
+    );
 
     // Support both version 3 ([[move.package]]) and version 4 (pinned) formats
     const lockfileVersion = lockfile.move?.version;
@@ -970,7 +991,7 @@ export class Resolver {
       // ORIGINAL: lockfile.rs:35-37 - pins_for_env(env) returns None for V3
       // ORIGINAL: mod.rs:69-75 - None means re-resolve from manifests
       // CLI behavior: V3 lockfile is ignored, dependencies are re-resolved from Move.toml
-      return false;  // fallback to buildDependencyGraph (re-resolve from manifests)
+      return false; // fallback to buildDependencyGraph (re-resolve from manifests)
     } else if (lockfileVersion && lockfileVersion >= 4) {
       // Try v4+ format first (pinned)
       if (lockfile.pinned) {
@@ -1007,8 +1028,8 @@ export class Resolver {
     // Lockfile order: use move.dependencies if present, otherwise package listing order
     const depsArray = Array.isArray(lockfile.move?.dependencies)
       ? lockfile.move.dependencies
-        .map((d: any) => d.name || d.id || d)
-        .filter(Boolean)
+          .map((d: any) => d.name || d.id || d)
+          .filter(Boolean)
       : [];
     const pkgArray = packages.map((p: any) => p.name || p.id).filter(Boolean);
     const lockfileOrder = [
@@ -1320,7 +1341,7 @@ export class Resolver {
       rootToml &&
       lockfile.move?.manifest_digest &&
       (await this.computeManifestDigest(rootToml)) !==
-      lockfile.move.manifest_digest
+        lockfile.move.manifest_digest
     ) {
       return false;
     }
@@ -1332,7 +1353,9 @@ export class Resolver {
 
     // First pass: Create all packages
     // ORIGINAL: builder.rs:108-145 - iterate over lockfile pins
-    console.log(`[V4 Load] Loading ${Object.keys(pinnedPackages).length} packages from lockfile`);
+    console.log(
+      `[V4 Load] Loading ${Object.keys(pinnedPackages).length} packages from lockfile`
+    );
     for (const [pkgId, pin] of Object.entries(pinnedPackages)) {
       console.log(`[V4 Load] Processing: ${pkgId}`);
       lockfileOrder.push(pkgId);
@@ -1380,6 +1403,9 @@ export class Resolver {
       packageById.set(pkgId, pkg);
       // Use pkgId (including suffix) as key to avoid overwriting diamond packages
       packageByName.set(pkgId, pkg);
+      console.log(
+        `[V4 Files] Storing: ${pkgId} (manifest: ${pkg.manifest.name})`
+      );
       this.packageFiles.set(pkgId, files);
 
       // Add to graph (if not root)
@@ -1495,7 +1521,8 @@ export class Resolver {
     if (source.type === "git" && source.git && source.rev) {
       try {
         return await this.fetcher.fetch(source.git, source.rev, source.subdir);
-      } catch { /* Ignore fetch errors */
+      } catch {
+        /* Ignore fetch errors */
         return null;
       }
     }
@@ -1647,7 +1674,11 @@ export async function resolve(
   fetcher: Fetcher,
   network: "mainnet" | "testnet" | "devnet" = "mainnet",
   rootSource?: DependencySource
-): Promise<{ files: string; dependencies: string; lockfileDependencies: string }> {
+): Promise<{
+  files: string;
+  dependencies: string;
+  lockfileDependencies: string;
+}> {
   const resolver = new Resolver(fetcher, network, rootSource || null);
   return resolver.resolve(rootMoveTomlContent, rootSourceFiles);
 }

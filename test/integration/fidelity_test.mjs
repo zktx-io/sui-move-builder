@@ -2,7 +2,10 @@ import { promises as fs } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
-import { analyzeTransaction, compareModules as compareTxModules } from "./transactionAnalyzer.mjs";
+import {
+  analyzeTransaction,
+  compareModules as compareTxModules,
+} from "./transactionAnalyzer.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,7 +23,6 @@ const { initMoveCompiler, buildMovePackage, fetchPackageFromGitHub } =
 const FIXTURES_DIR = path.join(__dirname, "fixtures");
 
 const REPOS = {
-  /*
   nautilus: {
     url: "https://github.com/MystenLabs/nautilus",
     commit: "d919402aadf15e21b3cf31515b3a46d1ca6965e4",
@@ -42,7 +44,6 @@ const REPOS = {
     network: "mainnet",
     txDigest: "LexwBJLt1jMwhNsNCkU4jiWwZPaAeqwhgLy2RPZbd2n",
   },
-  */
   deeptrade: {
     url: "https://github.com/DeeptradeProtocol/deeptrade-core",
     commit: "7838028ef9edf72f7dc82dc788ba06cd94ebdd9c",
@@ -243,157 +244,6 @@ async function generateCliDump(packageDir, name) {
   }
 }
 
-/**
- * Simple comparison output: Modules, Dependencies, Digest
- * All three (Golden, WASM, CLI) must be identical in order and content
- */
-function compareResults(wasmResult, cliDump, golden) {
-  const wasmModules = wasmResult?.modules || [];
-  const cliModules = cliDump?.modules || [];
-  const goldenModules = golden?.modules || [];
-
-  // Helper to compare arrays (order and content must match)
-  // For modules (base64), compare decoded binary content
-  const arraysMatch = (a, b, isBinary = false) => {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) {
-      if (isBinary) {
-        // Compare as binary (decode base64)
-        const bufA = Buffer.from(a[i], "base64");
-        const bufB = Buffer.from(b[i], "base64");
-        if (!bufA.equals(bufB)) return false;
-      } else {
-        if (a[i] !== b[i]) return false;
-      }
-    }
-    return true;
-  };
-
-  let allPassed = true;
-
-  // Helper to build comparison string showing all pairs
-  const buildComparisonStr = (wasmGolden, cliWasm, cliGolden, hasCli) => {
-    const pairs = [];
-    pairs.push(wasmGolden ? "WASM=Golden" : "WASM≠Golden");
-    if (hasCli) {
-      pairs.push(cliWasm ? "CLI=WASM" : "CLI≠WASM");
-      pairs.push(cliGolden ? "CLI=Golden" : "CLI≠Golden");
-    }
-    return pairs.join(", ");
-  };
-
-  // Modules Comparison (all three must match) - use binary comparison
-  const wasmGoldenMatch = arraysMatch(wasmModules, goldenModules, true);
-  const cliWasmMatch =
-    cliModules.length > 0 ? arraysMatch(cliModules, wasmModules, true) : true;
-  const cliGoldenMatch =
-    cliModules.length > 0 ? arraysMatch(cliModules, goldenModules, true) : true;
-  const hasCli = cliModules.length > 0;
-
-  if (wasmGoldenMatch && cliWasmMatch && cliGoldenMatch) {
-    console.log(
-      `Modules Comparison: ✅ (${wasmModules.length} modules, ${buildComparisonStr(wasmGoldenMatch, cliWasmMatch, cliGoldenMatch, hasCli)})`
-    );
-  } else {
-    console.log(
-      `Modules Comparison: ❌ (${wasmModules.length} modules, ${buildComparisonStr(wasmGoldenMatch, cliWasmMatch, cliGoldenMatch, hasCli)})`
-    );
-
-    // Show module hashes to help identify order vs content issues
-    const getModuleInfo = (mod) => {
-      if (!mod) return { hash: "N/A", size: 0 };
-      const buf = Buffer.from(mod, "base64");
-      // Hash all bytes for accurate comparison
-      let hash = 0;
-      for (let i = 0; i < buf.length; i++) {
-        hash = (hash * 31 + buf[i]) >>> 0;
-      }
-      return { hash: hash.toString(16).padStart(8, "0"), size: buf.length };
-    };
-
-    const maxShow = Math.max(
-      goldenModules.length,
-      wasmModules.length,
-      cliModules.length
-    );
-    console.log(`  Module Hash/Size Table:`);
-    console.log(
-      `  ${"#".padEnd(3)} | ${"Golden".padEnd(18)} | ${"WASM".padEnd(18)} | ${"CLI".padEnd(18)}`
-    );
-    console.log(
-      `  ${"-".repeat(3)} | ${"-".repeat(18)} | ${"-".repeat(18)} | ${"-".repeat(18)}`
-    );
-    for (let i = 0; i < Math.min(maxShow, 10); i++) {
-      const g = getModuleInfo(goldenModules[i]);
-      const w = getModuleInfo(wasmModules[i]);
-      const c = getModuleInfo(cliModules[i]);
-      const gStr = `${g.hash}(${g.size})`;
-      const wStr = `${w.hash}(${w.size})`;
-      const cStr = `${c.hash}(${c.size})`;
-      const match =
-        g.hash === w.hash && w.hash === c.hash
-          ? "✅"
-          : g.hash === w.hash
-            ? "⚠️"
-            : "❌";
-      console.log(
-        `  ${String(i).padEnd(3)} | ${gStr.padEnd(18)} | ${wStr.padEnd(18)} | ${cStr.padEnd(18)} ${match}`
-      );
-    }
-    if (maxShow > 10) {
-      console.log(`  ... (${maxShow - 10} more modules)`);
-    }
-
-    allPassed = false;
-  }
-
-  // Dependencies Comparison (all three must match)
-  const wasmDeps = wasmResult?.dependencies || [];
-  const cliDeps = cliDump?.dependencies || [];
-  const goldenDeps = golden?.dependencies || [];
-
-  const depsWasmGolden = arraysMatch(wasmDeps, goldenDeps);
-  const depsCliWasm =
-    cliDeps.length > 0 ? arraysMatch(cliDeps, wasmDeps) : true;
-  const depsCliGolden =
-    cliDeps.length > 0 ? arraysMatch(cliDeps, goldenDeps) : true;
-  const hasCliDeps = cliDeps.length > 0;
-
-  if (depsWasmGolden && depsCliWasm && depsCliGolden) {
-    console.log(
-      `Dependencies Comparison: ✅ (${wasmDeps.length} deps, ${buildComparisonStr(depsWasmGolden, depsCliWasm, depsCliGolden, hasCliDeps)})`
-    );
-  } else {
-    console.log(
-      `Dependencies Comparison: ❌ (${wasmDeps.length} deps, ${buildComparisonStr(depsWasmGolden, depsCliWasm, depsCliGolden, hasCliDeps)})`
-    );
-    allPassed = false;
-  }
-
-  // Digest Comparison (CLI and WASM must match)
-  const normalizeDigest = (d) => {
-    if (!d) return null;
-    if (Array.isArray(d)) return Buffer.from(d).toString("hex");
-    return d;
-  };
-
-  const wasmDigest = normalizeDigest(wasmResult?.digest);
-  const cliDigest = normalizeDigest(cliDump?.digest);
-
-  if (cliDigest && wasmDigest && cliDigest === wasmDigest) {
-    console.log(`Digest Comparison: ✅ (CLI/WASM identical)`);
-  } else if (cliDigest && wasmDigest) {
-    console.log(
-      `Digest Comparison: ❌ (CLI≠WASM) CLI:${cliDigest.slice(0, 8)}... WASM:${wasmDigest.slice(0, 8)}...`
-    );
-    allPassed = false;
-  } else {
-    console.log(`Digest Comparison: N/A`);
-  }
-
-  return allPassed;
-}
-
 async function runTest() {
   console.log("Initializing compiler...");
   const start = Date.now();
@@ -402,9 +252,7 @@ async function runTest() {
 
   const githubToken = await getGithubToken();
   await initMoveCompiler({ wasm: wasmBuffer, token: githubToken });
-  console.log(
-    `Compiler initialized in ${(Date.now() - start).toFixed(2)}ms`
-  );
+  console.log(`Compiler initialized in ${(Date.now() - start).toFixed(2)}ms`);
 
   let allPass = true;
 
@@ -458,7 +306,7 @@ async function runTest() {
         const generatedLockPath = path.join(packageDir, "MoveV4.lock");
         await fs.writeFile(generatedLockPath, result.moveLock, "utf-8");
         console.log(`  📝 Saved generated lock to: MoveV4.lock`);
-        
+
         // Save WASM dump for debugging
         const wasmDumpPath = path.join(packageDir, "wasm_dump.json");
         const wasmDump = {
@@ -466,7 +314,11 @@ async function runTest() {
           dependencies: result.dependencies || [],
           digest: result.digest ? Array.from(result.digest) : [],
         };
-        await fs.writeFile(wasmDumpPath, JSON.stringify(wasmDump, null, 2), "utf-8");
+        await fs.writeFile(
+          wasmDumpPath,
+          JSON.stringify(wasmDump, null, 2),
+          "utf-8"
+        );
         console.log(`  📝 Saved WASM dump to: wasm_dump.json`);
 
         // Compare with reference Move.lock - only if versions match
@@ -481,10 +333,7 @@ async function runTest() {
           }
 
           if (await fs.stat(referenceLockToUse).catch(() => false)) {
-            let referenceLock = await fs.readFile(
-              referenceLockToUse,
-              "utf-8"
-            );
+            let referenceLock = await fs.readFile(referenceLockToUse, "utf-8");
 
             // Extract version from lockfile content
             const getVersion = (content) => {
@@ -688,9 +537,11 @@ async function runTest() {
         try {
           console.log(`[Tx] Fetching modules from transaction ${txDigest}...`);
           const txInfo = await analyzeTransaction(txDigest);
-          
-          console.log(`[Tx] Type: ${txInfo.txType}, Modules: ${txInfo.moduleCount}, Package: ${txInfo.packageId}`);
-          
+
+          console.log(
+            `[Tx] Type: ${txInfo.txType}, Modules: ${txInfo.moduleCount}, Package: ${txInfo.packageId}`
+          );
+
           // Modules comparison (WASM vs TX)
           // Note: For upgrade transactions, the deployed bytecode may have been built with different
           // Published.toml state (e.g., 0x0 address if Published.toml didn't exist at deployment time)
@@ -698,74 +549,105 @@ async function runTest() {
           if (txInfo.modules && result.modules) {
             const comparison = compareTxModules(result.modules, txInfo.modules);
             if (comparison.match) {
-              console.log(`[Tx] ✅ Modules match (${comparison.wasmCount} modules)`);
+              console.log(
+                `[Tx] ✅ Modules match (${comparison.wasmCount} modules)`
+              );
             } else {
-              const isUpgrade = txInfo.txType === 'upgrade';
+              const isUpgrade = txInfo.txType === "upgrade";
               if (isUpgrade) {
-                console.log(`[Tx] ⚠️  Modules differ from deployed (upgrade) - WASM=${comparison.wasmCount}, Deployed=${comparison.txCount}`);
-                console.log(`     (This is expected if Published.toml was updated after original deployment)`);
+                console.log(
+                  `[Tx] ⚠️  Modules differ from deployed (upgrade) - WASM=${comparison.wasmCount}, Deployed=${comparison.txCount}`
+                );
+                console.log(
+                  `     (This is expected if Published.toml was updated after original deployment)`
+                );
               } else {
-                console.log(`[Tx] ❌ Modules mismatch! WASM=${comparison.wasmCount}, Deployed=${comparison.txCount}`);
-                comparison.details.forEach(d => {
-                  if (d.status !== 'match') {
-                    console.log(`     Module ${d.index}: ${d.status} (WASM: ${d.wasmSize || 'N/A'}, TX: ${d.txSize || 'N/A'})`);
+                console.log(
+                  `[Tx] ❌ Modules mismatch! WASM=${comparison.wasmCount}, Deployed=${comparison.txCount}`
+                );
+                comparison.details.forEach((d) => {
+                  if (d.status !== "match") {
+                    console.log(
+                      `     Module ${d.index}: ${d.status} (WASM: ${d.wasmSize || "N/A"}, TX: ${d.txSize || "N/A"})`
+                    );
                   }
                 });
                 allPass = false;
               }
             }
           }
-          
+
           // Dependencies comparison
           if (txInfo.dependencies && result.dependencies) {
-            const wasmDeps = result.dependencies.map(d => d.toLowerCase());
-            const txDeps = txInfo.dependencies.map(d => d.toLowerCase());
-            
-            const depsMatch = wasmDeps.length === txDeps.length && 
+            const wasmDeps = result.dependencies.map((d) => d.toLowerCase());
+            const txDeps = txInfo.dependencies.map((d) => d.toLowerCase());
+
+            const depsMatch =
+              wasmDeps.length === txDeps.length &&
               wasmDeps.every((d, i) => d === txDeps[i]);
-            
+
             if (depsMatch) {
-              console.log(`[Tx] ✅ Dependencies match (${wasmDeps.length} deps)`);
+              console.log(
+                `[Tx] ✅ Dependencies match (${wasmDeps.length} deps)`
+              );
             } else {
-              console.log(`[Tx] ❌ Dependencies mismatch! WASM=${wasmDeps.length}, Deployed=${txDeps.length}`);
-              console.log(`     WASM: ${wasmDeps.join(', ')}`);
-              console.log(`     TX:   ${txDeps.join(', ')}`);
+              console.log(
+                `[Tx] ❌ Dependencies mismatch! WASM=${wasmDeps.length}, Deployed=${txDeps.length}`
+              );
+              console.log(`     WASM: ${wasmDeps.join(", ")}`);
+              console.log(`     TX:   ${txDeps.join(", ")}`);
               allPass = false;
             }
           }
-          
+
           // CLI comparison (modules, deps, digest)
           const packageDir = path.join(FIXTURES_DIR, name, config.packagePath);
           const cliDump = await generateCliDump(packageDir, name);
-          
+
           if (cliDump) {
             // CLI Modules comparison
             const cliModules = cliDump.modules || [];
-            const wasmModulesMatch = result.modules?.length === cliModules.length &&
+            const wasmModulesMatch =
+              result.modules?.length === cliModules.length &&
               result.modules.every((m, i) => m === cliModules[i]);
             if (wasmModulesMatch) {
               console.log(`[CLI] ✅ Modules match (WASM=CLI)`);
             } else {
-              console.log(`[CLI] ❌ Modules mismatch! WASM=${result.modules?.length || 0}, CLI=${cliModules.length}`);
+              console.log(
+                `[CLI] ❌ Modules mismatch! WASM=${result.modules?.length || 0}, CLI=${cliModules.length}`
+              );
             }
-            
+
             // CLI Dependencies comparison
-            const cliDeps = (cliDump.dependencies || []).map(d => d.toLowerCase());
-            const wasmDeps2 = (result.dependencies || []).map(d => d.toLowerCase());
-            const depsMatch2 = wasmDeps2.length === cliDeps.length &&
+            const cliDeps = (cliDump.dependencies || []).map((d) =>
+              d.toLowerCase()
+            );
+            const wasmDeps2 = (result.dependencies || []).map((d) =>
+              d.toLowerCase()
+            );
+            const depsMatch2 =
+              wasmDeps2.length === cliDeps.length &&
               wasmDeps2.every((d, i) => d === cliDeps[i]);
             if (depsMatch2) {
               console.log(`[CLI] ✅ Dependencies match (WASM=CLI)`);
             } else {
-              console.log(`[CLI] ❌ Dependencies mismatch! WASM=${wasmDeps2.length}, CLI=${cliDeps.length}`);
+              console.log(
+                `[CLI] ❌ Dependencies mismatch! WASM=${wasmDeps2.length}, CLI=${cliDeps.length}`
+              );
             }
-            
+
             // CLI Digest comparison
             if (cliDump.digest && result.digest) {
-              const wasmDigest = Buffer.from(result.digest).toString('hex').toUpperCase();
-              const cliDigest = Buffer.from(cliDump.digest).toString('hex').toUpperCase();
+              const wasmDigest = Buffer.from(result.digest)
+                .toString("hex")
+                .toUpperCase();
+              const cliDigest = Buffer.from(cliDump.digest)
+                .toString("hex")
+                .toUpperCase();
               if (wasmDigest === cliDigest) {
-                console.log(`[CLI] ✅ Digest match (${wasmDigest.slice(0, 16)}...)`);
+                console.log(
+                  `[CLI] ✅ Digest match (${wasmDigest.slice(0, 16)}...)`
+                );
               } else {
                 console.log(`[CLI] ❌ Digest mismatch!`);
                 console.log(`     WASM: ${wasmDigest}`);

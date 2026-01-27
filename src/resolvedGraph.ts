@@ -179,7 +179,7 @@ export class ResolvedGraph {
    * For CompilationDependencies to properly handle diamond deps
    * ORIGINAL: builder.rs:222-227 - PackageGraph { inner, package_ids, root_index }
    */
-  compilerInputOrderWithIndices(): { ids: string[], indices: number[] } {
+  compilerInputOrderWithIndices(): { ids: string[]; indices: number[] } {
     return this.graph.compilerInputOrderWithIndices();
   }
 
@@ -187,7 +187,7 @@ export class ResolvedGraph {
    * Get ALL packages in topological order with indices (NO linkage filtering)
    * Used for lockfile generation which needs all packages including diamond duplicates.
    */
-  allPackagesOrderWithIndices(): { ids: string[], indices: number[] } {
+  allPackagesOrderWithIndices(): { ids: string[]; indices: number[] } {
     return this.graph.allPackagesOrderWithIndices();
   }
 }

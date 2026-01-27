@@ -7,12 +7,12 @@ import { generateMoveLockV4FromJson } from "./lockfileGenerator.js";
 export type BuildProgressEvent =
   | { type: "resolve_start" }
   | {
-    type: "resolve_dep";
-    name: string;
-    source: string;
-    current: number;
-    total: number;
-  }
+      type: "resolve_dep";
+      name: string;
+      source: string;
+      current: number;
+      total: number;
+    }
   | { type: "resolve_complete"; count: number }
   | { type: "compile_start" }
   | { type: "compile_complete" }
@@ -76,7 +76,11 @@ export interface BuildFailure {
   error: string;
 }
 
-import { migrateLegacyLockToPublishedToml, stripEnvSectionsFromV3Lockfile, convertV3MovePackageToV4Pinned } from "./lockfileMigration.js";
+import {
+  migrateLegacyLockToPublishedToml,
+  stripEnvSectionsFromV3Lockfile,
+  convertV3MovePackageToV4Pinned as _convertV3MovePackageToV4Pinned,
+} from "./lockfileMigration.js";
 
 // ORIGINAL SOURCE REFERENCE: sui-types/src/digests.rs:164-165, 262-269
 // Chain IDs are first 4 bytes of genesis checkpoint digest as hex
@@ -278,11 +282,11 @@ export async function resolveDependencies(
     input.network,
     inferredRootGit
       ? {
-        type: "git",
-        git: inferredRootGit.git,
-        rev: inferredRootGit.rev,
-        subdir: inferredRootGit.subdir,
-      }
+          type: "git",
+          git: inferredRootGit.git,
+          rev: inferredRootGit.rev,
+          subdir: inferredRootGit.subdir,
+        }
       : undefined
   );
 
@@ -463,7 +467,13 @@ export async function buildMovePackage(
     // ORIGINAL SOURCE: builder.rs:232-265 (create_ids), to_lockfile.rs
     const depsArray = JSON.parse(resolved.dependencies) as Array<{
       name: string;
-      source?: { type: string; git?: string; rev?: string; subdir?: string; local?: string };
+      source?: {
+        type: string;
+        git?: string;
+        rev?: string;
+        subdir?: string;
+        local?: string;
+      };
       deps?: Record<string, string>;
       manifestDigest?: string;
       depAliasToPackageName?: Record<string, string>;
@@ -490,8 +500,8 @@ export async function buildMovePackage(
       id: rootPackageName,
       name: rootPackageName,
       source: { root: true },
-      deps: {},  // TODO: add root deps
-      manifestDigest: "",  // TODO: compute
+      deps: {}, // TODO: add root deps
+      manifestDigest: "", // TODO: compute
       is_root: true,
     });
 
@@ -506,14 +516,14 @@ export async function buildMovePackage(
 
     const raw = (mod as any).compile(
       resolved.files,
-      resolved.dependencies,  // Pass original array for compilation
+      resolved.dependencies, // Pass original array for compilation
       JSON.stringify({
         silenceWarnings: input.silenceWarnings,
         testMode: input.testMode,
         lintFlag: input.lintFlag,
         stripMetadata: input.stripMetadata,
       }),
-      JSON.stringify(dependencyGraph)  // 4th param: graph for lockfile generation
+      JSON.stringify(dependencyGraph) // 4th param: graph for lockfile generation
     );
 
     const result = ensureCompileResult(raw);
@@ -635,10 +645,10 @@ export async function testMovePackage(
     const raw =
       input.ansiColor && typeof (mod as any).test_with_color === "function"
         ? (mod as any).test_with_color(
-          resolved.files,
-          resolved.dependencies,
-          true
-        )
+            resolved.files,
+            resolved.dependencies,
+            true
+          )
         : (mod as any).test(resolved.files, resolved.dependencies); // Fallback if test_with_color missing
 
     // Check if raw result matches expected shape
@@ -693,10 +703,10 @@ export async function compileRaw(
     options?.ansiColor && typeof (mod as any).compile_with_color === "function"
       ? (mod as any).compile_with_color(filesJson, depsJson, true)
       : mod.compile(
-        filesJson,
-        depsJson,
-        JSON.stringify({ silenceWarnings: false })
-      );
+          filesJson,
+          depsJson,
+          JSON.stringify({ silenceWarnings: false })
+        );
   const result = ensureCompileResult(raw);
   return {
     success: result.success(),

@@ -1,6 +1,6 @@
 # @zktx.io/sui-move-builder
 
-> **Upstream source:** [MystenLabs/sui](https://github.com/MystenLabs/sui) (tag: `v1.63.3`)
+> **Upstream source:** [MystenLabs/sui](https://github.com/MystenLabs/sui) (see `sui-version.json`)
 
 Build Move packages in web or Node.js with Sui CLI-compatible dependency resolution and compilation.
 
@@ -282,10 +282,11 @@ npm test            # Run full integration tests
 
 **Test Cases (verified against sui-mainnet-v1.63.3):**
 
-| Package    | Modules | Dependencies | Digest | Lockfile               |
-| ---------- | ------- | ------------ | ------ | ---------------------- |
-| `nautilus` | ✅      | ✅           | ✅     | ✅                     |
-| `deepbook` | ✅      | ✅           | ✅     | ✅ (mainnet + testnet) |
+| Package     | Modules | Dependencies | Digest | Lockfile               |
+| ----------- | ------- | ------------ | ------ | ---------------------- |
+| `nautilus`  | ✅      | ✅           | ✅     | ✅                     |
+| `deepbook`  | ✅      | ✅           | ✅     | ✅ (mainnet + testnet) |
+| `deeptrade` | ✅      | ✅           | ✅     | ✅ (diamond deps)      |
 
 All tests verify:
 
@@ -302,4 +303,3 @@ All tests verify:
 - ✅ **V3→V4 Migration**: Automatically generates Published.toml from legacy Move.lock
 - **Published.toml Generation**: Generate Published.toml after successful deployment
 - **Bytecode Dependencies**: Support for .mv-only dependencies (CLI fallback path)
-

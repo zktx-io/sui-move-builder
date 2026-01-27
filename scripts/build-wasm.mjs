@@ -2,6 +2,10 @@ import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const suiVersion = require("../sui-version.json");
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -9,8 +13,8 @@ const repoRoot = path.resolve(
 );
 const cloneDir = path.join(repoRoot, "sui");
 const localSourceDir = path.join(repoRoot, "sui-move-wasm");
-const SUI_COMMIT = "04dd28d5c5d92bff685ddfecb86f8acce18ce6df"; // v1.63.3
-const SUI_VERSION_TAG = "v1.63.3";
+const SUI_COMMIT = suiVersion.commit; // Loaded from sui-version.json
+const SUI_VERSION_TAG = `v${suiVersion.version}`;
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {

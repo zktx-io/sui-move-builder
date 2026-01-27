@@ -100,7 +100,6 @@ export class CompilationDependencies {
   // All dependencies including diamond duplicates (for lockfile generation)
   private lockfileDependencies: DependencyInfo[] = [];
 
-
   constructor(resolvedGraph: ResolvedGraph) {
     this.resolvedGraph = resolvedGraph;
     this.rootPackageName = resolvedGraph.getRootName();
@@ -124,7 +123,10 @@ export class CompilationDependencies {
 
     // Get package order with indices for diamond dependency support
     // ORIGINAL: builder.rs:222-227 - PackageGraph { inner, package_ids, root_index }
-    const { ids: packageOrder, indices: packageIndices } = this.resolvedGraph.compilerInputOrderWithIndices();
+    // NOTE: compilerInputOrderWithIndices applies linkage filtering (dedup by originalId)
+    // This is problematic for diamond deps but we need a different approach
+    const { ids: packageOrder, indices: packageIndices } =
+      this.resolvedGraph.compilerInputOrderWithIndices();
 
     // Registry of build IDs (addresses) assigned to each package.
     // This allows us to propagate dummy addresses (assigned to unpublished dependencies)
@@ -135,18 +137,24 @@ export class CompilationDependencies {
     // Matches observed CLI outputs where Bridge/SuiSystem IDs are omitted.
     // Build DependencyInfo for each package (excluding root)
     for (let i = 0; i < packageOrder.length; i++) {
-      const pkgId = packageOrder[i];  // Unique ID (MoveStdlib, MoveStdlib_1, etc.)
+      const pkgId = packageOrder[i]; // Unique ID (MoveStdlib, MoveStdlib_1, etc.)
       const pkgIndex = packageIndices[i];
 
       // Use index to get package (handles same-name packages correctly)
       const pkg = this.resolvedGraph.getPackageByIndex(pkgIndex);
       if (!pkg) continue;
 
-      const pkgName = pkg.id.name;  // Actual name (MoveStdlib for all variants)
+      const pkgName = pkg.id.name; // Actual name (MoveStdlib for all variants)
 
       if (pkgName === this.rootPackageName) {
         continue; // Skip root, it's not a dependency
       }
+
+      // DEBUG: trace package lookup
+      const hasFiles = packageFiles.has(pkgName);
+      console.log(
+        `[Compile] pkgId=${pkgId}, pkgName=${pkgName}, hasFiles=${hasFiles}, manifestName=${pkg.manifest.name}`
+      );
 
       // Use pkgName for file lookup (files are stored by actual name)
       const files = packageFiles.get(pkgName) || {};
@@ -266,7 +274,8 @@ export class CompilationDependencies {
 
     // Compute lockfile dependencies (all packages, no linkage filtering)
     // ORIGINAL: CLI lockfile includes all packages including diamond duplicates
-    const { ids: allPackageOrder, indices: allPackageIndices } = this.resolvedGraph.allPackagesOrderWithIndices();
+    const { ids: allPackageOrder, indices: allPackageIndices } =
+      this.resolvedGraph.allPackagesOrderWithIndices();
 
     for (let i = 0; i < allPackageOrder.length; i++) {
       const pkgId = allPackageOrder[i];
@@ -282,7 +291,7 @@ export class CompilationDependencies {
       const sourcePaths = this.extractSourcePaths(pkgName, files);
       const effectiveEdition = pkg.manifest.edition || "legacy";
 
-      let publishedIdForOutput =
+      const publishedIdForOutput =
         pkg.manifest.latestPublishedId ||
         pkg.manifest.publishedAt ||
         pkg.manifest.originalId ||
@@ -431,7 +440,7 @@ export class CompilationDependencies {
 
     for (const dep of this.lockfileDependencies) {
       // Use base name for file lookup (files stored by actual name, not suffixed)
-      const baseName = dep.name.replace(/_\d+$/, '');
+      const baseName = dep.name.replace(/_\d+$/, "");
       const pkgFiles = allPackageFiles.get(baseName) || {};
       const groupedFiles: Record<string, string> = {};
 

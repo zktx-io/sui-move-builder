@@ -232,7 +232,7 @@ export function stripEnvSectionsFromV3Lockfile(
 /**
  * Converts V3 lockfile with [[move.package]] array to V4 [pinned.*] format.
  *
- * ORIGINAL SOURCE REFERENCE: 
+ * ORIGINAL SOURCE REFERENCE:
  * - move-package-alt/src/compatibility/legacy_parser.rs
  * - move-package-alt/src/graph/to_lockfile.rs
  *
@@ -243,11 +243,11 @@ export function stripEnvSectionsFromV3Lockfile(
  * manifest_digest = "..."
  * deps_digest = "..."
  * dependencies = [ { id = "Sui", name = "Sui" }, ... ]
- * 
+ *
  * [[move.package]]
  * id = "MoveStdlib"
  * source = { git = "...", rev = "...", subdir = "..." }
- * 
+ *
  * [[move.package]]
  * id = "Sui"
  * source = { git = "...", rev = "...", subdir = "..." }
@@ -258,12 +258,12 @@ export function stripEnvSectionsFromV3Lockfile(
  * ```toml
  * [move]
  * version = 4
- * 
+ *
  * [pinned.mainnet.MoveStdlib]
  * source = { git = "...", rev = "...", subdir = "..." }
  * manifest_digest = "..."
  * deps = {}
- * 
+ *
  * [pinned.mainnet.Sui]
  * source = { git = "...", rev = "...", subdir = "..." }
  * manifest_digest = "..."
@@ -288,11 +288,18 @@ export function convertV3MovePackageToV4Pinned(
     }
 
     // Get [[move.package]] array
-    const packages = lock.move?.package as Array<{
-      id: string;
-      source?: { git?: string; rev?: string; subdir?: string; local?: string };
-      dependencies?: Array<{ id: string; name: string }>;
-    }> | undefined;
+    const packages = lock.move?.package as
+      | Array<{
+          id: string;
+          source?: {
+            git?: string;
+            rev?: string;
+            subdir?: string;
+            local?: string;
+          };
+          dependencies?: Array<{ id: string; name: string }>;
+        }>
+      | undefined;
 
     if (!packages || !Array.isArray(packages) || packages.length === 0) {
       return null;

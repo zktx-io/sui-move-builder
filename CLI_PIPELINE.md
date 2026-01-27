@@ -260,11 +260,12 @@ Result A == Result B  →  WASM ≡ Rust
 2. **Move.toml + Lock** (rebuild): Same bytecode verification
 3. **+ Published.toml** (deployed package): Correct address compilation
 
-### 15.4 Fidelity Test Results (2026-01-26)
+### 15.4 Fidelity Test Results (2026-01-28)
 
 ```
-✅ nautilus: Modules ✅, Dependencies ✅, Digest ✅, Lockfile ✅
-✅ deepbook: Modules ✅, Dependencies ✅, Digest ✅, Lockfile ✅ (mainnet + testnet)
+✅ nautilus:  Modules ✅, Dependencies ✅, Digest ✅, Lockfile ✅
+✅ deepbook:  Modules ✅, Dependencies ✅, Digest ✅, Lockfile ✅ (mainnet + testnet)
+✅ deeptrade: Modules ✅, Dependencies ✅, Digest ✅, Lockfile ✅ (diamond deps)
 
 📊 Verified against sui-mainnet-v1.63.3 CLI
 ```
@@ -361,13 +362,56 @@ When packages from the same git repository (e.g., `deepbook` and `token` from `d
 
 This ensures `token` correctly references `Sui_2` (same as `deepbook`) instead of creating `Sui_3`.
 
+### 16.7 Diamond Dependency Linkage Selection
+
+**CLI Source**: `linkage.rs:169-228`
+
+CLI uses depth-based selection for diamond dependencies where same `originalId` appears at different depths:
+
+```rust
+// linkage.rs:199-202
+let (min_depth, min_pkg, other_pkg) = if new_depth < *old_depth {
+    (new_depth, new_pkg.clone(), old_pkg.clone())
+} else {
+    (*old_depth, old_pkg.clone(), new_pkg.clone())
+};
+```
+
+**Key Behavior**: For packages sharing the same `originalId` (e.g., multiple MoveStdlib versions), CLI selects the one with **smallest depth** (closest to root) for compilation.
+
+**WASM Implementation**: `dependencyGraph.ts:compilerInputOrderWithIndices()` builds a `linkageTable` with depth comparison:
+
+```typescript
+const existing = linkageTable.get(originalId);
+if (existing && existing.depth <= depth) {
+  return; // Already have shorter path
+}
+linkageTable.set(originalId, { depth, idx: index });
+```
+
 ---
 
 ## 17) Reference Versions
 
-| Component | Version |
-|-----------|---------|
-| Reference CLI | sui-mainnet-v1.63.3 |
+| Component     | Source                                          |
+| ------------- | ----------------------------------------------- |
+| Sui Version   | `sui-version.json` (shared config)              |
+| Reference CLI | sui-mainnet-v1.63.3                             |
 | Test Fixtures | `test/integration/fixtures/sui-mainnet-v1.63.3` |
-| WASM Build Framework | See `scripts/build-wasm.mjs:SUI_COMMIT` |
 
+### Shared Configuration
+
+`sui-version.json` is the single source of truth for Sui framework version:
+
+```json
+{
+  "version": "1.63.3",
+  "commit": "04dd28d5c5d92bff685ddfecb86f8acce18ce6df",
+  "tag": "framework/mainnet"
+}
+```
+
+Used by:
+
+- `scripts/build-wasm.mjs` - WASM build script
+- `src/resolver.ts` - Runtime implicit dependency resolution

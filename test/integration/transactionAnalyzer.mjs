@@ -29,7 +29,9 @@ export async function analyzeTransaction(digest) {
   }
 
   // Find the immutable package object
-  const immutable = receipt.effects.created.find((o) => o.owner === "Immutable");
+  const immutable = receipt.effects.created.find(
+    (o) => o.owner === "Immutable"
+  );
   const packageId = immutable?.reference?.objectId || null;
 
   // Parse the raw transaction to extract modules
@@ -202,7 +204,12 @@ export function compareModules(wasmModules, txModules) {
 /**
  * Generate Published.toml content for upgrade testing
  */
-export function generatePublishedToml(originalId, publishedAt, chainId, version) {
+export function generatePublishedToml(
+  originalId,
+  publishedAt,
+  chainId,
+  version
+) {
   return `# Generated for fidelity testing
 [published.mainnet]
 chain-id = "${chainId}"

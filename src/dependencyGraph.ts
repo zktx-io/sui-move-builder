@@ -104,7 +104,7 @@ export type LockfileDependencyInfo =
 /**
  * DependencyGraph represents the complete package dependency DAG
  * ORIGINAL: builder.rs - uses DiGraph<Package, PinnedDependencyInfo> with NodeIndex
- * 
+ *
  * Key changes for diamond dependency support:
  * - packages: array (index-based like NodeIndex)
  * - edges: Map<number, Set<number>> (index-based like DiGraph)
@@ -121,9 +121,6 @@ export class DependencyGraph {
 
   // Name to first index mapping (for getPackage lookup)
   private nameToFirstIndex: Map<string, number> = new Map();
-
-  // Packages that should always be included (system packages)
-  private alwaysDeps: Set<string> = new Set(["Sui", "MoveStdlib"]);
 
   // Root package name
   private root: string;
@@ -312,7 +309,7 @@ export class DependencyGraph {
         const depIndices = this.edges.get(index);
         if (depIndices) {
           const depNames = Array.from(depIndices)
-            .map(idx => this.packages[idx]?.id.name)
+            .map((idx) => this.packages[idx]?.id.name)
             .filter((n): n is string => n !== undefined)
             .sort();
           for (const dep of depNames) {
@@ -350,7 +347,7 @@ export class DependencyGraph {
    * ORIGINAL: Uses create_ids() result for unique IDs (builder.rs:222)
    */
   compilerInputOrder(): string[] {
-    const visited = new Set<number>();  // Use indices, not names
+    const visited = new Set<number>(); // Use indices, not names
     const resultIndices: number[] = [];
 
     // Helper for Post-Order DFS by index
@@ -382,35 +379,78 @@ export class DependencyGraph {
     // Convert indices to unique IDs using createIds
     // ORIGINAL: builder.rs:222 - let package_ids = Self::create_ids(&inner);
     const indexToId = this.createIds();
-    const ids = resultIndices.map(idx => indexToId.get(idx) || this.packages[idx]?.id.name || "");
+    const ids = resultIndices.map(
+      (idx) => indexToId.get(idx) || this.packages[idx]?.id.name || ""
+    );
     return ids;
   }
 
   /**
    * Get compiler input order with both unique IDs and indices
    * For CompilationDependencies to properly handle diamond deps
-   * 
-   * ORIGINAL: builder.rs:222-227 - PackageGraph { inner, package_ids, root_index }
-   * ORIGINAL: linkage.rs:42-82 - linkage() creates LinkageTable<OriginalID, PackageInfo>
-   * 
+   *
+   * ORIGINAL: linkage.rs:58-82 - linkage() creates linked PackageGraph
+   * ORIGINAL: linkage.rs:169-228 - linkage_ignoring_overrides() with depth tracking
+   *
    * CLI linkage behavior:
-   * - Same OriginalID packages (e.g., Sui, Sui_1, Sui_2) all share address 0x2
-   * - Only ONE is needed for compilation (same code at same address)
-   * - LinkageTable maps OriginalID -> single PackageInfo
-   * 
-   * WASM implementation:
-   * - Filter out duplicate originalId packages from compilation
-   * - Keep first occurrence for each originalId
-   * - All packages still appear in lockfile (handled separately)
+   * - Traverse dependency tree tracking depth at each node
+   * - For same originalId packages, select the one with SMALLEST depth (closest to root)
+   * - Create new graph with only the selected packages
    */
-  compilerInputOrderWithIndices(): { ids: string[], indices: number[] } {
-    const visited = new Set<number>();
+  compilerInputOrderWithIndices(): { ids: string[]; indices: number[] } {
+    // Phase 1: Build linkage table with depth-based selection
+    // ORIGINAL: linkage.rs:169-228 - linkage_ignoring_overrides()
+    // Maps originalId -> { depth, index } where smallest depth wins
+    const linkageTable = new Map<string, { depth: number; idx: number }>();
+
+    // Recursive DFS with explicit depth parameter
+    // ORIGINAL: linkage.rs:188 - pkg.linkage_ignoring_overrides(&local_overrides, depth + 1)
+    // NOTE: CLI doesn't use visited set - it compares depth to decide if update needed
+    const visitWithDepth = (index: number, depth: number) => {
+      const pkg = this.packages[index];
+      if (!pkg) return;
+
+      const originalId =
+        pkg.manifest.originalId || pkg.manifest.publishedAt || pkg.id.name;
+
+      // Check if we've seen this originalId at a smaller or equal depth
+      // If so, no need to continue (already have better or equal path)
+      const existing = linkageTable.get(originalId);
+      if (existing && existing.depth <= depth) {
+        return; // Already have a shorter path to this originalId
+      }
+
+      // Update linkage table with current package at this depth
+      // ORIGINAL: linkage.rs:222-225 - include self
+      linkageTable.set(originalId, { depth, idx: index });
+
+      // Visit dependencies with depth + 1
+      // ORIGINAL: linkage.rs:182-188 - for (_, pkg) in self.direct_deps()
+      const depIndices = this.edges.get(index);
+      if (depIndices) {
+        for (const depIdx of depIndices) {
+          visitWithDepth(depIdx, depth + 1);
+        }
+      }
+    };
+
+    const rootIndex = this.nameToFirstIndex.get(this.root) ?? 0;
+    visitWithDepth(rootIndex, 0);
+
+    // Phase 2: Collect packages in topological order from linkage table
+    // ORIGINAL: linkage.rs:86-133 - copy_linked() creates new graph from linkage
+    const visitedForOrder = new Set<number>();
     const resultIndices: number[] = [];
 
-    const visitByIndex = (index: number) => {
-      if (visited.has(index)) return;
-      visited.add(index);
+    // DFS post-order for topological sort
+    const collectInOrder = (index: number) => {
+      if (visitedForOrder.has(index)) return;
+      visitedForOrder.add(index);
 
+      const pkg = this.packages[index];
+      if (!pkg) return;
+
+      // Visit dependencies first
       const depIndices = this.edges.get(index);
       if (depIndices) {
         const sortedDeps = Array.from(depIndices).sort((a, b) => {
@@ -418,62 +458,45 @@ export class DependencyGraph {
           const nameB = this.packages[b]?.id.name || "";
           return nameA.localeCompare(nameB);
         });
+
         for (const depIdx of sortedDeps) {
-          visitByIndex(depIdx);
+          // For each dependency, follow the linkage (may redirect to different package)
+          const depPkg = this.packages[depIdx];
+          if (!depPkg) continue;
+
+          const depOriginalId =
+            depPkg.manifest.originalId ||
+            depPkg.manifest.publishedAt ||
+            depPkg.id.name;
+          const linkedEntry = linkageTable.get(depOriginalId);
+          if (linkedEntry) {
+            collectInOrder(linkedEntry.idx);
+          }
         }
       }
+
+      // Post-order: add after dependencies
       resultIndices.push(index);
     };
 
-    const rootIndex = this.nameToFirstIndex.get(this.root) ?? 0;
-    visitByIndex(rootIndex);
+    // Start from root (always included)
+    collectInOrder(rootIndex);
 
-    // CLI linkage: Same originalId packages share one compilation unit
-    // ORIGINAL: linkage.rs:192-200 - prefer package with smaller depth (closer to root)
-    // 
-    // DFS post-order visits deepest packages first, so for same originalId:
-    // - First occurrence = deepest (farthest from root)
-    // - Last occurrence = shallowest (closest to root)
-    // 
-    // CLI prefers shallowest, so we need to keep LAST occurrence for each originalId
-    const originalIdToIndex = new Map<string, number>();
-
+    // Remove duplicates (same package may be visited via different paths)
+    const uniqueIndices: number[] = [];
+    const seenIndices = new Set<number>();
     for (const idx of resultIndices) {
-      const pkg = this.packages[idx];
-      if (!pkg) continue;
-
-      // Get originalId for linkage deduplication
-      // System packages (Sui, MoveStdlib) have known originalIds
-      const originalId = pkg.manifest.originalId || pkg.manifest.publishedAt || pkg.id.name;
-
-      // Keep updating - last one wins (closest to root in DFS post-order)
-      originalIdToIndex.set(originalId, idx);
-    }
-
-    // Collect in original order (preserving topological order)
-    const seenOriginalIds = new Set<string>();
-    const linkedIndices: number[] = [];
-
-    for (const idx of resultIndices) {
-      const pkg = this.packages[idx];
-      if (!pkg) continue;
-
-      const originalId = pkg.manifest.originalId || pkg.manifest.publishedAt || pkg.id.name;
-
-      // Only include if this is the selected package for this originalId
-      if (originalIdToIndex.get(originalId) !== idx) {
-        continue;
+      if (!seenIndices.has(idx)) {
+        seenIndices.add(idx);
+        uniqueIndices.push(idx);
       }
-      if (seenOriginalIds.has(originalId)) {
-        continue;
-      }
-      seenOriginalIds.add(originalId);
-      linkedIndices.push(idx);
     }
 
     const indexToId = this.createIds();
-    const ids = linkedIndices.map(idx => indexToId.get(idx) || this.packages[idx]?.id.name || "");
-    return { ids, indices: linkedIndices };
+    const ids = uniqueIndices.map(
+      (idx) => indexToId.get(idx) || this.packages[idx]?.id.name || ""
+    );
+    return { ids, indices: uniqueIndices };
   }
 
   /**
@@ -481,7 +504,7 @@ export class DependencyGraph {
    * Used for lockfile generation which needs all packages including diamond duplicates.
    * ORIGINAL: builder.rs - Lockfile includes all packages, linkage is only for compilation.
    */
-  allPackagesOrderWithIndices(): { ids: string[], indices: number[] } {
+  allPackagesOrderWithIndices(): { ids: string[]; indices: number[] } {
     const visitedIndices = new Set<number>();
     const resultIndices: number[] = [];
 
@@ -508,7 +531,9 @@ export class DependencyGraph {
 
     // Convert indices to unique IDs (no linkage filtering)
     const indexToId = this.createIds();
-    const ids = resultIndices.map(idx => indexToId.get(idx) || this.packages[idx]?.id.name || "");
+    const ids = resultIndices.map(
+      (idx) => indexToId.get(idx) || this.packages[idx]?.id.name || ""
+    );
     return { ids, indices: resultIndices };
   }
 
@@ -613,12 +638,5 @@ export class DependencyGraph {
    */
   getRootName(): string {
     return this.root;
-  }
-
-  /**
-   * Check if a package is a system package that should always be included
-   */
-  isAlwaysDep(name: string): boolean {
-    return this.alwaysDeps.has(name);
   }
 }
