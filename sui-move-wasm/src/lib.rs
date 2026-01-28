@@ -83,6 +83,8 @@ pub struct CompilationOutput {
     /// V4 Move.lock content generated during compilation.
     /// ORIGINAL: move-package-alt/src/package/root_package.rs:251 - save_lockfile_to_disk()
     lockfile: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warnings: Option<String>,
 }
 
 // [REMOVED] Manual MoveToml structs definition
@@ -107,19 +109,7 @@ struct PackageGroup {
     published_id_for_output: Option<String>,
 }
 
-#[derive(Deserialize, Default)]
-struct CompileOptions {
-    #[serde(default, rename = "silenceWarnings")]
-    silence_warnings: bool,
-    #[serde(default, rename = "testMode")]
-    test_mode: bool,
-    #[serde(default, rename = "lintFlag")]
-    lint_flag: Option<String>,
-    /// DependencyGraph JSON for V4 lockfile generation
-    /// Passed from TypeScript resolver
-    #[serde(default, rename = "dependencyGraph")]
-    dependency_graph: Option<String>,
-}
+
 
 fn package_version_from_lock(lock_contents: &str, package_name: &str) -> Option<String> {
     let mut in_pkg = false;
@@ -395,14 +385,21 @@ fn compile_impl(
 
 
     // START ANSI SUPPORT
-    colored::control::set_override(true);
-    let ansi_color = true;
-    // END ANSI SUPPORT
-
     // Parse options early
     let options: CompileOptions = options_json
         .and_then(|json| serde_json::from_str(&json).ok())
         .unwrap_or_default();
+
+    // ANSI SUPPORT
+    // Use options.ansi_color instead of hardcoded true
+    let ansi_color = options.ansi_color;
+    // Allow overriding via explicit flag, otherwise follow options
+    if ansi_color {
+       colored::control::set_override(true);
+    } else {
+       colored::control::set_override(false);
+    }
+    // END ANSI SUPPORT
 
     let (root, files, dep_packages) = match setup_vfs(files_json, dependencies_json) {
         Ok(res) => res,
@@ -855,9 +852,7 @@ fn compile_impl(
             // Handle warnings
             // Options parsed early
 
-            if !options.silence_warnings && !warning_diags.is_empty() {
-                let warning_buffer = move_compiler::diagnostics::report_diagnostics_to_buffer(&compiler_files, warning_diags, ansi_color);
-            }
+
 
             // Build module list with IDs
             let mut module_infos: Vec<(ModuleId, move_compiler::compiled_unit::NamedCompiledModule)> =
@@ -949,6 +944,14 @@ fn compile_impl(
                     .collect(),
                 digest: package_digest.to_vec(),
                 lockfile,
+                warnings: {
+                    if !options.silence_warnings && !warning_diags.is_empty() {
+                        let warning_buffer = move_compiler::diagnostics::report_diagnostics_to_buffer(&compiler_files, warning_diags, ansi_color);
+                        String::from_utf8(warning_buffer).ok()
+                    } else {
+                        None
+                    }
+                },
             };
 
             MoveCompilerResult {
@@ -1426,6 +1429,22 @@ pub fn compute_manifest_digest(deps_json: &str) -> String {
     
     // Format as uppercase hex
     format!("{:X}", hash)
+}
+
+#[derive(Deserialize, Default)]
+struct CompileOptions {
+    #[serde(default, rename = "silenceWarnings")]
+    silence_warnings: bool,
+    #[serde(default, rename = "testMode")]
+    test_mode: bool,
+    #[serde(default, rename = "lintFlag")]
+    lint_flag: Option<String>,
+    #[serde(default, rename = "ansiColor")]
+    ansi_color: bool,
+    /// DependencyGraph JSON for V4 lockfile generation
+    /// Passed from TypeScript resolver
+    #[serde(default, rename = "dependencyGraph")]
+    dependency_graph: Option<String>,
 }
 
 /// Generate a Move.lock V4 lockfile from dependency information.

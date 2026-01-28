@@ -30,7 +30,7 @@ This document maps the Sui CLI build steps to the JS + WASM implementation in th
 ## 6) Output
 
 - **CLI**: Modules (topo-sorted), dependencies (hex IDs), digest, Move.lock.
-- **Here (WASM/Rust + JS)**: Returns `{ modules, dependencies, digest, moveLock, environment }` with topo-sorted modules. Dependencies now match CLI ordering/content. Compilation uses the original-published-id for address resolution, while the emitted `dependencies` list prefers `latest-published-id` from Move.lock when available (mirrors CLI logs/JSON). **Move.lock V4** is generated with CLI-compatible `manifest_digest` values.
+- **Here (WASM/Rust + JS)**: Returns `{ modules, dependencies, digest, moveLock, environment, warnings }` with topo-sorted modules. Dependencies now match CLI ordering/content. Compilation uses the original-published-id for address resolution, while the emitted `dependencies` list prefers `latest-published-id` from Move.lock when available (mirrors CLI logs/JSON). **Move.lock V4** is generated with CLI-compatible `manifest_digest` values. **Warnings** are captured during compilation (if not silenced) and returned as a string.
 
 ## Known Limitations
 
@@ -48,9 +48,6 @@ This document maps the Sui CLI build steps to the JS + WASM implementation in th
 - Version conflicts: CLI aborts on same-name/different-rev packages; JS/WASM must mirror this (no silent dedupe).
 - Path sorting: CLI uses `BTreeSet` (bytewise) for `.move` paths; JS must produce identical ordering (no locale-dependent compare).
 - Move.toml usage: CLI only parses for address maps/edition; we now use `SourceManifest` (ported from proper Move crates) to parse `Move.toml` strictly without IO dependencies.
-- Module ordering: Emit exactly the compiler-returned `dependency_order`; avoid extra re-sorts in WASM.
-- Outputs: Dependencies/IDs should pass through from JS; BuildInfo/disassembly artifacts are CLI-only unless intentionally added to WASM.
-
 - Module ordering: Emit exactly the compiler-returned `dependency_order`; avoid extra re-sorts in WASM.
 - Outputs: Dependencies/IDs should pass through from JS; BuildInfo/disassembly artifacts are CLI-only unless intentionally added to WASM.
 

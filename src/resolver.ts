@@ -132,10 +132,7 @@ export class Resolver {
     // replace the 0x0 address with original-published-id in the addresses table
     const rootAddr = rootPackage.manifest.addresses[rootPackageName];
     const normalizedRootAddr = this.normalizeAddress(rootAddr || "");
-    if (
-      normalizedRootAddr ===
-      ZERO_ADDRESS
-    ) {
+    if (normalizedRootAddr === ZERO_ADDRESS) {
       if (rootPackage.manifest.originalId) {
         rootPackage.manifest.addresses[rootPackageName] = this.normalizeAddress(
           rootPackage.manifest.originalId
@@ -223,9 +220,7 @@ export class Resolver {
       if (
         publishedId &&
         publishedId !== "0x0" &&
-        !publishedId.startsWith(
-          ZERO_ADDRESS
-        )
+        !publishedId.startsWith(ZERO_ADDRESS)
       ) {
         const normalized = this.normalizeAddress(publishedId);
         unifiedTable[pkg.manifest.name] = normalized;
@@ -349,9 +344,9 @@ export class Resolver {
       // Each dependency package must use the version specified in its own Move.toml
       dependencies: isRoot
         ? this.injectImplicitDependencies(
-          parsed.dependencies || {},
-          parsed.package?.name
-        )
+            parsed.dependencies || {},
+            parsed.package?.name
+          )
         : parsed.dependencies || {},
       devDependencies: parsed["dev-dependencies"],
     };
@@ -367,10 +362,7 @@ export class Resolver {
         manifest.addresses[selfAddressKey]
       );
       // Treat explicit address as originalId if not 0x0
-      if (
-        selfAddr !==
-        ZERO_ADDRESS
-      ) {
+      if (selfAddr !== ZERO_ADDRESS) {
         manifest.originalId = selfAddr;
       }
     }
@@ -399,10 +391,7 @@ export class Resolver {
       // This handles cases where [addresses] pkg = "0x..." but published-at = "0x..." differs.
       if (!currentAddr) {
         manifest.addresses[manifest.name] = normalizedPublished;
-      } else if (
-        currentAddr ===
-        ZERO_ADDRESS
-      ) {
+      } else if (currentAddr === ZERO_ADDRESS) {
         manifest.addresses[manifest.name] = normalizedPublished;
       }
     } else if (!normalizedCurrent) {
@@ -1036,8 +1025,8 @@ export class Resolver {
     // Lockfile order: use move.dependencies if present, otherwise package listing order
     const depsArray = Array.isArray(lockfile.move?.dependencies)
       ? lockfile.move.dependencies
-        .map((d: any) => d.name || d.id || d)
-        .filter(Boolean)
+          .map((d: any) => d.name || d.id || d)
+          .filter(Boolean)
       : [];
     const pkgArray = packages.map((p: any) => p.name || p.id).filter(Boolean);
     const lockfileOrder = [
@@ -1349,7 +1338,7 @@ export class Resolver {
       rootToml &&
       lockfile.move?.manifest_digest &&
       (await this.computeManifestDigest(rootToml)) !==
-      lockfile.move.manifest_digest
+        lockfile.move.manifest_digest
     ) {
       return false;
     }

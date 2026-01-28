@@ -70,6 +70,8 @@ export interface BuildSuccess {
   environment: string;
   /** Generated Published.toml content (if migration occurred) */
   publishedToml?: string;
+  /** Compiler warnings (if any) */
+  warnings?: string;
 }
 
 export interface BuildFailure {
@@ -176,6 +178,7 @@ function parseCompileResult(
       modules?: string[];
       dependencies?: string[];
       digest?: number[] | string;
+      warnings?: string;
     };
     if (!parsed.modules || !parsed.dependencies || !parsed.digest) {
       throw new Error("missing fields in compiler output");
@@ -214,6 +217,7 @@ function parseCompileResult(
       digest: digestBytes,
       moveLock: moveLock || "",
       environment: environment || "mainnet",
+      warnings: parsed.warnings,
     };
   } catch (error) {
     return asFailure(error);
@@ -522,6 +526,7 @@ export async function buildMovePackage(
         testMode: input.testMode,
         lintFlag: input.lintFlag,
         stripMetadata: input.stripMetadata,
+        ansiColor: input.ansiColor,
       }),
       JSON.stringify(dependencyGraph) // 4th param: graph for lockfile generation
     );

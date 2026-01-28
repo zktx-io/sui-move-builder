@@ -83,8 +83,8 @@ const result = await buildMovePackage({
   files,
   // optional: bump GitHub API limits during dependency resolution
   githubToken: process.env.GITHUB_TOKEN,
-  // optional: silence warnings from Move compiler
-  silenceWarnings: true,
+  // optional: silence warnings from Move compiler (default: false)
+  silenceWarnings: false,
   // optional: enable test mode (include #[test_only] modules)
   testMode: false,
   // optional: set linting level (default: "all")
@@ -105,21 +105,61 @@ if (result.success) {
   if (result.publishedToml) {
     console.log("Published.toml:", result.publishedToml); // string: Migrated from legacy Move.lock
   }
+
+  // Warnings (if silenceWarnings: false)
+  if (result.warnings) {
+    console.warn("Warnings:", result.warnings);
+  }
 } else {
   console.error("Build failed:", result.error);
 }
 ```
 
+## Running Tests
+
+You can run Move unit tests using the `testMovePackage` function (available in the full version).
+
+```ts
+import { testMovePackage } from "@zktx.io/sui-move-builder";
+
+const result = await testMovePackage({
+  files,
+  network: "mainnet",
+});
+
+if ("error" in result) {
+  console.error("Test failed to run:", result.error);
+} else {
+  console.log("Tests Passed:", result.passed);
+  console.log("Output:", result.output);
+}
+```
+
+### Build Options (`BuildInput`)
+
+| Option            | Type                                 | Description                                                    |
+| :---------------- | :----------------------------------- | :------------------------------------------------------------- |
+| `files`           | `Record<string, string>`             | **Required**. Virtual file system with `Move.toml` and sources |
+| `network`         | `"mainnet" \| "testnet" \| "devnet"` | Network environment (default: `"mainnet"`)                     |
+| `githubToken`     | `string`                             | GitHub API token to increase rate limits                       |
+| `silenceWarnings` | `boolean`                            | Suppress compiler warnings (default: `false`)                  |
+| `testMode`        | `boolean`                            | Compile in test mode (include `#[test_only]` modules)          |
+| `lintFlag`        | `string`                             | Linting level (e.g., `"all"`, `"none"`)                        |
+| `ansiColor`       | `boolean`                            | Enable ANSI color codes in output                              |
+| `stripMetadata`   | `boolean`                            | Strip metadata from bytecode (useful for size optimization)    |
+| `onProgress`      | `(event) => void`                    | Callback for build progress events                             |
+
 ### Build Output Reference
 
-| Field           | Type       | Description                                    |
-| --------------- | ---------- | ---------------------------------------------- |
-| `modules`       | `string[]` | Base64-encoded compiled bytecode modules       |
-| `dependencies`  | `string[]` | Hex-encoded package IDs for linking            |
-| `digest`        | `number[]` | Package digest bytes (32 bytes)                |
-| `moveLock`      | `string`   | Generated Move.lock V4 content                 |
-| `environment`   | `string`   | Build environment (e.g., "mainnet", "testnet") |
-| `publishedToml` | `string?`  | Migrated Published.toml (if V3→V4 migration)   |
+| Field           | Type       | Description                                     |
+| --------------- | ---------- | ----------------------------------------------- |
+| `modules`       | `string[]` | Base64-encoded compiled bytecode modules        |
+| `dependencies`  | `string[]` | Hex-encoded package IDs for linking             |
+| `digest`        | `number[]` | Package digest bytes (32 bytes)                 |
+| `moveLock`      | `string`   | Generated Move.lock V4 content                  |
+| `environment`   | `string`   | Build environment (e.g., "mainnet", "testnet")  |
+| `publishedToml` | `string?`  | Migrated Published.toml (if V3→V4 migration)    |
+| `warnings`      | `string?`  | Compiler warnings (if `silenceWarnings: false`) |
 
 ## Fetching packages from GitHub
 

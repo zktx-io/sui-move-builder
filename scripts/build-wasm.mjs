@@ -485,14 +485,20 @@ async function main() {
       }
 
       if (!(await dirExists(secpDir))) {
-        console.log(`Vendoring rust-secp256k1 (v${buildConfig.versions.secp256k1_hollow})...`);
+        console.log(
+          `Vendoring rust-secp256k1 (v${buildConfig.versions.secp256k1_hollow})...`
+        );
         await fs.mkdir(vendorDir, { recursive: true });
         await run("git", [
           "clone",
           "https://github.com/rust-bitcoin/rust-secp256k1",
           secpDir,
         ]);
-        await run("git", ["checkout", `secp256k1-${buildConfig.versions.secp256k1_hollow}`], { cwd: secpDir });
+        await run(
+          "git",
+          ["checkout", `secp256k1-${buildConfig.versions.secp256k1_hollow}`],
+          { cwd: secpDir }
+        );
       }
 
       // Patch rust-secp256k1 to use our sys stub
