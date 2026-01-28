@@ -36,6 +36,8 @@ export interface Dependency {
   subst?: Record<string, SubstOrRename>; // address substitutions/renames
 }
 
+export type DiamondDependencyInfo = DependencySource & { name: string };
+
 export interface Package {
   id: PackageIdentifier;
   manifest: PackageManifest;
@@ -44,6 +46,8 @@ export interface Package {
   resolvedTable?: Record<string, string>; // Will be filled in ResolvedGraph
   /** Maps Move.toml deps key (alias) → resolved package name */
   depAliasToPackageName?: Record<string, string>;
+  /** Maps Move.toml deps key (alias) → dependency source info (for lockfile generation) */
+  depAliasToSource?: Record<string, DiamondDependencyInfo>;
 }
 
 export interface PackageManifest {

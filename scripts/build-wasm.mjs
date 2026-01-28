@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const suiVersion = require("../sui-version.json");
+const buildConfig = require("./build-config.json");
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -192,7 +193,7 @@ async function main() {
       );
       workspaceContent = workspaceContent.replace(
         /zstd-sys = "(2\.[0-9.]+)"/g,
-        'zstd-sys = { version = "2.0.11", default-features = false, features = ["no_asm"] }'
+        `zstd-sys = { version = "${buildConfig.versions.zstd_sys}", default-features = false, features = ["no_asm"] }`
       );
       // Fallback for different version formats or existing objects
       workspaceContent = workspaceContent.replace(
@@ -223,44 +224,44 @@ async function main() {
       // Pin dependencies to avoid pulling incompatible versions (like getrandom 0.3.4)
       workspaceContent = workspaceContent.replace(
         /proptest = "1\.6\.0"/g,
-        'proptest = { version = "=1.6.0", default-features = false, features = ["std", "bit-set"] }'
+        `proptest = { version = "=${buildConfig.versions.proptest}", default-features = false, features = ["std", "bit-set"] }`
       );
       workspaceContent = workspaceContent.replace(
         /clap = { version = "4", features = \["derive"\] }/g,
-        'clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }'
+        `clap = { version = "${buildConfig.versions.clap}", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }`
       );
       workspaceContent = workspaceContent.replace(
         /rand = "0\.8\.[0-9]"/g,
-        'rand = "=0.8.5"'
+        `rand = "=${buildConfig.versions.rand}"`
       );
       workspaceContent = workspaceContent.replace(
         /fastcrypto = { git = "https:\/\/github\.com\/MystenLabs\/fastcrypto", rev = "4db0e90c732bbf7420ca20de808b698883148d9c" }/g,
-        'fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "4db0e90c732bbf7420ca20de808b698883148d9c", default-features = false }'
+        `fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "${buildConfig.versions.fastcrypto.rev}", default-features = false }`
       );
       workspaceContent = workspaceContent.replace(
         /sui-crypto = { git = "https:\/\/github\.com\/MystenLabs\/sui-rust-sdk\.git", rev = "339c2272fd5b8fb4e1fa6662cfa9acdbb0d05704", features = \[ "ed25519", "secp256r1", "secp256k1", "passkey", "zklogin" \] }/g,
-        'sui-crypto = { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "339c2272fd5b8fb4e1fa6662cfa9acdbb0d05704", features = [ "ed25519", "secp256r1", "passkey", "zklogin" ] }'
+        `sui-crypto = { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "${buildConfig.versions.sui_crypto.rev}", features = [ "ed25519", "secp256r1", "passkey", "zklogin" ] }`
       );
       workspaceContent = workspaceContent.replace(
         /insta = { version = "1\.[0-9.]+"/g,
         (match) =>
           match.includes("1.21.1")
-            ? 'insta = { version = "=1.44.0"'
-            : 'insta = { version = "=1.42.0"'
+            ? `insta = { version = "=${buildConfig.versions.insta.version_1_21}"`
+            : `insta = { version = "=${buildConfig.versions.insta.default}"`
       );
       workspaceContent = workspaceContent.replace(
         /tempfile = "=3\.[0-9.]+"/g,
-        'tempfile = { version = "3.20.0", default-features = false }'
+        `tempfile = { version = "${buildConfig.versions.tempfile}", default-features = false }`
       );
       // Fallback for non-pinned
       workspaceContent = workspaceContent.replace(
         /tempfile = "3\.[0-9.]+"/g,
-        'tempfile = { version = "3.20.0", default-features = false }'
+        `tempfile = { version = "${buildConfig.versions.tempfile}", default-features = false }`
       );
 
       workspaceContent = workspaceContent.replace(
         /tokio = "=1\.47\.1"/g,
-        'tokio = { version = "=1.47.1", default-features = false, features = ["sync", "macros", "rt", "io-util"] }'
+        `tokio = { version = "=${buildConfig.versions.tokio}", default-features = false, features = ["sync", "macros", "rt", "io-util"] }`
       );
 
       // 4. Patch workspace roots: Restore [patch.crates-io] and unified workspace dependencies
@@ -270,7 +271,7 @@ async function main() {
       );
 
       // Define vendor paths early
-      const fcCommit = "4db0e90c732bbf7420ca20de808b698883148d9c";
+      const fcCommit = buildConfig.versions.fastcrypto.rev;
       const vendorDir = path.join(repoRoot, "vendor");
       const fcDir = path.join(vendorDir, "fastcrypto");
       const secpDir = path.join(vendorDir, "rust-secp256k1");
@@ -405,14 +406,14 @@ async function main() {
         {
           name: "blst-wasm-stub",
           pkgName: "blst",
-          version: "0.3.16",
+          version: buildConfig.versions.blst,
           template: "blst_lib",
           features: "std = []\nalloc = []",
         },
         {
           name: "secp256k1-hollow-stub",
           pkgName: "secp256k1",
-          version: "0.27.0",
+          version: buildConfig.versions.secp256k1_hollow,
           template: "secp256k1_lib",
           features:
             'rand = ["dep:rand"]\nstd = []\nalloc = []\nrecovery = []\nglobal-context = []\nserde = ["dep:serde", "k256/serde"]\nbitcoin_hashes = []\nrand-std = ["rand", "rand/std"]\n\n[dependencies]\nserde = { version = "1.0", optional = true, features = ["derive"] }\nrand = { version = "0.8", optional = true, default-features = false }\nk256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic", "schnorr", "sha256", "serde", "pkcs8"] }',
@@ -420,7 +421,7 @@ async function main() {
         {
           name: "rayon-stub",
           pkgName: "rayon",
-          version: "1.10.0",
+          version: buildConfig.versions.rayon,
           template: "rayon_lib",
           features: "",
         },
@@ -484,14 +485,14 @@ async function main() {
       }
 
       if (!(await dirExists(secpDir))) {
-        console.log(`Vendoring rust-secp256k1 (v0.27.0)...`);
+        console.log(`Vendoring rust-secp256k1 (v${buildConfig.versions.secp256k1_hollow})...`);
         await fs.mkdir(vendorDir, { recursive: true });
         await run("git", [
           "clone",
           "https://github.com/rust-bitcoin/rust-secp256k1",
           secpDir,
         ]);
-        await run("git", ["checkout", "secp256k1-0.27.0"], { cwd: secpDir });
+        await run("git", ["checkout", `secp256k1-${buildConfig.versions.secp256k1_hollow}`], { cwd: secpDir });
       }
 
       // Patch rust-secp256k1 to use our sys stub
@@ -563,13 +564,13 @@ fastcrypto-vdf = { path = "${path.join(fcDir, "fastcrypto-vdf")}" }
           : workspaceContent.slice(wsDependenciesStart, nextSectionStart);
 
       const wsDeps = [
-        'blst = "0.3.16"',
-        'secp256k1-sys = "0.8.1"',
-        'errno = "=0.3.14"',
-        'zstd = "0.12.3"',
-        'ring = "=0.17.99"',
-        'stacker = "=0.1.15"',
-        'getrandom = { version = "0.2.15", features = ["js"] }',
+        `blst = "${buildConfig.versions.blst}"`,
+        `secp256k1-sys = "${buildConfig.versions.secp256k1_sys}"`,
+        `errno = "=${buildConfig.versions.errno}"`,
+        `zstd = "${buildConfig.versions.zstd}"`,
+        `ring = "=${buildConfig.versions.ring}"`,
+        `stacker = "=${buildConfig.versions.stacker}"`,
+        `getrandom = { version = "${buildConfig.versions.getrandom}", features = ["js"] }`,
         `blstrs = { path = "${path.join(rootAbsPath, "scripts/stubs/blstrs-hollow-stub")}" }`,
         `fastcrypto-zkp = { path = "${path.join(rootAbsPath, "scripts/stubs/fastcrypto-zkp-hollow-stub")}" }`,
         `fastcrypto-tbls = { path = "${path.join(rootAbsPath, "scripts/stubs/fastcrypto-tbls-hollow-stub")}" }`,
@@ -640,7 +641,7 @@ panic = "abort"
       let content = await fs.readFile(problematicCrate, "utf8");
       content = content.replace(
         "proptest = { workspace = true }",
-        'proptest = { version = "1.6.0", default-features = false, features = ["std", "bit-set"], optional = true }'
+        `proptest = { version = "${buildConfig.versions.proptest}", default-features = false, features = ["std", "bit-set"], optional = true }`
       );
       await fs.writeFile(problematicCrate, content);
     }
@@ -1281,7 +1282,7 @@ panic = "abort"
           if (content.includes("proptest")) {
             content = content.replace(/^(\s*proptest\s*=).*$/gm, (line) =>
               line.includes("optional = true")
-                ? 'proptest = { version = "1.6.0", default-features = false, features = ["std", "bit-set"], optional = true }'
+                ? `proptest = { version = "${buildConfig.versions.proptest}", default-features = false, features = ["std", "bit-set"], optional = true }`
                 : 'proptest = { version = "1.6.0", default-features = false, features = ["std", "bit-set"] }'
             );
             changed = true;
@@ -1290,7 +1291,7 @@ panic = "abort"
             content = content.replace(/^(\s*tempfile\s*=).*$/gm, (line) =>
               line.includes("optional = true")
                 ? 'tempfile = { version = "3.20.0", default-features = false, optional = true }'
-                : 'tempfile = { version = "3.20.0", default-features = false }'
+                : `tempfile = { version = "${buildConfig.versions.tempfile}", default-features = false }`
             );
             changed = true;
           }
@@ -1332,7 +1333,7 @@ panic = "abort"
             if (regex.test(content)) {
               content = content.replace(regex, (match) => {
                 const isOptional = match.includes("optional = true");
-                return `getrandom = { version = "0.2.15", features = ["js"]${isOptional ? ", optional = true" : ""} }`;
+                return `getrandom = { version = "${buildConfig.versions.getrandom}", features = ["js"]${isOptional ? ", optional = true" : ""} }`;
               });
               changed = true;
             }

@@ -34,6 +34,12 @@ import suiVersionConfig from "../sui-version.json" with { type: "json" };
  */
 const WASM_BUILD_FRAMEWORK_REV = suiVersionConfig.commit;
 
+/**
+ * Standard Zero Address (0x0...0)
+ */
+const ZERO_ADDRESS =
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
+
 export class Resolver {
   private fetcher: Fetcher;
   private network: "mainnet" | "testnet" | "devnet";
@@ -128,7 +134,7 @@ export class Resolver {
     const normalizedRootAddr = this.normalizeAddress(rootAddr || "");
     if (
       normalizedRootAddr ===
-      "0x0000000000000000000000000000000000000000000000000000000000000000"
+      ZERO_ADDRESS
     ) {
       if (rootPackage.manifest.originalId) {
         rootPackage.manifest.addresses[rootPackageName] = this.normalizeAddress(
@@ -218,7 +224,7 @@ export class Resolver {
         publishedId &&
         publishedId !== "0x0" &&
         !publishedId.startsWith(
-          "0x0000000000000000000000000000000000000000000000000000000000000000"
+          ZERO_ADDRESS
         )
       ) {
         const normalized = this.normalizeAddress(publishedId);
@@ -343,9 +349,9 @@ export class Resolver {
       // Each dependency package must use the version specified in its own Move.toml
       dependencies: isRoot
         ? this.injectImplicitDependencies(
-            parsed.dependencies || {},
-            parsed.package?.name
-          )
+          parsed.dependencies || {},
+          parsed.package?.name
+        )
         : parsed.dependencies || {},
       devDependencies: parsed["dev-dependencies"],
     };
@@ -363,7 +369,7 @@ export class Resolver {
       // Treat explicit address as originalId if not 0x0
       if (
         selfAddr !==
-        "0x0000000000000000000000000000000000000000000000000000000000000000"
+        ZERO_ADDRESS
       ) {
         manifest.originalId = selfAddr;
       }
@@ -395,7 +401,7 @@ export class Resolver {
         manifest.addresses[manifest.name] = normalizedPublished;
       } else if (
         currentAddr ===
-        "0x0000000000000000000000000000000000000000000000000000000000000000"
+        ZERO_ADDRESS
       ) {
         manifest.addresses[manifest.name] = normalizedPublished;
       }
@@ -615,11 +621,12 @@ export class Resolver {
 
           // Store original source info for diamond dependency lockfile generation
           // ORIGINAL: builder.rs:286 - visited key includes PackagePath (git+rev+subdir)
-          if (!(pkg as any).depAliasToSource) {
-            (pkg as any).depAliasToSource = {};
+          if (!pkg.depAliasToSource) {
+            pkg.depAliasToSource = {};
           }
-          (pkg as any).depAliasToSource[depName] = {
+          pkg.depAliasToSource[depName] = {
             name: existingPkg.id.name,
+            type: dep.source.type,
             git: dep.source.git,
             rev: dep.source.rev,
             subdir: dep.source.subdir,
@@ -748,11 +755,12 @@ export class Resolver {
 
       // ORIGINAL: builder.rs:330 - edge stores PinnedDependencyInfo with original source
       // Store original source info for diamond dependency lockfile generation
-      if (!(pkg as any).depAliasToSource) {
-        (pkg as any).depAliasToSource = {};
+      if (!pkg.depAliasToSource) {
+        pkg.depAliasToSource = {};
       }
-      (pkg as any).depAliasToSource[depName] = {
+      pkg.depAliasToSource[depName] = {
         name: depPackage.id.name,
+        type: dep.source.type,
         git: dep.source.git,
         rev: dep.source.rev,
         subdir: dep.source.subdir,
@@ -1028,8 +1036,8 @@ export class Resolver {
     // Lockfile order: use move.dependencies if present, otherwise package listing order
     const depsArray = Array.isArray(lockfile.move?.dependencies)
       ? lockfile.move.dependencies
-          .map((d: any) => d.name || d.id || d)
-          .filter(Boolean)
+        .map((d: any) => d.name || d.id || d)
+        .filter(Boolean)
       : [];
     const pkgArray = packages.map((p: any) => p.name || p.id).filter(Boolean);
     const lockfileOrder = [
@@ -1341,7 +1349,7 @@ export class Resolver {
       rootToml &&
       lockfile.move?.manifest_digest &&
       (await this.computeManifestDigest(rootToml)) !==
-        lockfile.move.manifest_digest
+      lockfile.move.manifest_digest
     ) {
       return false;
     }
