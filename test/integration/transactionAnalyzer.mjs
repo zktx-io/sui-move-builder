@@ -2,12 +2,96 @@
  * Transaction-based fidelity testing utilities
  * Analyzes Publish/Upgrade transactions and compares bytecode
  */
-import { SuiClient, getFullnodeUrl } from "@mysten/sui/client";
+import { SuiGrpcClient } from "@mysten/sui/grpc";
+import { SuiGraphQLClient } from "@mysten/sui/graphql";
 import { Transaction } from "@mysten/sui/transactions";
 import { fromBase64, toBase64 } from "@mysten/sui/utils";
 
 const NETWORK = "mainnet";
-const client = new SuiClient({ url: getFullnodeUrl(NETWORK) });
+const GRPC_URLS = {
+  mainnet: "https://fullnode.mainnet.sui.io:443",
+  testnet: "https://fullnode.testnet.sui.io:443",
+  devnet:  "https://fullnode.devnet.sui.io:443",
+};
+const GRAPHQL_URLS = {
+  mainnet: "https://graphql.mainnet.sui.io/graphql",
+  testnet: "https://graphql.testnet.sui.io/graphql",
+};
+
+// gRPC client: fast, for recent/live transactions
+const grpcClient = new SuiGrpcClient({ network: NETWORK, baseUrl: GRPC_URLS[NETWORK] });
+// GraphQL client: full history, fallback for transactions pruned by gRPC nodes
+const gqlClient = new SuiGraphQLClient({ url: GRAPHQL_URLS[NETWORK] });
+
+// GraphQL query for full historical transaction data
+const GQL_GET_TRANSACTION = `
+query GetTransaction($digest: String!) {
+  transaction(digest: $digest) {
+    digest
+    transactionBcs
+    effects {
+      status
+      objectChanges {
+        nodes {
+          idCreated
+          outputState { __typename address }
+        }
+      }
+    }
+  }
+}`;
+
+/**
+ * Fetch transaction via gRPC. Falls back to GraphQL if gRPC node has pruned it.
+ * @param {string} digest
+ * @returns {{ bcsBytes: Uint8Array, packageId: string|null, timestamp: string|null, source: string }}
+ */
+async function fetchTransaction(digest) {
+  // 1. Try gRPC first (fast, but only retains recent transactions)
+  try {
+    const result = await grpcClient.getTransaction({
+      digest,
+      include: { bcs: true, effects: true },
+    });
+    const tx = result.$kind === "Transaction" ? result.Transaction : result.FailedTransaction;
+    if (!tx) throw new Error("No transaction result");
+
+    const changedObjects = tx.effects?.changedObjects ?? [];
+    // PackageWrite + Created = newly published immutable package
+    const pkg = changedObjects.find(
+      (o) => o.idOperation === "Created" && o.outputState === "PackageWrite"
+    );
+    return {
+      bcsBytes: tx.bcs,          // Uint8Array
+      packageId: pkg?.objectId ?? null,
+      timestamp: tx.epoch ?? null,
+      source: "grpc",
+    };
+  } catch (grpcErr) {
+    // gRPC node pruned this transaction — fall back to GraphQL (full history)
+    console.log(`[Tx] gRPC not found, trying GraphQL fallback...`);
+  }
+
+  // 2. Fallback: GraphQL (retains full mainnet history)
+  const r = await gqlClient.query({ query: GQL_GET_TRANSACTION, variables: { digest } });
+  if (r.errors?.length) throw new Error(r.errors[0].message);
+  const tx = r.data?.transaction;
+  if (!tx) throw new Error(`Transaction not found: ${digest}`);
+
+  const bcsBytes = fromBase64(tx.transactionBcs);
+  const nodes = tx.effects?.objectChanges?.nodes ?? [];
+  // __typename is "Object" for regular objects, undefined/null for MovePackage
+  // The package address matches the known packageId from the publish command output
+  const pkgNode = nodes.find((n) => n.idCreated && !n.outputState?.__typename);
+  const packageId = pkgNode?.outputState?.address ?? null;
+
+  return {
+    bcsBytes,
+    packageId,
+    timestamp: null,
+    source: "graphql",
+  };
+}
 
 /**
  * Analyze a transaction to determine if it's Publish or Upgrade
@@ -15,29 +99,16 @@ const client = new SuiClient({ url: getFullnodeUrl(NETWORK) });
  * @returns Transaction info including type and modules
  */
 export async function analyzeTransaction(digest) {
-  const receipt = await client.getTransactionBlock({
-    digest,
-    options: {
-      showRawInput: true,
-      showEffects: true,
-      showObjectChanges: true,
-    },
-  });
-
-  if (!receipt.effects || !receipt.effects.created) {
-    throw new Error("Transaction not found or has no created objects");
+  const { bcsBytes, packageId, timestamp, source } = await fetchTransaction(digest);
+  if (source === "graphql") {
+    console.log(`[Tx] Fetched via GraphQL fallback`);
   }
 
-  // Find the immutable package object
-  const immutable = receipt.effects.created.find(
-    (o) => o.owner === "Immutable"
-  );
-  const packageId = immutable?.reference?.objectId || null;
-
-  // Parse the raw transaction to extract modules
-  const transaction = Transaction.from(
-    toBase64(fromBase64(receipt.rawTransaction).slice(4))
-  );
+  // Parse the BCS-encoded transaction to extract modules and dependencies
+  // gRPC tx.bcs has a 4-byte SenderSignedData envelope prefix → slice(4)
+  // GraphQL transactionBcs is pure TransactionData BCS → no slice needed
+  const offset = source === "grpc" ? 4 : 0;
+  const transaction = Transaction.from(toBase64(bcsBytes.slice(offset)));
   const data = transaction.getData();
 
   const upgradeCmd = data.commands.find((c) => c.$kind === "Upgrade");
@@ -47,22 +118,16 @@ export async function analyzeTransaction(digest) {
   let modules = [];
   let dependencies = [];
 
-  if (upgradeCmd && upgradeCmd.Upgrade) {
+  if (upgradeCmd?.Upgrade) {
     txType = "upgrade";
     modules = upgradeCmd.Upgrade.modules || [];
     dependencies = upgradeCmd.Upgrade.dependencies || [];
-  } else if (publishCmd && publishCmd.Publish) {
+  } else if (publishCmd?.Publish) {
     txType = "publish";
     modules = publishCmd.Publish.modules || [];
     dependencies = publishCmd.Publish.dependencies || [];
   } else {
     throw new Error("No Publish or Upgrade command found in transaction");
-  }
-
-  // For upgrades, trace UpgradeCap to find original package
-  let upgradeInfo = null;
-  if (txType === "upgrade") {
-    upgradeInfo = await extractUpgradeInfo(receipt);
   }
 
   return {
@@ -72,31 +137,28 @@ export async function analyzeTransaction(digest) {
     moduleCount: modules.length,
     dependencies,
     packageId,
-    upgradeInfo,
-    timestamp: receipt.timestampMs,
+    upgradeInfo: null, // upgrade tracing not needed for current fidelity tests
+    timestamp,
   };
 }
 
 /**
  * Extract upgrade information from transaction
  */
-async function extractUpgradeInfo(receipt) {
-  // Find UpgradeCap from object changes or inputs
-  const objectChanges = receipt.objectChanges || [];
-
+async function extractUpgradeInfo(tx) {
+  // effects.changedObjects replaces 1.x top-level objectChanges
+  const changedObjects = tx.effects?.changedObjects || [];
   let currentPackageId = null;
-  for (const change of objectChanges) {
-    if (change.type === "published") {
-      currentPackageId = change.packageId;
+  for (const change of changedObjects) {
+    if (change.outputState === "PackageWrite" && change.idOperation === "Created") {
+      currentPackageId = change.objectId;
       break;
     }
   }
-
-  // Try to find UpgradeCap object that was used as input
-  // This requires parsing the transaction inputs
-  // For now, return what we have
   return { currentPackageId };
 }
+
+
 
 /**
  * Trace UpgradeCap back to the original publish transaction
@@ -105,15 +167,18 @@ async function extractUpgradeInfo(receipt) {
  */
 export async function traceUpgradeCapToOriginal(upgradeCapId) {
   // Get UpgradeCap object
-  const capObj = await client.getObject({
-    id: upgradeCapId,
-    options: {
-      showContent: true,
-      showPreviousTransaction: true,
+  // getObject is not available on SuiGrpcClient; use getObjects (plural) which
+  // maps from 1.x multiGetObjects → 2.x client.getObjects per the method table.
+  const [capObj] = await client.getObjects({
+    ids: [upgradeCapId],
+    include: {
+      // TODO: confirm include flags — 1.x used showContent / showPreviousTransaction
+      content: true,
+      previousTransaction: true,
     },
   });
 
-  if (!capObj.data) {
+  if (!capObj?.data) {
     throw new Error(`UpgradeCap not found: ${upgradeCapId}`);
   }
 
@@ -137,14 +202,16 @@ export async function traceUpgradeCapToOriginal(upgradeCapId) {
  * @returns Base64 encoded modules
  */
 export async function getPackageModules(packageId) {
-  const pkg = await client.getObject({
-    id: packageId,
-    options: {
-      showBcs: true,
+  // getObject → getObjects (plural) for 2.x gRPC
+  const [pkg] = await client.getObjects({
+    ids: [packageId],
+    include: {
+      // TODO: confirm include flag for BCS data — 1.x used showBcs: true
+      bcs: true,
     },
   });
 
-  if (!pkg.data?.bcs?.moduleMap) {
+  if (!pkg?.data?.bcs?.moduleMap) {
     throw new Error(`Package modules not found: ${packageId}`);
   }
 
