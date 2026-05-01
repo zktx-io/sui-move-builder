@@ -12,7 +12,13 @@ const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   ".."
 );
-const cloneDir = path.join(repoRoot, "sui");
+const buildWorkspaceDir = path.join(repoRoot, ".sui-build");
+const suiSourceDir = process.env.SUI_SOURCE_DIR
+  ? path.resolve(process.env.SUI_SOURCE_DIR)
+  : path.join(buildWorkspaceDir, "source");
+const suiWorkDir = process.env.SUI_WORK_DIR
+  ? path.resolve(process.env.SUI_WORK_DIR)
+  : path.join(buildWorkspaceDir, "work");
 const localSourceDir = path.join(repoRoot, "sui-move-wasm");
 const SUI_COMMIT = suiVersion.commit; // Loaded from sui-version.json
 const SUI_VERSION_TAG = `v${suiVersion.version}`;
@@ -35,6 +41,77 @@ async function dirExists(dir) {
   } catch {
     return false;
   }
+}
+
+async function ensureSuiSourceCheckout() {
+  await fs.mkdir(path.dirname(suiSourceDir), { recursive: true });
+
+  if (!(await dirExists(suiSourceDir))) {
+    console.log(`Cloning pristine Sui source at ${SUI_COMMIT}...`);
+    await run("git", ["init", suiSourceDir]);
+    await run(
+      "git",
+      ["remote", "add", "origin", "https://github.com/MystenLabs/sui.git"],
+      { cwd: suiSourceDir }
+    );
+  } else {
+    try {
+      await run(
+        "git",
+        [
+          "remote",
+          "set-url",
+          "origin",
+          "https://github.com/MystenLabs/sui.git",
+        ],
+        {
+          cwd: suiSourceDir,
+          stdio: "ignore",
+        }
+      );
+    } catch {
+      await run(
+        "git",
+        ["remote", "add", "origin", "https://github.com/MystenLabs/sui.git"],
+        { cwd: suiSourceDir }
+      );
+    }
+  }
+
+  console.log(`Fetching pristine Sui source ${SUI_COMMIT}...`);
+  await run("git", ["fetch", "--depth", "1", "origin", SUI_COMMIT], {
+    cwd: suiSourceDir,
+  });
+  await run("git", ["reset", "--hard", SUI_COMMIT], { cwd: suiSourceDir });
+}
+
+async function prepareSuiWorktree() {
+  console.log(`Preparing patched Sui worktree at ${suiWorkDir}...`);
+  await fs.mkdir(path.dirname(suiWorkDir), { recursive: true });
+
+  if (await dirExists(suiWorkDir)) {
+    try {
+      await run("git", ["worktree", "remove", "--force", suiWorkDir], {
+        cwd: suiSourceDir,
+        stdio: "ignore",
+      });
+    } catch {
+      await fs.rm(suiWorkDir, { recursive: true, force: true });
+    }
+  }
+
+  await run("git", ["worktree", "prune"], {
+    cwd: suiSourceDir,
+    stdio: "ignore",
+  });
+  await run("git", ["worktree", "add", "--detach", suiWorkDir, SUI_COMMIT], {
+    cwd: suiSourceDir,
+  });
+
+  console.log("Updating Sui worktree submodules...");
+  await run("git", ["submodule", "update", "--init", "--recursive"], {
+    cwd: suiWorkDir,
+  });
 }
 
 async function main() {
@@ -81,31 +158,12 @@ async function main() {
     await fs.rm(distDir, { recursive: true, force: true });
     await fs.mkdir(distDir, { recursive: true });
 
-    // 1. Ensure .sui is present and at the right version
-    if (!(await dirExists(cloneDir))) {
-      console.log(`Cloning Sui at ${SUI_COMMIT}...`);
-      await run("git", ["init", cloneDir]);
-      await run(
-        "git",
-        ["remote", "add", "origin", "https://github.com/MystenLabs/sui.git"],
-        { cwd: cloneDir }
-      );
-    }
-
-    console.log(`Fetching and checking out ${SUI_COMMIT}...`);
-    await run("git", ["fetch", "--depth", "1", "origin", SUI_COMMIT], {
-      cwd: cloneDir,
-    });
-    await run("git", ["reset", "--hard", SUI_COMMIT], { cwd: cloneDir });
-
-    // Ensure submodules (Move sources) are present
-    console.log("Updating submodules...");
-    await run("git", ["submodule", "update", "--init", "--recursive"], {
-      cwd: cloneDir,
-    });
+    // 1. Keep a pristine Sui checkout, then create a disposable patched worktree.
+    await ensureSuiSourceCheckout();
+    await prepareSuiWorktree();
 
     // 2. Prepare our crate within Sui workspace
-    const crateDir = path.join(cloneDir, "crates", "sui-move-wasm");
+    const crateDir = path.join(suiWorkDir, "crates", "sui-move-wasm");
     console.log(`Overlaying sui-move-wasm into ${crateDir}...`);
     await fs.rm(crateDir, { recursive: true, force: true });
     await fs.mkdir(crateDir, { recursive: true });
@@ -156,8 +214,8 @@ async function main() {
 
     // 4. Register in Sui workspace and pin problematic dependencies
     const workspaceTomls = [
-      path.join(cloneDir, "Cargo.toml"),
-      path.join(cloneDir, "external-crates", "move", "Cargo.toml"),
+      path.join(suiWorkDir, "Cargo.toml"),
+      path.join(suiWorkDir, "external-crates", "move", "Cargo.toml"),
     ];
 
     for (const workspaceToml of workspaceTomls) {
@@ -171,7 +229,7 @@ async function main() {
       }
       let workspaceContent = await fs.readFile(workspaceToml, "utf8");
 
-      if (workspaceToml.includes("sui/Cargo.toml")) {
+      if (workspaceToml === path.join(suiWorkDir, "Cargo.toml")) {
         workspaceContent = workspaceContent.replace(
           /"crates\/sui-e2e-tests",/g,
           ""
@@ -211,7 +269,7 @@ async function main() {
       );
 
       if (
-        workspaceToml.includes("sui/Cargo.toml") &&
+        workspaceToml === path.join(suiWorkDir, "Cargo.toml") &&
         !workspaceContent.includes('"crates/sui-move-wasm"')
       ) {
         console.log("Registering crate in Sui root workspace...");
@@ -603,7 +661,7 @@ fastcrypto-vdf = { path = "${path.join(fcDir, "fastcrypto-vdf")}" }
       }
 
       // Inject release profile for Wasm optimization (Task 6)
-      if (workspaceToml.includes("sui/Cargo.toml")) {
+      if (workspaceToml === path.join(suiWorkDir, "Cargo.toml")) {
         const profileRelease = `
 [profile.release]
 opt-level = "z"
@@ -627,7 +685,7 @@ panic = "abort"
     }
 
     // 4.0.5 Create .cargo/config.toml
-    const cargoConfigDir = path.join(cloneDir, ".cargo");
+    const cargoConfigDir = path.join(suiWorkDir, ".cargo");
     const cargoConfigPath = path.join(cargoConfigDir, "config.toml");
     if (!(await dirExists(cargoConfigDir))) {
       await fs.mkdir(cargoConfigDir, { recursive: true });
@@ -636,7 +694,7 @@ panic = "abort"
 
     // 4.1 Patch specific Move crates
     const problematicCrate = path.join(
-      cloneDir,
+      suiWorkDir,
       "external-crates",
       "move",
       "crates",
@@ -654,7 +712,7 @@ panic = "abort"
 
     // PATCH: Inject wasm-bindgen into move-unit-test for debugging
     const moveUnitTestCargo = path.join(
-      cloneDir,
+      suiWorkDir,
       "external-crates",
       "move",
       "crates",
@@ -672,7 +730,7 @@ panic = "abort"
 
     // Fix malformed external-crates/move/Cargo.toml where ']' might be commented out
     const moveWorkspaceToml = path.join(
-      cloneDir,
+      suiWorkDir,
       "external-crates",
       "move",
       "Cargo.toml"
@@ -719,7 +777,7 @@ panic = "abort"
     }
 
     // Patch sui-types to remove nitro_attestation and RPC modules
-    const suiTypesLib = path.join(cloneDir, "crates/sui-types/src/lib.rs");
+    const suiTypesLib = path.join(suiWorkDir, "crates/sui-types/src/lib.rs");
     if (await fs.stat(suiTypesLib).catch(() => false)) {
       let content = await fs.readFile(suiTypesLib, "utf-8");
       // Disable modules that break Wasm (RPC, Ring-based attestation)
@@ -751,7 +809,10 @@ panic = "abort"
       await fs.writeFile(suiTypesLib, content);
 
       // Remove RPC dependencies from Cargo.toml to prevent feature resolution issues
-      const suiTypesCargo = path.join(cloneDir, "crates/sui-types/Cargo.toml");
+      const suiTypesCargo = path.join(
+        suiWorkDir,
+        "crates/sui-types/Cargo.toml"
+      );
       if (await fs.stat(suiTypesCargo).catch(() => false)) {
         let cargoContent = await fs.readFile(suiTypesCargo, "utf-8");
 
@@ -772,7 +833,7 @@ panic = "abort"
 
       // Patch error.rs to remove tonic dependency
       const suiTypesError = path.join(
-        cloneDir,
+        suiWorkDir,
         "crates/sui-types/src/error.rs"
       );
       if (await fs.stat(suiTypesError).catch(() => false)) {
@@ -803,7 +864,7 @@ panic = "abort"
 
       for (const v of sVersions) {
         const nativesSrc = path.join(
-          cloneDir,
+          suiWorkDir,
           `sui-execution/${v}/sui-move-natives/src`
         );
         if (await dirExists(nativesSrc)) {
@@ -843,7 +904,7 @@ panic = "abort"
 
     // 4.2 Patch move-trace-format to stub out zstd AND fix Type Mismatch
     const moveTraceFormatLib = path.join(
-      cloneDir,
+      suiWorkDir,
       "external-crates",
       "move",
       "crates",
@@ -852,7 +913,7 @@ panic = "abort"
       "lib.rs"
     );
     const moveTraceFormatFormat = path.join(
-      cloneDir,
+      suiWorkDir,
       "external-crates",
       "move",
       "crates",
@@ -913,7 +974,7 @@ panic = "abort"
 
     // 4.3 Patch move-unit-test to DISABLE THREADING (Wasm crash fix)
     const moveUnitTestRunner = path.join(
-      cloneDir,
+      suiWorkDir,
       "external-crates",
       "move",
       "crates",
@@ -1092,7 +1153,7 @@ panic = "abort"
               ) {
                 extraConfig = '\n[dependencies]\nrand = "0.8"\n';
               } else if (item === "move-package-alt-compilation") {
-                extraConfig = `\n[dependencies]\nanyhow = "1.0"\nmove-model-2 = { path = "${path.join(cloneDir, "external-crates/move/crates/move-model-2")}" }\n`;
+                extraConfig = `\n[dependencies]\nanyhow = "1.0"\nmove-model-2 = { path = "${path.join(suiWorkDir, "external-crates/move/crates/move-model-2")}" }\n`;
               } else if (item === "mysten-network") {
                 extraConfig = `\n[dependencies]\nanemo = { path = "${path.join(repoRoot, "scripts/stubs/anemo-hollow-stub")}" }\n`;
               } else if (item === "anemo") {
@@ -1350,7 +1411,7 @@ panic = "abort"
         }
       }
     }
-    await patchAllCargoTomls(cloneDir);
+    await patchAllCargoTomls(suiWorkDir);
 
     // Also patch vendor directory if it exists (for fastcrypto etc.)
     const vendorDir = path.join(repoRoot, "vendor");
@@ -1470,7 +1531,7 @@ panic = "abort"
       }
 
       const wasmArtifact = path.join(
-        cloneDir,
+        suiWorkDir,
         "target/wasm32-unknown-unknown/release/sui_move_wasm.wasm"
       );
 

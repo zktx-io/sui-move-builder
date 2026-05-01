@@ -412,3 +412,12 @@ Used by:
 
 - `scripts/build-wasm.mjs` - WASM build script
 - `src/resolver.ts` - Runtime implicit dependency resolution
+
+### Local Build Directories
+
+The WASM build keeps upstream source and patched build state separate:
+
+- `.sui-build/source/`: pristine Sui checkout pinned to `sui-version.json`
+- `.sui-build/work/`: disposable git worktree used for overlaying `sui-move-wasm` and applying Cargo/WASM patches
+
+Only `.sui-build/work/` is modified during patching and compilation. The whole `.sui-build/` directory is ignored and should not be edited as project source. `SUI_SOURCE_DIR` and `SUI_WORK_DIR` can override these paths for specialized local setups.

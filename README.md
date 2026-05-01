@@ -225,6 +225,16 @@ if (result.success) {
 }
 ```
 
+## Development build layout
+
+`npm run build:wasm` keeps the upstream Sui checkout separate from the patched build workspace:
+
+- `.sui-build/source/`: pristine Sui checkout at the commit in `sui-version.json`
+- `.sui-build/work/`: disposable git worktree where `sui-move-wasm` is overlaid and Cargo/WASM compatibility patches are applied
+- `dist/full` and `dist/lite`: generated npm artifacts
+
+Only edit tracked project sources such as `src/`, `sui-move-wasm/`, and `scripts/templates/`. The `.sui-build/` directory is ignored build/cache state. Set `SUI_SOURCE_DIR` or `SUI_WORK_DIR` only when you intentionally want those directories somewhere else.
+
 ## Package Management Logic
 
 This builder follows the official Sui CLI precedence rules for package management:

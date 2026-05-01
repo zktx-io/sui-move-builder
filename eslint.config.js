@@ -38,14 +38,17 @@ export default tseslint.config(
   },
   {
     ignores: [
-      "dist",
-      "sui",
+      "dist/**",
+      ".sui-build/**",
+      "sui/**",
+      "sui-source/**",
+      "sui-work/**",
       "sui-move-wasm/js/**",
       "**/*.d.ts",
       "tsup.config.ts",
-      "test/integration/fixtures",
-      "vendor",
-      "scripts/stubs",
+      "test/integration/fixtures/**",
+      "vendor/**",
+      "scripts/stubs/**",
     ],
   }
 );

@@ -1,2 +1,12 @@
 dist
 node_modules
+.sui-build
+sui
+sui-source
+sui-work
+vendor
+scripts/stubs
+test/integration/fixtures
+local-bin
+**/target
+**/pkg

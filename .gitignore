@@ -2,8 +2,13 @@ node_modules
 dist
 *.log
 
-# Rust build directory
+# Sui source cache and patched build workspace
 sui
+.sui-build/
+sui-source
+sui-work
+
+# Rust build directory
 **/target
 .wasm-pack
 # wasm-pack output

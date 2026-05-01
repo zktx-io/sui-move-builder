@@ -11,7 +11,7 @@ const NETWORK = "mainnet";
 const GRPC_URLS = {
   mainnet: "https://fullnode.mainnet.sui.io:443",
   testnet: "https://fullnode.testnet.sui.io:443",
-  devnet:  "https://fullnode.devnet.sui.io:443",
+  devnet: "https://fullnode.devnet.sui.io:443",
 };
 const GRAPHQL_URLS = {
   mainnet: "https://graphql.mainnet.sui.io/graphql",
@@ -19,7 +19,10 @@ const GRAPHQL_URLS = {
 };
 
 // gRPC client: fast, for recent/live transactions
-const grpcClient = new SuiGrpcClient({ network: NETWORK, baseUrl: GRPC_URLS[NETWORK] });
+const grpcClient = new SuiGrpcClient({
+  network: NETWORK,
+  baseUrl: GRPC_URLS[NETWORK],
+});
 // GraphQL client: full history, fallback for transactions pruned by gRPC nodes
 const gqlClient = new SuiGraphQLClient({ url: GRAPHQL_URLS[NETWORK] });
 
@@ -53,7 +56,10 @@ async function fetchTransaction(digest) {
       digest,
       include: { bcs: true, effects: true },
     });
-    const tx = result.$kind === "Transaction" ? result.Transaction : result.FailedTransaction;
+    const tx =
+      result.$kind === "Transaction"
+        ? result.Transaction
+        : result.FailedTransaction;
     if (!tx) throw new Error("No transaction result");
 
     const changedObjects = tx.effects?.changedObjects ?? [];
@@ -62,18 +68,21 @@ async function fetchTransaction(digest) {
       (o) => o.idOperation === "Created" && o.outputState === "PackageWrite"
     );
     return {
-      bcsBytes: tx.bcs,          // Uint8Array
+      bcsBytes: tx.bcs, // Uint8Array
       packageId: pkg?.objectId ?? null,
       timestamp: tx.epoch ?? null,
       source: "grpc",
     };
-  } catch (grpcErr) {
+  } catch {
     // gRPC node pruned this transaction — fall back to GraphQL (full history)
     console.log(`[Tx] gRPC not found, trying GraphQL fallback...`);
   }
 
   // 2. Fallback: GraphQL (retains full mainnet history)
-  const r = await gqlClient.query({ query: GQL_GET_TRANSACTION, variables: { digest } });
+  const r = await gqlClient.query({
+    query: GQL_GET_TRANSACTION,
+    variables: { digest },
+  });
   if (r.errors?.length) throw new Error(r.errors[0].message);
   const tx = r.data?.transaction;
   if (!tx) throw new Error(`Transaction not found: ${digest}`);
@@ -99,7 +108,8 @@ async function fetchTransaction(digest) {
  * @returns Transaction info including type and modules
  */
 export async function analyzeTransaction(digest) {
-  const { bcsBytes, packageId, timestamp, source } = await fetchTransaction(digest);
+  const { bcsBytes, packageId, timestamp, source } =
+    await fetchTransaction(digest);
   if (source === "graphql") {
     console.log(`[Tx] Fetched via GraphQL fallback`);
   }
@@ -143,24 +153,6 @@ export async function analyzeTransaction(digest) {
 }
 
 /**
- * Extract upgrade information from transaction
- */
-async function extractUpgradeInfo(tx) {
-  // effects.changedObjects replaces 1.x top-level objectChanges
-  const changedObjects = tx.effects?.changedObjects || [];
-  let currentPackageId = null;
-  for (const change of changedObjects) {
-    if (change.outputState === "PackageWrite" && change.idOperation === "Created") {
-      currentPackageId = change.objectId;
-      break;
-    }
-  }
-  return { currentPackageId };
-}
-
-
-
-/**
  * Trace UpgradeCap back to the original publish transaction
  * @param upgradeCapId - UpgradeCap object ID
  * @returns Original package info
@@ -169,7 +161,7 @@ export async function traceUpgradeCapToOriginal(upgradeCapId) {
   // Get UpgradeCap object
   // getObject is not available on SuiGrpcClient; use getObjects (plural) which
   // maps from 1.x multiGetObjects → 2.x client.getObjects per the method table.
-  const [capObj] = await client.getObjects({
+  const [capObj] = await grpcClient.getObjects({
     ids: [upgradeCapId],
     include: {
       // TODO: confirm include flags — 1.x used showContent / showPreviousTransaction
@@ -203,7 +195,7 @@ export async function traceUpgradeCapToOriginal(upgradeCapId) {
  */
 export async function getPackageModules(packageId) {
   // getObject → getObjects (plural) for 2.x gRPC
-  const [pkg] = await client.getObjects({
+  const [pkg] = await grpcClient.getObjects({
     ids: [packageId],
     include: {
       // TODO: confirm include flag for BCS data — 1.x used showBcs: true
