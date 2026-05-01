@@ -27,13 +27,25 @@ export default tseslint.config(
     },
   },
   {
-    files: ["scripts/**/*.mjs", "test/**/*.mjs"],
+    files: ["scripts/**/*.mjs", "test/**/*.mjs", "sui-move-wasm/js/**/*.js"],
     languageOptions: {
       globals: {
         console: "readonly",
         process: "readonly",
         Buffer: "readonly",
+        URL: "readonly",
+        fetch: "readonly",
       },
+    },
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+        },
+      ],
     },
   },
   {
@@ -43,10 +55,8 @@ export default tseslint.config(
       "sui/**",
       "sui-source/**",
       "sui-work/**",
-      "sui-move-wasm/js/**",
       "**/*.d.ts",
       "tsup.config.ts",
-      "test/integration/fixtures/**",
       "vendor/**",
       "scripts/stubs/**",
     ],

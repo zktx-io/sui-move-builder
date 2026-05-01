@@ -7,6 +7,10 @@
 
 import { ResolvedGraph } from "./resolvedGraph.js";
 
+function isMoveNamedAddress(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
 interface PackageConfig {
   edition: string;
   flavor: "sui" | "move";
@@ -225,7 +229,12 @@ export class CompilationDependencies {
       }
 
       // Ensure specific linkage - SKIP system packages to avoid regressions
-      if (buildId && pkgName !== "Sui" && pkgName !== "MoveStdlib") {
+      if (
+        buildId &&
+        pkgName !== "Sui" &&
+        pkgName !== "MoveStdlib" &&
+        isMoveNamedAddress(pkgName)
+      ) {
         // Force set the package name and alias to the build ID
         // This ensures that even if Move.toml doesn't list itself in [addresses],
         // it gets defined in the reconstructed TOML.
@@ -311,9 +320,9 @@ export class CompilationDependencies {
       // For lockfile, we need simplified addressMapping
       const addressMapping: Record<string, string> = {};
       for (const [key, value] of Object.entries(pkg.manifest.addresses)) {
-        if (value) addressMapping[key] = value;
+        if (value && isMoveNamedAddress(key)) addressMapping[key] = value;
       }
-      if (pkg.manifest.originalId) {
+      if (pkg.manifest.originalId && isMoveNamedAddress(pkgName)) {
         addressMapping[pkgName] = pkg.manifest.originalId;
       }
 

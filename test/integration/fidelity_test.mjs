@@ -1,677 +1,486 @@
-import { promises as fs } from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-import { spawnSync } from "child_process";
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  analyzeTransaction,
-  compareModules as compareTxModules,
-} from "./transactionAnalyzer.mjs";
+  SUI_REPO_URL,
+  ensureSuiSourceCheckout,
+  getSuiBuildConfig,
+  prepareSuiWorktree,
+  resolveSuiVersionConfig,
+  resolveSuiSourceCommit,
+} from "../../scripts/sui-workspace.mjs";
+
+const require = createRequire(import.meta.url);
+const baseSuiVersion = require("../../sui-version.json");
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const repoRoot = path.resolve(__dirname, "../..");
 
-// usage: node fidelity_test.mjs [full|lite]
-const MODE = process.argv[2] === "lite" ? "lite" : "full";
-const DIST_DIR = path.resolve(__dirname, `../../dist/${MODE}`);
+const { suiVersion, restArgs } = resolveSuiVersionConfig(
+  baseSuiVersion,
+  process.argv.slice(2)
+);
+const modeArg =
+  restArgs[0] === "full" || restArgs[0] === "lite" ? restArgs.shift() : "full";
+const mode = modeArg === "lite" ? "lite" : "full";
+const packageArgs = restArgs;
+const distDir = path.join(repoRoot, "dist", mode);
+const wasmPath = path.join(distDir, "sui_move_wasm_bg.wasm");
+const network = process.env.SUI_PARITY_NETWORK || "mainnet";
+const suiCli = resolveSuiCli(process.env.SUI_CLI || "sui");
+const maxPackages = Number(process.env.SUI_PARITY_LIMIT || 5);
+const minMoveFiles = Number(process.env.SUI_PARITY_MIN_MOVE_FILES || 2);
 
-console.log(`Running Fidelity Tests in [${MODE.toUpperCase()}] mode`);
+const suiBuildConfig = getSuiBuildConfig(repoRoot, suiVersion);
+const parityWorkDir =
+  process.env.SUI_PARITY_WORK_DIR ||
+  path.join(suiBuildConfig.buildWorkspaceDir, "parity-work");
+const parityOutputDir = path.join(
+  suiBuildConfig.buildWorkspaceDir,
+  "parity-output",
+  mode
+);
 
-// Dynamic import from the correct distribution
-const { initMoveCompiler, buildMovePackage, fetchPackageFromGitHub } =
-  await import(path.join(DIST_DIR, "index.js"));
-
-const FIXTURES_DIR = path.join(__dirname, "fixtures");
-
-const REPOS = {
-  nautilus: {
-    url: "https://github.com/MystenLabs/nautilus",
-    commit: "d919402aadf15e21b3cf31515b3a46d1ca6965e4",
-    packagePath: "move/enclave",
-    network: "mainnet",
-    txDigest: "B2eHopwUuSgMhJNHQA6LNMkQYVKesPe6M6MorbiwiaGX",
-  },
-  deepbook: {
-    url: "https://github.com/MystenLabs/deepbookv3",
-    commit: "d3206b717c6f63593fae14d1ff9e1ec055f051bd",
-    packagePath: "packages/deepbook",
-    network: "mainnet",
-    txDigest: "kWfhNNQ82bqnV2CgiLR23MkqULJWP1S1WC9jPCPSPG5",
-  },
-  apps: {
-    url: "https://github.com/MystenLabs/apps",
-    commit: "e159ab3fc45a6f1ca46025c46c915988023af8b6",
-    packagePath: "kiosk",
-    network: "mainnet",
-    txDigest: "LexwBJLt1jMwhNsNCkU4jiWwZPaAeqwhgLy2RPZbd2n",
-  },
-  deeptrade: {
-    url: "https://github.com/DeeptradeProtocol/deeptrade-core",
-    commit: "7838028ef9edf72f7dc82dc788ba06cd94ebdd9c",
-    packagePath: "packages/deeptrade-core",
-    network: "mainnet",
-    txDigest: "75SMrmoARyPwLvt7ZHgoBsN9NtHkAmkcXNMtnzo84K52",
-  },
-};
-
-// Digest comparison helper (used for debug)
-// function areDigestsEqual(digestA, digestB) {
-//   const normalize = (d) => {
-//     if (Array.isArray(d)) return Buffer.from(d).toString("hex");
-//     if (d instanceof Uint8Array) return Buffer.from(d).toString("hex");
-//     return d;
-//   };
-//   return normalize(digestA) === normalize(digestB);
-// }
-
-// Read GitHub token from file if exists
-async function getGithubToken() {
-  try {
-    const tokenPath = path.join(__dirname, "../../test/.github_token");
-    if (await fs.stat(tokenPath).catch(() => false)) {
-      return (await fs.readFile(tokenPath, "utf-8")).trim();
-    }
-  } catch {
-    // Ignore if token file doesn't exist
+function resolveSuiCli(cli) {
+  if (path.isAbsolute(cli) || cli.includes("/") || cli.includes("\\")) {
+    return path.resolve(repoRoot, cli);
   }
-  return process.env.GITHUB_TOKEN;
+  return cli;
 }
 
-// Setup repo: check if cached in fixtures, if not fetch via packageFetcher and save
-async function setupRepo(name, config, githubToken) {
-  const packageDir = path.join(FIXTURES_DIR, name, config.packagePath);
-  const moveTomlPath = path.join(packageDir, "Move.toml");
-
-  // Check if already cached
-  if (await fs.stat(moveTomlPath).catch(() => false)) {
-    console.log(`[Cache] Using cached fixtures for ${name}`);
-    return await readLocalFiles(packageDir);
+class LocalSuiFetcher {
+  constructor({ sourceDir, tag, commit }) {
+    this.sourceDir = sourceDir;
+    this.tag = tag;
+    this.commit = commit;
   }
 
-  // Fetch via packageFetcher
-  console.log(`[Fetch] Downloading ${name} via GitHub API...`);
-  const githubUrl = `${config.url}/tree/${config.commit}/${config.packagePath}`;
-  const files = await fetchPackageFromGitHub(githubUrl, {
-    githubToken,
-    includeLock: true,
-  });
-
-  // Save to fixtures for future runs
-  await fs.mkdir(packageDir, { recursive: true });
-  for (const [filePath, content] of Object.entries(files)) {
-    const fullPath = path.join(packageDir, filePath);
-    await fs.mkdir(path.dirname(fullPath), { recursive: true });
-    await fs.writeFile(fullPath, content, "utf-8");
-  }
-  console.log(`[Cache] Saved ${Object.keys(files).length} files to fixtures`);
-
-  return files;
-}
-
-// Read local files from directory
-async function readLocalFiles(dir) {
-  const files = {};
-
-  async function readDirRecursive(currentDir, baseDir = currentDir) {
-    const entries = await fs.readdir(currentDir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(currentDir, entry.name);
-      const relativePath = path.relative(baseDir, fullPath);
-      if (entry.isDirectory()) {
-        if (entry.name === "build" || entry.name === ".git") continue;
-        await readDirRecursive(fullPath, baseDir);
-      } else {
-        if (
-          entry.name.endsWith(".move") ||
-          entry.name.endsWith(".toml") ||
-          entry.name.endsWith(".lock")
-        ) {
-          files[relativePath] = await fs.readFile(fullPath, "utf-8");
-        }
-      }
-    }
-  }
-
-  await readDirRecursive(dir);
-  return files;
-}
-
-/**
- * Generate CLI bytecode dump using `sui move build --dump-bytecode-as-base64`
- * Saves output to cli_dump.json in package directory
- * Also backs up Move.toml and Move.lock before/after to detect CLI modifications
- */
-async function generateCliDump(packageDir, name) {
-  const dumpPath = path.join(packageDir, "cli_dump.json");
-
-  // Check if already cached
-  if (await fs.stat(dumpPath).catch(() => false)) {
-    console.log(`[CLI Dump] Using cached dump for ${name}`);
-    return JSON.parse(await fs.readFile(dumpPath, "utf-8"));
-  }
-
-  console.log(`[CLI Dump] Generating bytecode dump for ${name}...`);
-
-  // Backup Move.lock before CLI build (only for comparison)
-  const moveLockPath = path.join(packageDir, "Move.lock");
-
-  let moveLockBefore = null;
-
-  try {
-    moveLockBefore = await fs.readFile(moveLockPath, "utf-8");
-  } catch {
-    /* ignore */
-  }
-
-  // Save backup
-  if (moveLockBefore) {
-    await fs.writeFile(
-      path.join(packageDir, "Move.lock.before_cli"),
-      moveLockBefore,
-      "utf-8"
-    );
-  }
-
-  try {
-    // Run sui move build with dump flag
-    const result = spawnSync(
-      "sui",
-      ["move", "build", "--dump-bytecode-as-base64"],
-      {
-        cwd: packageDir,
-        encoding: "utf-8",
-        maxBuffer: 50 * 1024 * 1024, // 50MB buffer for large outputs
-        timeout: 120000, // 2 minute timeout
-      }
-    );
-
-    // Check for Move.lock modifications after CLI build
-    let moveLockAfter = null;
-
+  isSuiRepo(gitUrl) {
     try {
-      moveLockAfter = await fs.readFile(moveLockPath, "utf-8");
+      const url = new URL(gitUrl);
+      const parts = url.pathname
+        .replace(/\.git$/, "")
+        .split("/")
+        .filter(Boolean);
+      return (
+        url.hostname.toLowerCase() === "github.com" &&
+        parts[0]?.toLowerCase() === "mystenlabs" &&
+        parts[1]?.toLowerCase() === "sui"
+      );
     } catch {
-      /* ignore */
+      return false;
     }
+  }
 
-    // Report Move.lock modification
-    let moveLockModified = false;
-    if (moveLockBefore && moveLockAfter && moveLockBefore !== moveLockAfter) {
-      moveLockModified = true;
-      console.log(`[CLI] ⚠️  Move.lock MODIFIED by CLI build!`);
-      await fs.writeFile(
-        path.join(packageDir, "Move.lock.after_cli"),
-        moveLockAfter,
-        "utf-8"
+  acceptsRev(rev) {
+    return (
+      rev === this.tag ||
+      rev === this.commit ||
+      (typeof rev === "string" && this.commit.startsWith(rev))
+    );
+  }
+
+  async fetch(gitUrl, rev, subdir = "") {
+    if (!this.isSuiRepo(gitUrl)) {
+      throw new Error(`Unexpected git dependency in parity test: ${gitUrl}`);
+    }
+    if (!this.acceptsRev(rev)) {
+      throw new Error(
+        `Unexpected Sui revision in parity test: ${rev}. Expected ${this.tag} or ${this.commit}`
       );
     }
+    return readMovePackageFiles(path.join(this.sourceDir, subdir));
+  }
 
-    if (result.error) {
-      console.log(`[CLI Dump] Failed to run CLI: ${result.error.message}`);
+  async fetchFile(gitUrl, rev, filePath) {
+    if (!this.isSuiRepo(gitUrl) || !this.acceptsRev(rev)) {
       return null;
     }
-
-    if (result.status !== 0) {
-      console.log(`[CLI Dump] CLI build failed (exit code ${result.status})`);
-      if (result.stderr) {
-        console.log(`[CLI Dump] stderr: ${result.stderr.slice(0, 500)}`);
-      }
+    try {
+      return await fs.readFile(path.join(this.sourceDir, filePath), "utf8");
+    } catch {
       return null;
     }
+  }
 
-    // Parse JSON output from stdout
-    // CLI outputs JSON to stdout, build messages to stderr
-    const stdout = result.stdout.trim();
-
-    // Find JSON in output (may have build messages before it)
-    const jsonStart = stdout.indexOf("{");
-    if (jsonStart === -1) {
-      console.log(`[CLI Dump] No JSON found in CLI output`);
-      return null;
+  getResolvedSha(gitUrl, rev) {
+    if (this.isSuiRepo(gitUrl) && this.acceptsRev(rev)) {
+      return this.commit;
     }
-
-    const jsonStr = stdout.slice(jsonStart);
-    const dump = JSON.parse(jsonStr);
-
-    // Save to cache
-    await fs.writeFile(dumpPath, JSON.stringify(dump, null, 2), "utf-8");
-    console.log(`[CLI Dump] Saved dump to cli_dump.json`);
-
-    // Return dump with moveLockModified flag
-    return { ...dump, moveLockModified };
-  } catch (e) {
-    console.log(`[CLI Dump] Error: ${e.message}`);
-    return null;
+    return undefined;
   }
 }
 
-async function runTest() {
-  console.log("Initializing compiler...");
-  const start = Date.now();
-  const wasmPath = path.resolve(DIST_DIR, "sui_move_wasm_bg.wasm");
-  const wasmBuffer = await fs.readFile(wasmPath);
+async function pathExists(target) {
+  try {
+    await fs.access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-  const githubToken = await getGithubToken();
-  await initMoveCompiler({ wasm: wasmBuffer, token: githubToken });
-  console.log(`Compiler initialized in ${(Date.now() - start).toFixed(2)}ms`);
+function isIgnoredDir(name) {
+  return (
+    name === ".git" ||
+    name === "build" ||
+    name === "target" ||
+    name === "node_modules"
+  );
+}
 
-  let allPass = true;
+async function readMovePackageFiles(packageDir) {
+  const files = {};
 
-  for (const [name, config] of Object.entries(REPOS)) {
-    console.log(`\n=== Testing ${name} ===`);
-
-    const rootFiles = await setupRepo(name, config, githubToken);
-    console.log(`[Build] Compiling ${Object.keys(rootFiles).length} files...`);
-
-    try {
-      const result = await buildMovePackage({
-        files: rootFiles,
-        network: config.network,
-        githubToken,
-        onProgress: (event) => {
-          switch (event.type) {
-            case "resolve_start":
-              console.log("  → Resolving dependencies...");
-              break;
-            case "resolve_dep":
-              console.log(
-                `    [${event.current}/${event.total}] ${event.name} (${event.source})`
-              );
-              break;
-            case "resolve_complete":
-              console.log(`  → Resolved ${event.count} dependencies`);
-              break;
-            case "compile_start":
-              console.log("  → Compiling...");
-              break;
-            case "compile_complete":
-              console.log("  → Compilation complete");
-              break;
-            case "lockfile_generate":
-              console.log("  → Generating Move.lock");
-              break;
-          }
-        },
-      });
-
-      if ("error" in result) {
-        console.error(`[Error] Build failed:`, result.error);
-        allPass = false;
+  async function visit(currentDir, baseDir) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (!isIgnoredDir(entry.name)) {
+          await visit(path.join(currentDir, entry.name), baseDir);
+        }
         continue;
       }
 
-      // Always save generated Move.lock as MoveV4.lock for inspection
-      if (result.moveLock) {
-        const packageDir = path.join(FIXTURES_DIR, name, config.packagePath);
-        await fs.mkdir(packageDir, { recursive: true });
-        const generatedLockPath = path.join(packageDir, "MoveV4.lock");
-        await fs.writeFile(generatedLockPath, result.moveLock, "utf-8");
-        console.log(`  📝 Saved generated lock to: MoveV4.lock`);
-
-        // Save WASM dump for debugging
-        const wasmDumpPath = path.join(packageDir, "wasm_dump.json");
-        const wasmDump = {
-          modules: result.modules || [],
-          dependencies: result.dependencies || [],
-          digest: result.digest ? Array.from(result.digest) : [],
-        };
-        await fs.writeFile(
-          wasmDumpPath,
-          JSON.stringify(wasmDump, null, 2),
-          "utf-8"
-        );
-        console.log(`  📝 Saved WASM dump to: wasm_dump.json`);
-
-        // Compare with reference Move.lock - only if versions match
-        const referenceLockPath = path.join(packageDir, "Move.lock");
-        const cliUpdatedLockPath = path.join(packageDir, "Move.lock.after_cli");
-        try {
-          // Check if CLI has updated the lockfile (Move.lock.after_cli)
-          let referenceLockToUse = referenceLockPath;
-          if (await fs.stat(cliUpdatedLockPath).catch(() => false)) {
-            referenceLockToUse = cliUpdatedLockPath;
-            console.log(`     (Using CLI-updated lockfile for comparison)`);
-          }
-
-          if (await fs.stat(referenceLockToUse).catch(() => false)) {
-            let referenceLock = await fs.readFile(referenceLockToUse, "utf-8");
-
-            // Extract version from lockfile content
-            const getVersion = (content) => {
-              const match = content.match(
-                /\[move\][\s\S]*?version\s*=\s*(\d+)/
-              );
-              return match ? parseInt(match[1]) : null;
-            };
-
-            const refVersion = getVersion(referenceLock);
-            const genVersion = getVersion(result.moveLock);
-
-            console.log(
-              `  📋 Lockfile Version Check: Reference=V${refVersion || "?"}, Generated=V${genVersion || "?"}`
-            );
-
-            // If versions differ (V3 migrated to V4), use CLI's generated V4 lockfile for comparison
-            if (refVersion !== genVersion) {
-              const cliGeneratedLockPath = path.join(
-                path.dirname(referenceLockToUse),
-                "Move.lock"
-              );
-              const cliLockExists = await fs
-                .stat(cliGeneratedLockPath)
-                .catch(() => false);
-
-              if (
-                cliLockExists &&
-                cliGeneratedLockPath !== referenceLockToUse
-              ) {
-                console.log(
-                  `  📋 Migration detected - comparing with CLI-generated V4 lockfile`
-                );
-                const cliLock = await fs.readFile(
-                  cliGeneratedLockPath,
-                  "utf-8"
-                );
-                const cliVersion = getVersion(cliLock);
-
-                if (cliVersion === genVersion) {
-                  // Use CLI's generated lock for comparison
-                  referenceLock = cliLock;
-                } else {
-                  console.log(
-                    `  ⚠️  Version mismatch (V${refVersion} vs V${genVersion}) - skipping lockfile comparison`
-                  );
-                }
-              } else {
-                console.log(
-                  `  ⚠️  Version mismatch (V${refVersion} vs V${genVersion}) - skipping lockfile comparison`
-                );
-              }
-            }
-
-            // Only compare if we have a valid reference lock (either same version or CLI-generated V4)
-            if (
-              refVersion === genVersion ||
-              (referenceLock && getVersion(referenceLock) === genVersion)
-            ) {
-              // Parse ALL sections from lockfile (all networks)
-              const parseAllSections = (content) => {
-                const lines = content.split("\n");
-                const sections = {}; // { network: { sectionName: { digest, use_environment } } }
-                let currentNetwork = null;
-                let currentSectionName = null;
-                let currentData = {};
-
-                for (const line of lines) {
-                  const trimmed = line.trim();
-                  const pinnedMatch = trimmed.match(
-                    /^\[pinned\.([^.]+)\.([^\]]+)\]$/
-                  );
-
-                  if (pinnedMatch) {
-                    // Save previous section
-                    if (currentNetwork && currentSectionName) {
-                      if (!sections[currentNetwork])
-                        sections[currentNetwork] = {};
-                      sections[currentNetwork][currentSectionName] =
-                        currentData;
-                    }
-
-                    currentNetwork = pinnedMatch[1];
-                    currentSectionName = pinnedMatch[2];
-                    currentData = { digest: null, use_environment: null };
-                  }
-
-                  if (currentNetwork && currentSectionName) {
-                    if (trimmed.startsWith("manifest_digest =")) {
-                      currentData.digest = trimmed.split('"')[1];
-                    }
-                    if (trimmed.startsWith("use_environment =")) {
-                      currentData.use_environment = trimmed.split('"')[1];
-                    }
-                  }
-                }
-
-                // Save last section
-                if (currentNetwork && currentSectionName) {
-                  if (!sections[currentNetwork]) sections[currentNetwork] = {};
-                  sections[currentNetwork][currentSectionName] = currentData;
-                }
-
-                return sections;
-              };
-
-              const refSections = parseAllSections(referenceLock);
-              const genSections = parseAllSections(result.moveLock);
-
-              // Get all networks from both
-              const allNetworks = new Set([
-                ...Object.keys(refSections),
-                ...Object.keys(genSections),
-              ]);
-
-              console.log(`  📋 Lockfile Comparison:`);
-              let hasError = false;
-
-              for (const net of [...allNetworks].sort()) {
-                const refNet = refSections[net] || {};
-                const genNet = genSections[net] || {};
-                const allSectionNames = new Set([
-                  ...Object.keys(refNet),
-                  ...Object.keys(genNet),
-                ]);
-
-                console.log(`     [${net}]`);
-                for (const sec of [...allSectionNames].sort()) {
-                  const refData = refNet[sec];
-                  const genData = genNet[sec];
-
-                  if (!refData && genData) {
-                    console.log(
-                      `       ${sec}: section exists in Generated but not in Reference`
-                    );
-                    hasError = true;
-                  } else if (refData && !genData) {
-                    console.log(
-                      `       ${sec}: section exists in Reference but not in Generated`
-                    );
-                    // Not an error for testnet sections when we only generate mainnet
-                  } else if (refData && genData) {
-                    if (refData.digest !== genData.digest) {
-                      console.log(
-                        `       ${sec}: digest differs between Reference and Generated`
-                      );
-                      hasError = true;
-                    } else {
-                      console.log(`       ${sec}: ✅`);
-                    }
-                  }
-                }
-              }
-
-              if (hasError) {
-                allPass = false;
-              }
-            }
-          }
-        } catch (e) {
-          console.log(`  ⚠️ Could not compare lockfiles: ${e.message}`);
-        }
+      const fullPath = path.join(currentDir, entry.name);
+      const relativePath = path.relative(baseDir, fullPath).replace(/\\/g, "/");
+      if (
+        entry.name.endsWith(".move") ||
+        entry.name.endsWith(".toml") ||
+        entry.name.endsWith(".lock")
+      ) {
+        files[relativePath] = await fs.readFile(fullPath, "utf8");
       }
-
-      if (result.publishedToml) {
-        // Save migrated Published.toml without printing full content
-        const packageDir = path.join(FIXTURES_DIR, name, config.packagePath);
-        const publishedV4Path = path.join(packageDir, "PublishedV4.toml");
-        await fs.writeFile(publishedV4Path, result.publishedToml, "utf-8");
-        console.log(
-          `  📝 [MIGRATION] Saved Published.toml to: PublishedV4.toml`
-        );
-
-        // --- Convergence Verification (User Request) ---
-        console.log(
-          `\n  🔄 [Convergence] Running 2nd Build with Migrated Artifacts to verify CLI match...`
-        );
-
-        // Update rootFiles with the migrated artifacts
-        rootFiles["Move.lock"] = result.moveLock; // Use the V4 lock we just generated
-        rootFiles["Published.toml"] = result.publishedToml; // Use the Published.toml we just generated
-
-        // 2nd Build
-        const result2 = await buildMovePackage({
-          files: rootFiles,
-          network: config.network,
-          githubToken,
-        });
-
-        if (!("error" in result2)) {
-          console.log("  🔄 [Convergence] 2nd Build successful");
-        } else {
-          console.error("  ❌ [Convergence] 2nd Build Failed!", result2.error);
-        }
-        // ------------------------------------------------
-      }
-
-      // Transaction-based comparison
-      if (config.txDigest) {
-        const txDigest = config.txDigest;
-        try {
-          console.log(`[Tx] Fetching modules from transaction ${txDigest}...`);
-          const txInfo = await analyzeTransaction(txDigest);
-
-          console.log(
-            `[Tx] Type: ${txInfo.txType}, Modules: ${txInfo.moduleCount}, Package: ${txInfo.packageId}`
-          );
-
-          // Modules comparison (WASM vs TX)
-          // Note: For upgrade transactions, the deployed bytecode may have been built with different
-          // Published.toml state (e.g., 0x0 address if Published.toml didn't exist at deployment time)
-          // The primary validation is CLI=WASM, TX comparison is informational for upgrades
-          if (txInfo.modules && result.modules) {
-            const comparison = compareTxModules(result.modules, txInfo.modules);
-            if (comparison.match) {
-              console.log(
-                `[Tx] ✅ Modules match (${comparison.wasmCount} modules)`
-              );
-            } else {
-              const isUpgrade = txInfo.txType === "upgrade";
-              if (isUpgrade) {
-                console.log(
-                  `[Tx] ⚠️  Modules differ from deployed (upgrade) - WASM=${comparison.wasmCount}, Deployed=${comparison.txCount}`
-                );
-                console.log(
-                  `     (This is expected if Published.toml was updated after original deployment)`
-                );
-              } else {
-                console.log(
-                  `[Tx] ❌ Modules mismatch! WASM=${comparison.wasmCount}, Deployed=${comparison.txCount}`
-                );
-                comparison.details.forEach((d) => {
-                  if (d.status !== "match") {
-                    console.log(
-                      `     Module ${d.index}: ${d.status} (WASM: ${d.wasmSize || "N/A"}, TX: ${d.txSize || "N/A"})`
-                    );
-                  }
-                });
-                allPass = false;
-              }
-            }
-          }
-
-          // Dependencies comparison
-          if (txInfo.dependencies && result.dependencies) {
-            const wasmDeps = result.dependencies.map((d) => d.toLowerCase());
-            const txDeps = txInfo.dependencies.map((d) => d.toLowerCase());
-
-            const depsMatch =
-              wasmDeps.length === txDeps.length &&
-              wasmDeps.every((d, i) => d === txDeps[i]);
-
-            if (depsMatch) {
-              console.log(
-                `[Tx] ✅ Dependencies match (${wasmDeps.length} deps)`
-              );
-            } else {
-              console.log(
-                `[Tx] ❌ Dependencies mismatch! WASM=${wasmDeps.length}, Deployed=${txDeps.length}`
-              );
-              console.log(`     WASM: ${wasmDeps.join(", ")}`);
-              console.log(`     TX:   ${txDeps.join(", ")}`);
-              allPass = false;
-            }
-          }
-
-          // CLI comparison (modules, deps, digest)
-          const packageDir = path.join(FIXTURES_DIR, name, config.packagePath);
-          const cliDump = await generateCliDump(packageDir, name);
-
-          if (cliDump) {
-            // CLI Modules comparison
-            const cliModules = cliDump.modules || [];
-            const wasmModulesMatch =
-              result.modules?.length === cliModules.length &&
-              result.modules.every((m, i) => m === cliModules[i]);
-            if (wasmModulesMatch) {
-              console.log(`[CLI] ✅ Modules match (WASM=CLI)`);
-            } else {
-              console.log(
-                `[CLI] ❌ Modules mismatch! WASM=${result.modules?.length || 0}, CLI=${cliModules.length}`
-              );
-            }
-
-            // CLI Dependencies comparison
-            const cliDeps = (cliDump.dependencies || []).map((d) =>
-              d.toLowerCase()
-            );
-            const wasmDeps2 = (result.dependencies || []).map((d) =>
-              d.toLowerCase()
-            );
-            const depsMatch2 =
-              wasmDeps2.length === cliDeps.length &&
-              wasmDeps2.every((d, i) => d === cliDeps[i]);
-            if (depsMatch2) {
-              console.log(`[CLI] ✅ Dependencies match (WASM=CLI)`);
-            } else {
-              console.log(
-                `[CLI] ❌ Dependencies mismatch! WASM=${wasmDeps2.length}, CLI=${cliDeps.length}`
-              );
-            }
-
-            // CLI Digest comparison
-            if (cliDump.digest && result.digest) {
-              const wasmDigest = Buffer.from(result.digest)
-                .toString("hex")
-                .toUpperCase();
-              const cliDigest = Buffer.from(cliDump.digest)
-                .toString("hex")
-                .toUpperCase();
-              if (wasmDigest === cliDigest) {
-                console.log(
-                  `[CLI] ✅ Digest match (${wasmDigest.slice(0, 16)}...)`
-                );
-              } else {
-                console.log(`[CLI] ❌ Digest mismatch!`);
-                console.log(`     WASM: ${wasmDigest}`);
-                console.log(`     CLI:  ${cliDigest}`);
-                allPass = false;
-              }
-            }
-          }
-        } catch (txErr) {
-          console.log(`[Tx] ⚠️  Error: ${txErr.message}`);
-        }
-      }
-    } catch (e) {
-      console.error(`[Error] Execution failed:`, e);
-      allPass = false;
     }
   }
 
-  if (!allPass) {
-    console.error("\n❌ Fidelity tests failed.");
-    process.exit(1);
-  } else {
-    console.log("\n✅ Fidelity tests passed!");
+  await visit(packageDir, packageDir);
+  return files;
+}
+
+async function countMoveFiles(packageDir) {
+  let count = 0;
+
+  async function visit(currentDir) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (!isIgnoredDir(entry.name)) {
+          await visit(path.join(currentDir, entry.name));
+        }
+      } else if (entry.name.endsWith(".move")) {
+        count += 1;
+      }
+    }
+  }
+
+  await visit(packageDir);
+  return count;
+}
+
+async function discoverMovePackages(examplesDir) {
+  const packages = [];
+
+  async function visit(currentDir) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    const hasMoveToml = entries.some(
+      (entry) => entry.isFile() && entry.name === "Move.toml"
+    );
+
+    if (hasMoveToml) {
+      const moveFileCount = await countMoveFiles(currentDir);
+      if (moveFileCount >= minMoveFiles) {
+        packages.push({ dir: currentDir, moveFileCount });
+      }
+      return;
+    }
+
+    for (const entry of entries) {
+      if (entry.isDirectory() && !isIgnoredDir(entry.name)) {
+        await visit(path.join(currentDir, entry.name));
+      }
+    }
+  }
+
+  await visit(examplesDir);
+  packages.sort(
+    (a, b) => b.moveFileCount - a.moveFileCount || a.dir.localeCompare(b.dir)
+  );
+  return packages.slice(0, maxPackages).map((pkg) => pkg.dir);
+}
+
+async function resolvePackageArgs(examplesDir) {
+  if (packageArgs.length === 0) {
+    return discoverMovePackages(examplesDir);
+  }
+
+  const resolved = [];
+  for (const arg of packageArgs) {
+    const direct = path.resolve(repoRoot, arg);
+    const underExamples = path.resolve(examplesDir, arg);
+    if (await pathExists(direct)) {
+      resolved.push(direct);
+    } else if (await pathExists(underExamples)) {
+      resolved.push(underExamples);
+    } else {
+      throw new Error(`Move package path does not exist: ${arg}`);
+    }
+  }
+  return resolved;
+}
+
+function runSuiCliBuild(packageDir) {
+  const result = spawnSync(
+    suiCli,
+    ["move", "build", "--dump-bytecode-as-base64", "--path", packageDir],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      maxBuffer: 100 * 1024 * 1024,
+      timeout: Number(process.env.SUI_PARITY_CLI_TIMEOUT_MS || 180000),
+    }
+  );
+
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      [
+        `Sui CLI build failed in ${packageDir}`,
+        result.stderr?.trim(),
+        result.stdout?.trim(),
+      ]
+        .filter(Boolean)
+        .join("\n")
+    );
+  }
+
+  const stdout = result.stdout.trim();
+  const jsonStart = stdout.indexOf("{");
+  const jsonEnd = stdout.lastIndexOf("}");
+  if (jsonStart === -1 || jsonEnd === -1 || jsonEnd < jsonStart) {
+    throw new Error(`Sui CLI did not emit JSON output for ${packageDir}`);
+  }
+
+  return JSON.parse(stdout.slice(jsonStart, jsonEnd + 1));
+}
+
+function assertSuiCliVersion() {
+  const result = spawnSync(suiCli, ["--version"], {
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) {
+    const detail = result.error?.message || result.stderr?.trim();
+    throw new Error(
+      `Unable to run '${suiCli} --version'. Set SUI_CLI to an installed Sui binary.${
+        detail ? `\n${detail}` : ""
+      }`
+    );
+  }
+
+  const versionOutput = `${result.stdout}\n${result.stderr}`.trim();
+  if (!versionOutput) {
+    throw new Error(`'${suiCli} --version' did not emit a version.`);
+  }
+  if (!versionOutput.includes(suiVersion.version)) {
+    console.warn(
+      `[WARN] Sui CLI version mismatch. Expected ${suiVersion.version}, got: ${versionOutput}.`
+    );
+  }
+  console.log(`[CLI] ${versionOutput}`);
+}
+
+function normalizeDigest(digest) {
+  if (Array.isArray(digest)) {
+    return Buffer.from(digest).toString("hex");
+  }
+  if (typeof digest === "string") {
+    return digest.replace(/^0x/, "").toLowerCase();
+  }
+  throw new Error(`Unsupported digest shape: ${typeof digest}`);
+}
+
+function normalizeDependencies(dependencies) {
+  if (!Array.isArray(dependencies)) {
+    throw new Error("Build output dependencies must be an array");
+  }
+  return dependencies.map((dep) => String(dep).toLowerCase());
+}
+
+function normalizeOutput(output) {
+  if (!Array.isArray(output.modules)) {
+    throw new Error("Build output modules must be an array");
+  }
+  return {
+    modules: output.modules,
+    dependencies: normalizeDependencies(output.dependencies || []),
+    digest: normalizeDigest(output.digest),
+  };
+}
+
+function compareArrays(label, left, right, differences) {
+  if (left.length !== right.length) {
+    differences.push(
+      `${label} count differs: CLI=${left.length}, WASM=${right.length}`
+    );
+    return;
+  }
+
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== right[i]) {
+      differences.push(`${label}[${i}] differs`);
+      return;
+    }
   }
 }
 
-runTest();
+function compareBuilds(cliOutput, wasmOutput) {
+  const differences = [];
+  compareArrays("modules", cliOutput.modules, wasmOutput.modules, differences);
+  compareArrays(
+    "dependencies",
+    cliOutput.dependencies,
+    wasmOutput.dependencies,
+    differences
+  );
+  if (cliOutput.digest !== wasmOutput.digest) {
+    differences.push(
+      `digest differs: CLI=${cliOutput.digest}, WASM=${wasmOutput.digest}`
+    );
+  }
+  return differences;
+}
+
+function isInsideDir(child, parent) {
+  const relative = path.relative(parent, child);
+  return (
+    Boolean(relative) &&
+    !relative.startsWith("..") &&
+    !path.isAbsolute(relative)
+  );
+}
+
+function toDisplayPackageName(packageDir, examplesDir) {
+  const baseDir = isInsideDir(packageDir, examplesDir) ? examplesDir : repoRoot;
+  return (
+    path.relative(baseDir, packageDir).replace(/\\/g, "/") ||
+    path.basename(packageDir)
+  );
+}
+
+function toArtifactPackageName(displayName) {
+  const safeParts = displayName
+    .split("/")
+    .filter((part) => part && part !== "." && part !== "..")
+    .map((part) => part.replace(/[^a-zA-Z0-9._-]/g, "_"));
+  return safeParts.join("__") || "root";
+}
+
+async function writeArtifact(artifactPackageName, name, data) {
+  const dir = path.join(parityOutputDir, artifactPackageName);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, name), JSON.stringify(data, null, 2));
+}
+
+async function main() {
+  console.log(
+    `Running CLI-vs-WASM parity tests in [${mode.toUpperCase()}] mode`
+  );
+
+  if (!(await pathExists(wasmPath))) {
+    throw new Error(
+      `Missing WASM artifact: ${wasmPath}. Run npm run build first.`
+    );
+  }
+
+  assertSuiCliVersion();
+
+  await ensureSuiSourceCheckout(suiBuildConfig);
+  const resolvedCommit = await resolveSuiSourceCommit(suiBuildConfig);
+  const workDir = await prepareSuiWorktree(suiBuildConfig, {
+    workDir: parityWorkDir,
+    updateSubmodules: true,
+  });
+
+  const examplesDir = path.join(workDir, "examples", "move");
+  const packages = await resolvePackageArgs(examplesDir);
+  if (packages.length === 0) {
+    throw new Error(`No Move packages found under ${examplesDir}`);
+  }
+
+  const distUrl = pathToFileURL(path.join(distDir, "index.js")).href;
+  const { initMoveCompiler, buildMovePackage } = await import(distUrl);
+  await initMoveCompiler({ wasm: await fs.readFile(wasmPath) });
+
+  const fetcher = new LocalSuiFetcher({
+    sourceDir: suiBuildConfig.sourceDir,
+    tag: suiVersion.tag,
+    commit: resolvedCommit,
+  });
+
+  let failed = false;
+  for (const packageDir of packages) {
+    const packageName = toDisplayPackageName(packageDir, examplesDir);
+    const artifactPackageName = toArtifactPackageName(packageName);
+    const packageSubdir = isInsideDir(packageDir, workDir)
+      ? path.relative(workDir, packageDir).replace(/\\/g, "/")
+      : undefined;
+    console.log(`\n=== ${packageName} ===`);
+
+    const rootFiles = await readMovePackageFiles(packageDir);
+    const rootGit = packageSubdir
+      ? {
+          git: SUI_REPO_URL,
+          rev: suiVersion.tag || resolvedCommit,
+          subdir: packageSubdir,
+        }
+      : undefined;
+
+    const cliOutput = normalizeOutput(runSuiCliBuild(packageDir));
+    const wasmResult = await buildMovePackage({
+      files: rootFiles,
+      network,
+      fetcher,
+      rootGit,
+      silenceWarnings: true,
+    });
+
+    if ("error" in wasmResult) {
+      failed = true;
+      console.error(`[WASM] Build failed: ${wasmResult.error}`);
+      await writeArtifact(artifactPackageName, "cli.json", cliOutput);
+      await writeArtifact(artifactPackageName, "wasm-error.json", wasmResult);
+      continue;
+    }
+
+    const wasmOutput = normalizeOutput(wasmResult);
+    const differences = compareBuilds(cliOutput, wasmOutput);
+    await writeArtifact(artifactPackageName, "cli.json", cliOutput);
+    await writeArtifact(artifactPackageName, "wasm.json", wasmOutput);
+
+    if (differences.length > 0) {
+      failed = true;
+      console.error(`[Mismatch] ${differences.join("; ")}`);
+    } else {
+      console.log(
+        `[OK] modules=${cliOutput.modules.length}, dependencies=${cliOutput.dependencies.length}, digest=${cliOutput.digest}`
+      );
+    }
+  }
+
+  if (failed) {
+    throw new Error(`CLI-vs-WASM parity failed. See ${parityOutputDir}`);
+  }
+
+  console.log("\nCLI-vs-WASM parity tests passed.");
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : error);
+  process.exit(1);
+});

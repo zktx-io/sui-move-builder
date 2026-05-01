@@ -40,6 +40,10 @@ const WASM_BUILD_FRAMEWORK_REV = suiVersionConfig.commit;
 const ZERO_ADDRESS =
   "0x0000000000000000000000000000000000000000000000000000000000000000";
 
+function isMoveNamedAddress(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
 export class Resolver {
   private fetcher: Fetcher;
   private network: "mainnet" | "testnet" | "devnet";
@@ -389,14 +393,16 @@ export class Resolver {
     if (normalizedPublished) {
       // Fix: Do not overwrite if the package explicitly defines its own address in [addresses]
       // This handles cases where [addresses] pkg = "0x..." but published-at = "0x..." differs.
-      if (!currentAddr) {
+      if (!isMoveNamedAddress(manifest.name)) {
+        // Package names may contain spaces, but named addresses cannot.
+      } else if (!currentAddr) {
         manifest.addresses[manifest.name] = normalizedPublished;
       } else if (currentAddr === ZERO_ADDRESS) {
         manifest.addresses[manifest.name] = normalizedPublished;
       }
-    } else if (!normalizedCurrent) {
+    } else if (!normalizedCurrent && isMoveNamedAddress(manifest.name)) {
       manifest.addresses[manifest.name] = "0x0";
-    } else {
+    } else if (normalizedCurrent && isMoveNamedAddress(manifest.name)) {
       manifest.addresses[manifest.name] = normalizedCurrent;
     }
 
@@ -1417,7 +1423,7 @@ export class Resolver {
     }
 
     // Second pass: Add dependency edges
-    // ORIGINAL: builder.rs:147-178 (sui-mainnet-v1.63.3)
+    // ORIGINAL: Sui CLI builder.rs direct dependency edge construction
     // CLI iterates source_package.direct_deps() which INCLUDES implicit deps (std, sui)
     // injected by F::implicit_dependencies() in package_impl.rs:253-267.
     // CLI then looks up target_id from source_pin.deps (lockfile's deps mapping).
@@ -1568,6 +1574,7 @@ export class Resolver {
     // User Request: Do NOT sort addresses.
     const addrs = Object.entries(addresses);
     for (const [addrName, addrVal] of addrs) {
+      if (!isMoveNamedAddress(addrName)) continue;
       newToml += `${addrName} = "${addrVal}"\n`;
     }
 

@@ -13,6 +13,10 @@
 
 import { DependencyGraph, Package } from "./dependencyGraph.js";
 
+function isMoveNamedAddress(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
 export interface BuildConfig {
   devMode?: boolean;
   testMode?: boolean;
@@ -58,6 +62,7 @@ export class ResolvedGraph {
 
       // Merge this package's addresses into the unified table
       for (const [name, addr] of Object.entries(pkg.manifest.addresses)) {
+        if (!isMoveNamedAddress(name)) continue;
         const normalized = this.normalizeAddress(addr);
 
         // Check for conflicts

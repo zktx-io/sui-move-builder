@@ -9,5 +9,5 @@ export default defineConfig({
   clean: false,
   outDir: "dist",
   target: "es2020",
-  external: ["./sui_move_wasm.js"],
+  external: ["./sui_move_wasm.js", "./sui_move_wasm_bg.wasm"],
 });

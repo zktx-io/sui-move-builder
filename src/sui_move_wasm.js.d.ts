@@ -11,4 +11,10 @@ export function compile(
 export function sui_move_version(): string;
 export function sui_version(): string;
 export function compute_manifest_digest(depsJson: string): string;
-export default function init(wasm?: string | URL): Promise<void>;
+export default function init(
+  wasm?:
+    | string
+    | URL
+    | BufferSource
+    | { module_or_path?: string | URL | BufferSource }
+): Promise<void>;

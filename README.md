@@ -2,24 +2,24 @@
 
 > **Upstream source:** [MystenLabs/sui](https://github.com/MystenLabs/sui) (see `sui-version.json`)
 
-Build Move packages in web or Node.js with Sui CLI-compatible dependency resolution and compilation.
+Build Move packages in web or Node.js with a WASM compiler path that tracks the Sui CLI build pipeline where practical.
 
 ## Features
 
-- ✅ **Sui CLI Compatible**: Identical dependency resolution algorithm as Sui CLI
-- ✅ **Verified Parity**: Audited against `sui-04dd` source code (Jan 2026), byte-level module comparison
-- ✅ **Address Resolution**: Supports `original_id` for compilation, `published_at` for metadata (CLI-identical)
-- ✅ **Lockfile Support**: Reads `Move.lock` v0/v3/v4 for faster, deterministic builds
-- ✅ **Move.lock V4 Output**: Generates **V4 format** with CLI-compatible **lexicographical sorting** and `manifest_digest`
-- ✅ **Published.toml Support**: Reads deployment records per environment
-- ✅ **Per-Package Editions**: Each package can use its own Move edition (legacy, 2024.alpha, 2024.beta)
-- ✅ **Monorepo Support**: Handles local dependencies in monorepo structures
-- ✅ **Version Conflict Detection**: Matches Sui CLI behavior for conflicting dependency versions
-- ✅ **Browser & Node.js**: Works in both environments with WASM-based compilation
-- ✅ **GitHub Integration**: Fetches dependencies directly from git repositories
-- ✅ **GitHub Token Support**: Optional token to raise rate limits (API calls only; raw fetch remains CORS-safe)
+- **Sui CLI-oriented build flow**: Resolves dependencies in JavaScript and compiles through the Move compiler compiled to WASM.
+- **Parity harness**: Compares local Sui CLI output with full and lite WASM build outputs for selected packages.
+- **Address resolution**: Tracks `original_id` for compilation and `published_at` / latest IDs for output metadata where available.
+- **Lockfile handling**: Reads V4 pinned lockfiles, handles older lockfile layouts on a best-effort basis, and migrates legacy publish data when possible.
+- **Move.lock V4 output**: Generates V4 lockfile content with deterministic pinned sections and `manifest_digest` values.
+- **Published.toml support**: Reads deployment records per environment when present.
+- **Per-package editions**: Preserves package editions such as legacy, 2024.alpha, and 2024.beta.
+- **Monorepo support**: Converts local dependencies inside git-sourced packages to repository subdirectories.
+- **Diamond dependency/linkage handling**: Keeps same-name package variants separate when the dependency graph requires it.
+- **Browser and Node.js targets**: Provides WASM-based compilation for both environments, with browser smoke tests available.
+- **GitHub integration**: Fetches Move package sources from GitHub repositories.
+- **GitHub token support**: Optional token for GitHub API requests; raw file fetches stay browser/CORS-friendly.
 
-> 📖 For detailed CLI behavior documentation, see [CLI_PIPELINE.md](./CLI_PIPELINE.md)
+For detailed CLI behavior notes, see [CLI_PIPELINE.md](./CLI_PIPELINE.md).
 
 ## Install
 
@@ -29,10 +29,10 @@ npm install @zktx.io/sui-move-builder
 
 ## Lite vs Full Version
 
-The package comes in two variants:
+The package is published with two generated variants:
 
-1. **Full Version (Default)**: ~12MB. Includes `move-unit-test`, `sui-move-natives`, and testing capabilities.
-2. **Lite Version**: ~5.1MB. Build-only. **Recommended for frontend applications** where testing infrastructure is not needed.
+1. **Full Version (Default)**: Includes the WASM `testing` feature, which brings in `move-unit-test`, `sui-move-natives`, and `move-vm-runtime` for Move unit test execution.
+2. **Lite Version**: Build-focused artifact without the WASM test runner dependencies. This is usually the better browser entrypoint when unit test execution is not needed.
 
 ### Using the Full Version (Default)
 
@@ -81,24 +81,22 @@ module hello_world::hello_world {
 // 3) Compile
 const result = await buildMovePackage({
   files,
-  // optional: bump GitHub API limits during dependency resolution
-  githubToken: process.env.GITHUB_TOKEN,
   // optional: silence warnings from Move compiler (default: false)
   silenceWarnings: false,
   // optional: enable test mode (include #[test_only] modules)
   testMode: false,
-  // optional: set linting level (default: "all")
-  lintFlag: "all",
 });
 
-if (result.success) {
+if ("error" in result) {
+  console.error("Build failed:", result.error);
+} else {
   // Compilation outputs
   console.log("Modules:", result.modules); // Array<string>: Base64-encoded bytecode
   console.log("Dependencies:", result.dependencies); // Array<string>: Hex-encoded package IDs
   console.log("Digest:", result.digest); // Array<number>: Package digest bytes
 
   // Lockfile outputs
-  console.log("Move.lock:", result.moveLock); // string: V4 lockfile content (CLI-compatible)
+  console.log("Move.lock:", result.moveLock); // string: generated V4 lockfile content
   console.log("Environment:", result.environment); // string: e.g., "mainnet"
 
   // Migration output (V3 → V4)
@@ -110,9 +108,29 @@ if (result.success) {
   if (result.warnings) {
     console.warn("Warnings:", result.warnings);
   }
-} else {
-  console.error("Build failed:", result.error);
 }
+```
+
+### Browser loading
+
+The same package is intended for browser use. The lite build is usually the better browser entrypoint:
+
+```ts
+import {
+  initMoveCompiler,
+  buildMovePackage,
+} from "@zktx.io/sui-move-builder/lite";
+
+await initMoveCompiler();
+const result = await buildMovePackage({ files });
+```
+
+Modern bundlers normally serve the bundled `sui_move_wasm_bg.wasm` next to the generated JS. If you host the WASM file yourself, pass its URL explicitly:
+
+```ts
+await initMoveCompiler({
+  wasm: new URL("/assets/sui_move_wasm_bg.wasm", window.location.origin),
+});
 ```
 
 ## Running Tests
@@ -137,17 +155,17 @@ if ("error" in result) {
 
 ### Build Options (`BuildInput`)
 
-| Option            | Type                                 | Description                                                    |
-| :---------------- | :----------------------------------- | :------------------------------------------------------------- |
-| `files`           | `Record<string, string>`             | **Required**. Virtual file system with `Move.toml` and sources |
-| `network`         | `"mainnet" \| "testnet" \| "devnet"` | Network environment (default: `"mainnet"`)                     |
-| `githubToken`     | `string`                             | GitHub API token to increase rate limits                       |
-| `silenceWarnings` | `boolean`                            | Suppress compiler warnings (default: `false`)                  |
-| `testMode`        | `boolean`                            | Compile in test mode (include `#[test_only]` modules)          |
-| `lintFlag`        | `string`                             | Linting level (e.g., `"all"`, `"none"`)                        |
-| `ansiColor`       | `boolean`                            | Enable ANSI color codes in output                              |
-| `stripMetadata`   | `boolean`                            | Strip metadata from bytecode (useful for size optimization)    |
-| `onProgress`      | `(event) => void`                    | Callback for build progress events                             |
+| Option            | Type                                 | Description                                                                                         |
+| :---------------- | :----------------------------------- | :-------------------------------------------------------------------------------------------------- |
+| `files`           | `Record<string, string>`             | **Required**. Virtual file system with `Move.toml` and sources                                      |
+| `network`         | `"mainnet" \| "testnet" \| "devnet"` | Network environment (default: `"mainnet"`)                                                          |
+| `githubToken`     | `string`                             | GitHub API token to increase rate limits                                                            |
+| `silenceWarnings` | `boolean`                            | Suppress compiler warnings (default: `false`)                                                       |
+| `testMode`        | `boolean`                            | Compile in test mode (include `#[test_only]` modules)                                               |
+| `lintFlag`        | `string`                             | Reserved for lint configuration; currently passed through but not applied by the WASM compiler path |
+| `ansiColor`       | `boolean`                            | Enable ANSI color codes in output                                                                   |
+| `stripMetadata`   | `boolean`                            | Reserved for metadata stripping; currently passed through but not applied by the WASM compiler path |
+| `onProgress`      | `(event) => void`                    | Callback for build progress events                                                                  |
 
 ### Build Output Reference
 
@@ -189,13 +207,14 @@ const result = await buildMovePackage({
 
 ## How it works
 
-Dependencies are automatically resolved from `Move.toml`:
+Dependencies are resolved from the package inputs and, where possible, follow the relevant Sui CLI build behavior:
 
-1. **Tries Move.lock first**: If a valid `Move.lock` exists, dependencies are loaded from it (faster, deterministic)
-2. **Falls back to manifests**: If lockfile is missing/invalid, resolves dependencies from `Move.toml` files
-3. **Validates digests**: Checks manifest digests to detect changes
-4. **Handles monorepos**: Converts local dependencies to git dependencies automatically
-5. **Injects system packages**: Automatically adds Sui, MoveStdlib, SuiSystem, and Bridge packages if missing
+1. **Checks `Move.lock` first**: V4 pinned lockfiles are used when available for the selected environment; legacy lockfiles are handled on a best-effort basis.
+2. **Falls back to manifests**: If the lockfile path is missing or cannot be used, dependencies are resolved from `Move.toml` files.
+3. **Handles legacy publish data**: Legacy `Move.lock` publication records can be migrated into `Published.toml` output.
+4. **Handles monorepos**: Local dependencies inside git-sourced packages are converted to git subdirectories.
+5. **Adds implicit framework dependencies**: The root package gets an implicit Sui framework dependency when it does not declare one.
+6. **Generates lockfile metadata**: V4 output includes computed manifest digests; some dependency digest validation paths are intentionally best-effort in the JS resolver.
 
 ```ts
 import { initMoveCompiler, buildMovePackage } from "@zktx.io/sui-move-builder";
@@ -216,12 +235,12 @@ dep_name = { git = "https://github.com/org/repo.git", subdir = "packages/dep_nam
 
 const result = await buildMovePackage({ files });
 
-if (result.success) {
+if ("error" in result) {
+  console.error("Build failed:", result.error);
+} else {
   console.log("Modules:", result.modules); // Base64-encoded bytecode
   console.log("Dependencies:", result.dependencies); // Hex-encoded IDs
   console.log("Digest:", result.digest); // Package digest
-} else {
-  console.error("Build failed:", result.error);
 }
 ```
 
@@ -235,18 +254,28 @@ if (result.success) {
 
 Only edit tracked project sources such as `src/`, `sui-move-wasm/`, and `scripts/templates/`. The `.sui-build/` directory is ignored build/cache state. Set `SUI_SOURCE_DIR` or `SUI_WORK_DIR` only when you intentionally want those directories somewhere else.
 
+Each Sui version needs a matching `scripts/templates/v<version>/` WASM compatibility template set. `npm run build:wasm` fails before modifying the worktree if the selected version has not been ported yet.
+
+The default patched baseline is the version in `sui-version.json`. For an intentional port to another Sui release, override it explicitly:
+
+```bash
+SUI_VERSION=1.x.y SUI_TAG=mainnet-v1.x.y npm run build:wasm
+# or
+node scripts/build-wasm.mjs --sui-version 1.x.y --sui-tag mainnet-v1.x.y
+```
+
 ## Package Management Logic
 
-This builder follows the official Sui CLI precedence rules for package management:
+This builder follows the Sui CLI package-management precedence where that behavior is implemented in the WASM path:
 
 1. **CLI Overrides**: Explicit options (e.g., `network`) take highest precedence.
-2. **Move.lock**: If present and valid, dependencies are resolved exactly as pinned in the lockfile. This ensures deterministic builds.
-   - The addresses of dependencies (e.g., `Sui`, `Std`) are determined by the lockfile's `[move.package.addresses]` section for the active environment (e.g., `devnet`, `mainnet`).
-3. **Move.toml**: Used if no lockfile exists or if it is invalid. Defines direct dependencies and their sources.
+2. **Move.lock**: V4 pinned sections are used when present for the active environment. Legacy V3 publication data may be migrated, and dependency resolution can fall back to manifests.
+   - Published package addresses can come from lockfile environment records, `Published.toml`, or manifest metadata depending on the package and lockfile format.
+3. **Move.toml**: Used when there is no usable lockfile path. Defines direct dependencies and their sources.
 4. **Published.toml**:
-   - Used to resolve the `published-at` address (original ID) for the root package if available.
+   - Used to resolve published package IDs for the selected environment when available.
    - **Does not** override dependency resolution; it is primarily an output record of deployment.
-   - If a package is listed in `Published.toml` with a matching `id`, the builder uses that ID for linking, similar to how the Sui CLI handles upgrades.
+   - If a package has matching publication data, the builder uses that information for compilation/output address handling.
 
 ## Dependency caching and reuse
 
@@ -280,7 +309,7 @@ const result1 = await buildMovePackage({
 // Modify source code
 files["sources/main.move"] = "// updated code...";
 
-// 3. Build again with cached dependencies (much faster!)
+// 3. Build again with cached dependencies
 const result2 = await buildMovePackage({
   files,
   network: "mainnet",
@@ -291,9 +320,9 @@ const result2 = await buildMovePackage({
 
 **Benefits:**
 
-- ⚡ Faster builds when dependencies haven't changed
-- 🔄 Useful for watch mode or iterative development
-- 💾 Reduce network requests by caching dependency resolution
+- Faster builds when dependencies have not changed
+- Useful for watch mode or iterative development
+- Reduced network requests by caching dependency resolution
 
 ## Limitations
 
@@ -314,42 +343,38 @@ Example filtering logic:
 if (entry.name === "build" || entry.name === ".git") continue;
 ```
 
-## Local test page
+## CLI-vs-WASM Parity Tests
 
-```
-npm run serve:test   # serves ./test via python -m http.server
-# open http://localhost:8000/test/index.html
-```
-
-## Fidelity Tests
-
-This package includes byte-level comparison tests against the official Sui CLI output:
+This package compares the same local Move package through the official Sui CLI and the WASM builder. The default package set is discovered from the pinned Sui checkout under `.sui-build/parity-work/examples/move`; pass explicit package paths when you want to test a specific fixture.
 
 ```bash
-npm run test:lite   # Run fidelity tests (lite version)
-npm test            # Run full integration tests
+npm run build       # required once; produces dist/full and dist/lite WASM artifacts
+npm run test:runtime # validate dist full/lite ESM/CJS loading
+npm run test:full   # compare Sui CLI vs full WASM
+npm run test:lite   # compare Sui CLI vs lite WASM
+npm run test:parity # compare Sui CLI vs both full and lite WASM
+npm run test:browser # optional local browser smoke test for full and lite
+npm run dev:browser-parity # interactive browser build + CLI comparison page
+npm test            # runtime smoke + full/lite CLI parity
 ```
 
-**Test Cases (verified against sui-mainnet-v1.63.3):**
+`dist/` artifacts are generated output and are not checked into this repository. Runtime, parity, and browser tests expect `npm run build` to have produced `dist/full` and `dist/lite` first.
 
-| Package     | Modules | Dependencies | Digest | Lockfile               |
-| ----------- | ------- | ------------ | ------ | ---------------------- |
-| `nautilus`  | ✅      | ✅           | ✅     | ✅                     |
-| `deepbook`  | ✅      | ✅           | ✅     | ✅ (mainnet + testnet) |
-| `deeptrade` | ✅      | ✅           | ✅     | ✅ (diamond deps)      |
+Useful options:
 
-All tests verify:
+- `SUI_CLI=/path/to/sui` selects the local Sui CLI binary.
+- `BROWSER_BIN=/path/to/chrome` selects the browser binary for `test:browser`.
+- `SUI_PARITY_LIMIT=10` changes the number of auto-discovered examples.
+- `SUI_PARITY_MIN_MOVE_FILES=3` requires larger multi-file examples.
 
-- ✅ Module bytecode (identical to CLI `.mv` output)
-- ✅ Dependency IDs (exact match with CLI)
-- ✅ Package digest (identical hash)
-- ✅ Move.lock V4 content (all environments preserved)
-- ✅ manifest_digest calculation (CLI-compatible)
+The parity test warns when the local Sui CLI version differs from `sui-version.json` and fails when the CLI is missing. It fails on any mismatch in module bytecode, dependency IDs, or package digest. It does not patch outputs or maintain expected-result snapshots.
+
+For manual browser verification, run `npm run dev:browser-parity` and open the printed `http://127.0.0.1:<port>/` URL. The page loads a Move package from the pinned Sui examples, a local package path, or a GitHub repository; builds it with the selected browser WASM artifact; asks the local server to build the same package with `sui move build --dump-bytecode-as-base64 --path <package>`; then compares module bytecode, dependency IDs, and digest.
 
 ## Roadmap
 
-- ✅ **Move.lock V4 Generation**: CLI-compatible with deterministic sorting and manifest_digest
-- ✅ **Multi-Environment Support**: Preserves all environments from existing Move.lock
-- ✅ **V3→V4 Migration**: Automatically generates Published.toml from legacy Move.lock
+- **Move.lock V4 Generation**: Generates deterministic V4 lockfile content with `manifest_digest`
+- **Multi-Environment Support**: Preserves other environments from existing Move.lock content when generating the active environment
+- **V3→V4 Migration**: Generates `Published.toml` from legacy publish records when available
 - **Published.toml Generation**: Generate Published.toml after successful deployment
 - **Bytecode Dependencies**: Support for .mv-only dependencies (CLI fallback path)

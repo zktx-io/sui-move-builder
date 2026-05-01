@@ -1,4 +1,4 @@
-import { GitHubFetcher } from "./fetcher.js";
+import { Fetcher, GitHubFetcher } from "./fetcher.js";
 import { resolve as resolveMoveToml } from "./resolver.js";
 import { parseToml } from "./tomlParser.js";
 import { generateMoveLockV4FromJson } from "./lockfileGenerator.js";
@@ -39,6 +39,8 @@ export interface BuildInput {
   rootGit?: { git: string; rev: string; subdir?: string };
   /** Optional GitHub token to raise API limits when resolving dependencies. */
   githubToken?: string;
+  /** Optional dependency fetcher. Defaults to GitHubFetcher. */
+  fetcher?: Fetcher;
   /** Emit ANSI color codes in diagnostics when available. */
   ansiColor?: boolean;
   /** Network environment (mainnet, testnet, devnet). Defaults to mainnet. */
@@ -99,16 +101,94 @@ type WasmModule = typeof import("./sui_move_wasm.js");
 
 let wasmReady: Promise<WasmModule> | undefined;
 
+function isNodeLikeEnvironment(): boolean {
+  return Boolean((globalThis as any).process?.versions?.node);
+}
+
+async function importNodeModule<T>(specifier: string): Promise<T> {
+  const dynamicImport = new Function(
+    "specifier",
+    "return import(specifier)"
+  ) as (specifier: string) => Promise<T>;
+  return dynamicImport(specifier);
+}
+
+function asFileUrl(input: unknown): URL | undefined {
+  try {
+    if (input instanceof URL) {
+      return input.protocol === "file:" ? input : undefined;
+    }
+    if (typeof input === "string") {
+      const url = new URL(input);
+      return url.protocol === "file:" ? url : undefined;
+    }
+    if (typeof Request !== "undefined" && input instanceof Request) {
+      const url = new URL(input.url);
+      return url.protocol === "file:" ? url : undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+async function fetchNodeFileUrl(fileUrl: URL): Promise<Response> {
+  const [{ readFile }, { fileURLToPath }] = await Promise.all([
+    importNodeModule<{ readFile(path: string): Promise<Uint8Array> }>(
+      "node:fs/promises"
+    ),
+    importNodeModule<{ fileURLToPath(url: string | URL): string }>("node:url"),
+  ]);
+  const bytes = await readFile(fileURLToPath(fileUrl));
+  const body = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength
+  ) as ArrayBuffer;
+  return new Response(body, {
+    headers: { "Content-Type": "application/wasm" },
+  });
+}
+
+async function withNodeFileFetch<T>(operation: () => Promise<T>): Promise<T> {
+  if (!isNodeLikeEnvironment()) {
+    return operation();
+  }
+
+  const previousFetch = (globalThis as any).fetch;
+  (globalThis as any).fetch = async (input: unknown, init?: unknown) => {
+    const fileUrl = asFileUrl(input);
+    if (fileUrl) {
+      return fetchNodeFileUrl(fileUrl);
+    }
+    if (typeof previousFetch !== "function") {
+      throw new TypeError("fetch is not available");
+    }
+    return previousFetch.call(globalThis, input, init);
+  };
+
+  try {
+    return await operation();
+  } finally {
+    if (previousFetch === undefined) {
+      delete (globalThis as any).fetch;
+    } else {
+      (globalThis as any).fetch = previousFetch;
+    }
+  }
+}
+
 async function loadWasm(
   customWasm?: string | URL | BufferSource
 ): Promise<WasmModule> {
   if (!wasmReady) {
     wasmReady = import("./sui_move_wasm.js").then(async (mod) => {
-      if (customWasm) {
-        await (mod.default as any)(customWasm);
-      } else {
-        await mod.default();
-      }
+      await withNodeFileFetch(async () => {
+        if (customWasm) {
+          await (mod.default as any)({ module_or_path: customWasm });
+        } else {
+          await mod.default();
+        }
+      });
       return mod;
     });
   }
@@ -282,7 +362,7 @@ export async function resolveDependencies(
   const resolved = await resolveMoveToml(
     moveToml,
     { ...input.files, "Move.toml": moveToml },
-    new GitHubFetcher(input.githubToken),
+    input.fetcher ?? new GitHubFetcher(input.githubToken),
     input.network,
     inferredRootGit
       ? {
@@ -308,6 +388,12 @@ export async function buildMovePackage(
   const environment = input.network || "mainnet";
 
   try {
+    const inferredRootGit =
+      input.rootGit ||
+      ((input.files as any).__rootGit as
+        | { git: string; rev: string; subdir?: string }
+        | undefined);
+
     // Filter input files to only include valid Move package files
     // This mimics the CLI behavior of only processing relevant files from the directory
     // and ignoring things like README.md, .gitignore, etc.
@@ -323,6 +409,7 @@ export async function buildMovePackage(
       }
     }
     input.files = filteredFiles;
+    input.rootGit = inferredRootGit;
 
     // ORIGINAL CLI SOURCE:
     // - external-crates/move/crates/move-package-alt/src/package/root_package.rs:249-267
@@ -411,7 +498,7 @@ export async function buildMovePackage(
 
       // Extract root package name and direct dependencies from Move.toml
       const moveToml = input.files["Move.toml"];
-      let _rootManifestDeps: string[] = [];
+      let rootManifestDeps: string[] = [];
       if (moveToml) {
         const parsed = parseToml(moveToml);
         if (parsed.package?.name) {
@@ -419,7 +506,7 @@ export async function buildMovePackage(
         }
         // Get direct dependencies from [dependencies] section
         if (parsed.dependencies) {
-          _rootManifestDeps = Object.keys(
+          rootManifestDeps = Object.keys(
             parsed.dependencies as Record<string, unknown>
           );
         }
@@ -454,7 +541,10 @@ export async function buildMovePackage(
           "0x0000000000000000000000000000000000000000000000000000000000000003", // SUI_SYSTEM_ADDRESS
           "0x000000000000000000000000000000000000000000000000000000000000000b", // BRIDGE_ADDRESS
         ];
-        if (systemAddresses.includes(dep.publishedIdForOutput)) {
+        if (
+          systemAddresses.includes(dep.publishedIdForOutput) &&
+          !rootManifestDeps.includes(dep.name)
+        ) {
           continue;
         }
 

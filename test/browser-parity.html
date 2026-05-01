@@ -1,0 +1,620 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sui Move Browser Parity</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        background: #f5f7f8;
+        color: #172026;
+      }
+
+      body {
+        margin: 0;
+      }
+
+      main {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      h1 {
+        margin: 0 0 18px;
+        font-size: 24px;
+        font-weight: 700;
+      }
+
+      h2 {
+        margin: 0 0 12px;
+        font-size: 15px;
+        font-weight: 700;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(320px, 380px) 1fr;
+        gap: 18px;
+        align-items: start;
+      }
+
+      section {
+        background: #ffffff;
+        border: 1px solid #d8e0e4;
+        border-radius: 8px;
+        padding: 16px;
+      }
+
+      label {
+        display: block;
+        margin: 12px 0 6px;
+        font-size: 12px;
+        font-weight: 700;
+        color: #4b5b64;
+      }
+
+      input,
+      select,
+      textarea {
+        box-sizing: border-box;
+        width: 100%;
+        border: 1px solid #c8d2d8;
+        border-radius: 6px;
+        padding: 9px 10px;
+        font: inherit;
+        font-size: 13px;
+        background: #ffffff;
+        color: #172026;
+      }
+
+      textarea {
+        min-height: 96px;
+        resize: vertical;
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          "Liberation Mono", monospace;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+
+      .segmented {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        border: 1px solid #c8d2d8;
+        border-radius: 6px;
+        overflow: hidden;
+      }
+
+      .segmented button {
+        border: 0;
+        border-right: 1px solid #c8d2d8;
+        border-radius: 0;
+        padding: 9px 8px;
+        background: #ffffff;
+        color: #26343b;
+      }
+
+      .segmented button:last-child {
+        border-right: 0;
+      }
+
+      .segmented button.active {
+        background: #0f766e;
+        color: #ffffff;
+      }
+
+      button {
+        border: 1px solid #0f766e;
+        border-radius: 6px;
+        padding: 10px 12px;
+        font: inherit;
+        font-weight: 700;
+        background: #0f766e;
+        color: #ffffff;
+        cursor: pointer;
+      }
+
+      button.secondary {
+        background: #ffffff;
+        color: #0f766e;
+      }
+
+      button:disabled {
+        cursor: wait;
+        opacity: 0.65;
+      }
+
+      .actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 16px;
+      }
+
+      .source-panel {
+        display: none;
+      }
+
+      .source-panel.active {
+        display: block;
+      }
+
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(120px, 1fr));
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+
+      .metric {
+        border: 1px solid #d8e0e4;
+        border-radius: 8px;
+        padding: 11px;
+        background: #fbfcfc;
+      }
+
+      .metric span {
+        display: block;
+        font-size: 11px;
+        color: #62727a;
+      }
+
+      .metric strong {
+        display: block;
+        margin-top: 4px;
+        font-size: 14px;
+        word-break: break-word;
+      }
+
+      .status {
+        margin-bottom: 14px;
+        border-radius: 8px;
+        padding: 11px 12px;
+        background: #eef6f5;
+        color: #0f4f4a;
+        font-weight: 700;
+      }
+
+      .status.fail {
+        background: #fff1f0;
+        color: #a32920;
+      }
+
+      .status.pass {
+        background: #ecfdf3;
+        color: #146c43;
+      }
+
+      pre {
+        margin: 0;
+        min-height: 220px;
+        max-height: 520px;
+        overflow: auto;
+        border: 1px solid #d8e0e4;
+        border-radius: 8px;
+        padding: 12px;
+        background: #101820;
+        color: #e8f1f2;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      @media (max-width: 860px) {
+        main {
+          padding: 16px;
+        }
+
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        .summary {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Sui Move Browser Parity</h1>
+      <div class="layout">
+        <section>
+          <h2>Input</h2>
+
+          <label>WASM Variant</label>
+          <select id="mode">
+            <option value="lite">lite</option>
+            <option value="full">full</option>
+          </select>
+
+          <label>Network</label>
+          <select id="network">
+            <option value="mainnet">mainnet</option>
+            <option value="testnet">testnet</option>
+            <option value="devnet">devnet</option>
+          </select>
+
+          <label>Source</label>
+          <div class="segmented" id="source-tabs">
+            <button type="button" data-source="sui-example" class="active">
+              Sui
+            </button>
+            <button type="button" data-source="local">Local</button>
+            <button type="button" data-source="git">Git</button>
+          </div>
+
+          <div id="source-sui-example" class="source-panel active">
+            <label>Sui Example</label>
+            <select id="sui-example">
+              <option value="examples/move/token">examples/move/token</option>
+            </select>
+          </div>
+
+          <div id="source-local" class="source-panel">
+            <label>Local Move Package Path</label>
+            <input
+              id="local-path"
+              placeholder="/absolute/path/to/package"
+              autocomplete="off"
+            />
+          </div>
+
+          <div id="source-git" class="source-panel">
+            <label>Git URL</label>
+            <input
+              id="git-url"
+              value="https://github.com/MystenLabs/sui.git"
+              autocomplete="off"
+            />
+            <div class="row">
+              <div>
+                <label>Revision</label>
+                <input id="git-rev" autocomplete="off" />
+              </div>
+              <div>
+                <label>Subdir</label>
+                <input
+                  id="git-subdir"
+                  value="examples/move/token"
+                  autocomplete="off"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button id="run" type="button">Build & Compare</button>
+            <button id="clear" type="button" class="secondary">Clear</button>
+          </div>
+        </section>
+
+        <section>
+          <h2>Result</h2>
+          <div id="status" class="status">Idle</div>
+          <div class="summary">
+            <div class="metric">
+              <span>WASM</span>
+              <strong id="wasm-summary">-</strong>
+            </div>
+            <div class="metric">
+              <span>CLI</span>
+              <strong id="cli-summary">-</strong>
+            </div>
+            <div class="metric">
+              <span>Digest</span>
+              <strong id="digest-summary">-</strong>
+            </div>
+            <div class="metric">
+              <span>Compare</span>
+              <strong id="compare-summary">-</strong>
+            </div>
+          </div>
+          <pre id="log"></pre>
+        </section>
+      </div>
+    </main>
+
+    <script type="module">
+      const state = {
+        source: "sui-example",
+        config: null,
+      };
+
+      const els = {
+        mode: document.getElementById("mode"),
+        network: document.getElementById("network"),
+        sourceTabs: document.getElementById("source-tabs"),
+        suiExample: document.getElementById("sui-example"),
+        localPath: document.getElementById("local-path"),
+        gitUrl: document.getElementById("git-url"),
+        gitRev: document.getElementById("git-rev"),
+        gitSubdir: document.getElementById("git-subdir"),
+        run: document.getElementById("run"),
+        clear: document.getElementById("clear"),
+        status: document.getElementById("status"),
+        log: document.getElementById("log"),
+        wasmSummary: document.getElementById("wasm-summary"),
+        cliSummary: document.getElementById("cli-summary"),
+        digestSummary: document.getElementById("digest-summary"),
+        compareSummary: document.getElementById("compare-summary"),
+      };
+
+      function setStatus(text, kind = "") {
+        els.status.textContent = text;
+        els.status.className = `status ${kind}`.trim();
+        document.body.dataset.status = kind || "idle";
+      }
+
+      function log(line, data) {
+        const suffix =
+          data === undefined ? "" : `\n${JSON.stringify(data, null, 2)}`;
+        els.log.textContent += `${line}${suffix}\n`;
+        els.log.scrollTop = els.log.scrollHeight;
+      }
+
+      function resetResult() {
+        setStatus("Idle");
+        els.log.textContent = "";
+        els.wasmSummary.textContent = "-";
+        els.cliSummary.textContent = "-";
+        els.digestSummary.textContent = "-";
+        els.compareSummary.textContent = "-";
+      }
+
+      async function postJson(url, body) {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const json = await response.json();
+        if (!response.ok || json.error) {
+          throw new Error(json.error || response.statusText);
+        }
+        return json;
+      }
+
+      function selectSource(source) {
+        state.source = source;
+        for (const button of els.sourceTabs.querySelectorAll("button")) {
+          button.classList.toggle("active", button.dataset.source === source);
+        }
+        for (const panel of document.querySelectorAll(".source-panel")) {
+          panel.classList.toggle("active", panel.id === `source-${source}`);
+        }
+      }
+
+      function currentDescriptor() {
+        if (state.source === "sui-example") {
+          return {
+            source: "sui-example",
+            subdir: els.suiExample.value,
+          };
+        }
+
+        if (state.source === "local") {
+          return {
+            source: "local",
+            path: els.localPath.value.trim(),
+          };
+        }
+
+        return {
+          source: "git",
+          gitUrl: els.gitUrl.value.trim(),
+          rev: els.gitRev.value.trim() || "HEAD",
+          subdir: els.gitSubdir.value.trim(),
+        };
+      }
+
+      function normalizeDigest(digest) {
+        if (Array.isArray(digest)) {
+          return digest
+            .map((byte) => Number(byte).toString(16).padStart(2, "0"))
+            .join("");
+        }
+        return String(digest).replace(/^0x/, "").toLowerCase();
+      }
+
+      function normalizeOutput(output) {
+        return {
+          modules: Array.isArray(output.modules) ? output.modules : [],
+          dependencies: Array.isArray(output.dependencies)
+            ? output.dependencies.map((dep) => String(dep).toLowerCase())
+            : [],
+          digest: normalizeDigest(output.digest),
+        };
+      }
+
+      function compareOutputs(cliOutput, wasmOutput) {
+        const differences = [];
+        if (cliOutput.modules.length !== wasmOutput.modules.length) {
+          differences.push(
+            `module count: CLI=${cliOutput.modules.length}, WASM=${wasmOutput.modules.length}`
+          );
+        } else {
+          for (let i = 0; i < cliOutput.modules.length; i += 1) {
+            if (cliOutput.modules[i] !== wasmOutput.modules[i]) {
+              differences.push(`modules[${i}]`);
+              break;
+            }
+          }
+        }
+
+        if (cliOutput.dependencies.length !== wasmOutput.dependencies.length) {
+          differences.push(
+            `dependency count: CLI=${cliOutput.dependencies.length}, WASM=${wasmOutput.dependencies.length}`
+          );
+        } else {
+          for (let i = 0; i < cliOutput.dependencies.length; i += 1) {
+            if (cliOutput.dependencies[i] !== wasmOutput.dependencies[i]) {
+              differences.push(`dependencies[${i}]`);
+              break;
+            }
+          }
+        }
+
+        if (cliOutput.digest !== wasmOutput.digest) {
+          differences.push(
+            `digest: CLI=${cliOutput.digest}, WASM=${wasmOutput.digest}`
+          );
+        }
+
+        return differences;
+      }
+
+      function createServerGitFetcher() {
+        return {
+          async fetch(gitUrl, rev, subdir = "") {
+            const response = await postJson("/api/git-package", {
+              gitUrl,
+              rev,
+              subdir,
+            });
+            return response.files;
+          },
+          async fetchFile(gitUrl, rev, filePath) {
+            const response = await postJson("/api/git-file", {
+              gitUrl,
+              rev,
+              filePath,
+            });
+            return response.content;
+          },
+          getResolvedSha(gitUrl, rev) {
+            if (
+              state.config &&
+              gitUrl.toLowerCase().includes("github.com/mystenlabs/sui") &&
+              (!rev ||
+                rev === state.config.suiCommit ||
+                state.config.suiCommit.startsWith(rev))
+            ) {
+              return state.config.suiCommit;
+            }
+            return undefined;
+          },
+        };
+      }
+
+      async function loadConfig() {
+        const response = await fetch("/api/config");
+        state.config = await response.json();
+        els.gitRev.value = state.config.suiCommit;
+        if (state.config.examples?.length) {
+          els.suiExample.replaceChildren(
+            ...state.config.examples.map((example) => {
+              const option = document.createElement("option");
+              option.value = example.subdir;
+              option.textContent = `${example.subdir} (${example.moveFiles})`;
+              return option;
+            })
+          );
+          const token = state.config.examples.find(
+            (example) => example.subdir === "examples/move/token"
+          );
+          if (token) {
+            els.suiExample.value = token.subdir;
+          }
+        }
+      }
+
+      async function runParity() {
+        resetResult();
+        els.run.disabled = true;
+        setStatus("Running");
+
+        try {
+          const descriptor = currentDescriptor();
+          const mode = els.mode.value;
+          const network = els.network.value;
+          log(`Loading package: ${JSON.stringify(descriptor)}`);
+          const loaded = await postJson("/api/load-package", descriptor);
+          log(`Loaded ${loaded.fileCount} files from ${loaded.packageDir}`);
+
+          log(`Importing dist/${mode}/index.js`);
+          const mod = await import(`/dist/${mode}/index.js`);
+          await mod.initMoveCompiler();
+          const version = await mod.getSuiVersion();
+          log(`WASM compiler version: ${version}`);
+
+          log("Building in browser");
+          const wasmResult = await mod.buildMovePackage({
+            files: loaded.files,
+            rootGit: loaded.rootGit,
+            network,
+            fetcher: createServerGitFetcher(),
+            silenceWarnings: true,
+            onProgress(event) {
+              if (event.type === "resolve_complete") {
+                log(`Resolved dependencies: ${event.count}`);
+              } else if (event.type === "compile_start") {
+                log("Compiling");
+              }
+            },
+          });
+
+          if ("error" in wasmResult) {
+            throw new Error(`WASM build failed: ${wasmResult.error}`);
+          }
+
+          log("Building with local Sui CLI");
+          const cliResult = await postJson("/api/cli-build", descriptor);
+          log(`Sui CLI version: ${cliResult.version}`);
+
+          const cliOutput = normalizeOutput(cliResult.output);
+          const wasmOutput = normalizeOutput(wasmResult);
+          const differences = compareOutputs(cliOutput, wasmOutput);
+
+          els.wasmSummary.textContent = `${wasmOutput.modules.length} modules, ${wasmOutput.dependencies.length} deps`;
+          els.cliSummary.textContent = `${cliOutput.modules.length} modules, ${cliOutput.dependencies.length} deps`;
+          els.digestSummary.textContent = wasmOutput.digest;
+          els.compareSummary.textContent = differences.length
+            ? `${differences.length} mismatch`
+            : "match";
+
+          if (differences.length) {
+            log("Mismatch", differences);
+            setStatus("Mismatch", "fail");
+          } else {
+            log("Bytecode, dependencies, and digest match.");
+            setStatus("Pass", "pass");
+          }
+        } catch (error) {
+          log(error && error.stack ? error.stack : String(error));
+          setStatus("Failed", "fail");
+        } finally {
+          els.run.disabled = false;
+        }
+      }
+
+      els.sourceTabs.addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-source]");
+        if (button) {
+          selectSource(button.dataset.source);
+        }
+      });
+      els.run.addEventListener("click", () => void runParity());
+      els.clear.addEventListener("click", resetResult);
+
+      await loadConfig();
+      if (new URL(window.location.href).searchParams.get("autorun") === "1") {
+        void runParity();
+      }
+    </script>
+  </body>
+</html>

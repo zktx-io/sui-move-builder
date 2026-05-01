@@ -1,121 +1,102 @@
-import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import {
+  dirExists,
+  ensureSuiSourceCheckout,
+  getSuiBuildConfig,
+  prepareSuiWorktree,
+  resolveSuiVersionConfig,
+  run,
+  runCapture,
+} from "./sui-workspace.mjs";
 
 const require = createRequire(import.meta.url);
-const suiVersion = require("../sui-version.json");
+const baseSuiVersion = require("../sui-version.json");
 const buildConfig = require("./build-config.json");
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   ".."
 );
-const buildWorkspaceDir = path.join(repoRoot, ".sui-build");
-const suiSourceDir = process.env.SUI_SOURCE_DIR
-  ? path.resolve(process.env.SUI_SOURCE_DIR)
-  : path.join(buildWorkspaceDir, "source");
-const suiWorkDir = process.env.SUI_WORK_DIR
-  ? path.resolve(process.env.SUI_WORK_DIR)
-  : path.join(buildWorkspaceDir, "work");
+const { suiVersion, restArgs } = resolveSuiVersionConfig(
+  baseSuiVersion,
+  process.argv.slice(2)
+);
+const suiBuildConfig = getSuiBuildConfig(repoRoot, suiVersion);
+const suiWorkDir = suiBuildConfig.workDir;
 const localSourceDir = path.join(repoRoot, "sui-move-wasm");
-const SUI_COMMIT = suiVersion.commit; // Loaded from sui-version.json
-const SUI_VERSION_TAG = `v${suiVersion.version}`;
+const SUI_VERSION_TAG = suiBuildConfig.templateVersion;
 
-function run(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: "inherit", ...options });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${command} exited with code ${code}`));
-    });
-  });
+async function readCargoLockPackageVersion(lockPath, packageName) {
+  const content = await fs.readFile(lockPath, "utf8");
+  const sections = content.split("[[package]]");
+
+  for (const section of sections) {
+    const nameMatch = section.match(/^\s*name\s*=\s*"([^"]+)"/m);
+    if (nameMatch?.[1] !== packageName) continue;
+
+    const versionMatch = section.match(/^\s*version\s*=\s*"([^"]+)"/m);
+    if (versionMatch?.[1]) {
+      return versionMatch[1];
+    }
+  }
+
+  throw new Error(`Could not find ${packageName} in ${lockPath}`);
 }
 
-async function dirExists(dir) {
+async function getInstalledWasmBindgenVersion(wasmBindgenCmd) {
+  if (!(await dirExists(wasmBindgenCmd))) {
+    return undefined;
+  }
+
   try {
-    await fs.access(dir);
-    return true;
+    const { stdout } = await runCapture(wasmBindgenCmd, ["--version"]);
+    const match = stdout.match(/wasm-bindgen\s+([^\s]+)/);
+    return match?.[1];
   } catch {
-    return false;
+    return undefined;
   }
 }
 
-async function ensureSuiSourceCheckout() {
-  await fs.mkdir(path.dirname(suiSourceDir), { recursive: true });
+async function ensureWasmBindgenCli(localBin, requiredVersion) {
+  const wasmBindgenCmd = path.join(localBin, "bin/wasm-bindgen");
+  const installedVersion = await getInstalledWasmBindgenVersion(wasmBindgenCmd);
 
-  if (!(await dirExists(suiSourceDir))) {
-    console.log(`Cloning pristine Sui source at ${SUI_COMMIT}...`);
-    await run("git", ["init", suiSourceDir]);
-    await run(
-      "git",
-      ["remote", "add", "origin", "https://github.com/MystenLabs/sui.git"],
-      { cwd: suiSourceDir }
-    );
-  } else {
-    try {
-      await run(
-        "git",
-        [
-          "remote",
-          "set-url",
-          "origin",
-          "https://github.com/MystenLabs/sui.git",
-        ],
-        {
-          cwd: suiSourceDir,
-          stdio: "ignore",
-        }
-      );
-    } catch {
-      await run(
-        "git",
-        ["remote", "add", "origin", "https://github.com/MystenLabs/sui.git"],
-        { cwd: suiSourceDir }
-      );
-    }
+  if (installedVersion === requiredVersion) {
+    return wasmBindgenCmd;
   }
 
-  console.log(`Fetching pristine Sui source ${SUI_COMMIT}...`);
-  await run("git", ["fetch", "--depth", "1", "origin", SUI_COMMIT], {
-    cwd: suiSourceDir,
-  });
-  await run("git", ["reset", "--hard", SUI_COMMIT], { cwd: suiSourceDir });
-}
+  console.log(
+    installedVersion
+      ? `Installing wasm-bindgen-cli v${requiredVersion} (replacing v${installedVersion})...`
+      : `Installing wasm-bindgen-cli v${requiredVersion}...`
+  );
+  await run(
+    "cargo",
+    [
+      "install",
+      "wasm-bindgen-cli",
+      "--version",
+      requiredVersion,
+      "--root",
+      localBin,
+      "--force",
+      "--locked",
+    ],
+    { env: process.env }
+  );
 
-async function prepareSuiWorktree() {
-  console.log(`Preparing patched Sui worktree at ${suiWorkDir}...`);
-  await fs.mkdir(path.dirname(suiWorkDir), { recursive: true });
-
-  if (await dirExists(suiWorkDir)) {
-    try {
-      await run("git", ["worktree", "remove", "--force", suiWorkDir], {
-        cwd: suiSourceDir,
-        stdio: "ignore",
-      });
-    } catch {
-      await fs.rm(suiWorkDir, { recursive: true, force: true });
-    }
-  }
-
-  await run("git", ["worktree", "prune"], {
-    cwd: suiSourceDir,
-    stdio: "ignore",
-  });
-  await run("git", ["worktree", "add", "--detach", suiWorkDir, SUI_COMMIT], {
-    cwd: suiSourceDir,
-  });
-
-  console.log("Updating Sui worktree submodules...");
-  await run("git", ["submodule", "update", "--init", "--recursive"], {
-    cwd: suiWorkDir,
-  });
+  return wasmBindgenCmd;
 }
 
 async function main() {
   try {
+    if (restArgs.length > 0) {
+      throw new Error(`Unknown build arguments: ${restArgs.join(" ")}`);
+    }
+
     const distDir = path.join(repoRoot, "dist");
 
     // Load templates for stubs (Versioned)
@@ -125,6 +106,12 @@ async function main() {
       "templates",
       SUI_VERSION_TAG
     );
+    if (!(await dirExists(templatesDir))) {
+      throw new Error(
+        `Missing WASM compatibility templates: ${templatesDir}. ` +
+          `Port scripts/templates for ${suiBuildConfig.displayRef} or set templateVersion in sui-version.json intentionally.`
+      );
+    }
 
     // Map of package name to template filename (without .rs)
     const STUB_TEMPLATES = {
@@ -159,8 +146,8 @@ async function main() {
     await fs.mkdir(distDir, { recursive: true });
 
     // 1. Keep a pristine Sui checkout, then create a disposable patched worktree.
-    await ensureSuiSourceCheckout();
-    await prepareSuiWorktree();
+    await ensureSuiSourceCheckout(suiBuildConfig);
+    await prepareSuiWorktree(suiBuildConfig);
 
     // 2. Prepare our crate within Sui workspace
     const crateDir = path.join(suiWorkDir, "crates", "sui-move-wasm");
@@ -168,7 +155,7 @@ async function main() {
     await fs.rm(crateDir, { recursive: true, force: true });
     await fs.mkdir(crateDir, { recursive: true });
 
-    // Copy our source files (excluding vendor if it exists, though we plan to delete it)
+    // Copy only tracked crate sources; generated/vendor build state is recreated separately.
     const entries = await fs.readdir(localSourceDir);
     for (const entry of entries) {
       if (entry === "vendor" || entry === "target" || entry === "pkg") continue;
@@ -222,11 +209,6 @@ async function main() {
       if (!(await dirExists(workspaceToml))) continue;
 
       console.log(`Patching workspace at ${workspaceToml}...`);
-      // Remove Cargo.lock to force re-resolution with our patches
-      const lockFile = path.join(path.dirname(workspaceToml), "Cargo.lock");
-      if (await dirExists(lockFile)) {
-        await fs.rm(lockFile);
-      }
       let workspaceContent = await fs.readFile(workspaceToml, "utf8");
 
       if (workspaceToml === path.join(suiWorkDir, "Cargo.toml")) {
@@ -1509,26 +1491,14 @@ panic = "abort"
       // 5.1 Link with wasm-bindgen
       console.log(`Linking '${profile.name}' with wasm-bindgen...`);
       const localBin = path.join(repoRoot, "local-bin");
-      const wasmBindgenCmd = path.join(localBin, "bin/wasm-bindgen");
-
-      // Install if missing (only need to check once really, but idempotent)
-      if (!(await dirExists(wasmBindgenCmd))) {
-        console.log("Installing wasm-bindgen-cli v0.2.108...");
-        await run(
-          "cargo",
-          [
-            "install",
-            "wasm-bindgen-cli",
-            "--version",
-            "0.2.108",
-            "--root",
-            localBin,
-            "--force",
-            "--locked",
-          ],
-          { env: process.env }
-        );
-      }
+      const wasmBindgenVersion = await readCargoLockPackageVersion(
+        path.join(suiWorkDir, "Cargo.lock"),
+        "wasm-bindgen"
+      );
+      const wasmBindgenCmd = await ensureWasmBindgenCli(
+        localBin,
+        wasmBindgenVersion
+      );
 
       const wasmArtifact = path.join(
         suiWorkDir,
@@ -1553,13 +1523,18 @@ panic = "abort"
       const jsPath = path.join(profile.outDir, "sui_move_wasm.js");
       let jsContent = await fs.readFile(jsPath, "utf-8");
 
-      // Fix 1: Remove imports from "env" and provide polyfills
-      if (jsContent.includes('from "env"')) {
+      // Fix 1: Remove imports from "env" and provide polyfills.
+      // wasm-bindgen may choose different binding names and quote styles.
+      const envImportMatch = jsContent.match(
+        /import\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from\s+['"]env['"];?/
+      );
+      if (envImportMatch) {
+        const envBindingName = envImportMatch[1];
         jsContent = jsContent.replace(
-          /import \* as import1 from "env"/g,
-          `const import1 = {
+          envImportMatch[0],
+          `const ${envBindingName} = {
       now: () => Date.now() / 1000,
-  }; // import * as import1 from "env"`
+  }; // patched wasm-bindgen env import`
         );
         await fs.writeFile(jsPath, jsContent);
         console.log(

@@ -20,9 +20,9 @@
     "url": "https://github.com/zktx-io/sui-move-builder/issues"
   },
   "type": "module",
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/full/index.cjs",
+  "module": "./dist/full/index.js",
+  "types": "./dist/full/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/full/index.d.ts",
@@ -43,7 +43,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist .sui-build vendor scripts/stubs local-bin",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -51,10 +51,16 @@
     "build:wasm": "node scripts/build-wasm.mjs",
     "build:js": "tsup --out-dir dist/full && tsup --out-dir dist/lite",
     "build": "npm run build:wasm && npm run build:js",
-    "serve:test": "python3 -m http.server 8000 --directory .",
-    "test:integration": "node test/integration/fidelity_test.mjs full",
+    "dev:browser-parity": "node test/browser-parity-server.mjs",
+    "test:runtime": "node test/integration/runtime_smoke.mjs",
+    "test:browser:lite": "node test/integration/browser_smoke.mjs lite",
+    "test:browser:full": "node test/integration/browser_smoke.mjs full",
+    "test:browser": "npm run test:browser:lite && npm run test:browser:full",
+    "test:full": "node test/integration/fidelity_test.mjs full",
     "test:lite": "node test/integration/fidelity_test.mjs lite",
-    "test": "npm run test:integration",
+    "test:parity": "npm run test:full && npm run test:lite",
+    "test:integration": "npm run test:parity",
+    "test": "npm run test:runtime && npm run test:integration",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
