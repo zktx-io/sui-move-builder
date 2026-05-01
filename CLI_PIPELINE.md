@@ -2,6 +2,17 @@
 
 This document maps the Sui CLI build steps to the JS + WASM implementation in this project. It is a parity guide, not a guarantee that every Sui CLI path is implemented; known differences and best-effort areas are called out explicitly.
 
+## Build Workspace Boundaries
+
+The development WASM build keeps four areas separate:
+
+- `.sui-build/source/`: pristine upstream Sui checkout resolved from `sui-version.json`.
+- `.sui-build/work/`: disposable patched worktree used for the actual Cargo build.
+- `.sui-build/generated/`: generated compatibility state, including stubs, vendored sources, and local build tools.
+- `dist/`: npm-facing generated lite/full artifacts.
+
+`npm run prepare:wasm` is the step that may fetch/update source, recreate the worktree, apply overlays/templates, and write `.sui-build/patch-state.json`. `npm run build:wasm:prepared` validates that state and builds `dist/lite` and/or `dist/full`; it should not be used as a porting step for a new upstream version. `npm run build:wasm` remains the compatibility entrypoint that runs both phases.
+
 ## 1) Input / Source Loading
 
 - **CLI**: Reads `Move.toml`, optional `Move.lock`, and source files from disk.

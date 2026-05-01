@@ -48,7 +48,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
-    "build:wasm": "node scripts/build-wasm.mjs",
+    "prepare:wasm": "node scripts/prepare-wasm.mjs",
+    "build:wasm:prepared": "node scripts/build-prepared-wasm.mjs --profile all",
+    "build:wasm": "npm run prepare:wasm && npm run build:wasm:prepared",
     "build:js": "tsup --out-dir dist/full && tsup --out-dir dist/lite",
     "build": "npm run build:wasm && npm run build:js",
     "dev:browser-parity": "node test/browser-parity-server.mjs",
@@ -61,6 +63,7 @@
     "test:parity": "npm run test:full && npm run test:lite",
     "test:integration": "npm run test:parity",
     "test": "npm run test:runtime && npm run test:integration",
+    "release:check": "npm run typecheck && npm run lint && npm run format:check && npm run test",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {

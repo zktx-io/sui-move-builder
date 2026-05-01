@@ -244,17 +244,35 @@ if ("error" in result) {
 }
 ```
 
-## Development build layout
+## Development WASM Build Flow
 
-`npm run build:wasm` keeps the upstream Sui checkout separate from the patched build workspace:
+The WASM build is split into a preparation step and a prepared build step:
+
+```bash
+npm run prepare:wasm
+npm run build:wasm:prepared -- --profile lite
+npm run build:wasm:prepared -- --profile full
+npm run build:wasm:prepared # builds both variants
+npm run build:wasm          # compatibility script: prepare + prepared build
+npm run build               # WASM build + JS package build
+npm run release:check       # typecheck + lint + format check + tests
+```
+
+`prepare:wasm` may download or update the pinned Sui source, create a disposable patched worktree, generate compatibility stubs/vendor patches, and install the matching local `wasm-bindgen` tool. `build:wasm:prepared` expects that prepared state to already exist and uses it to build `dist/lite` and/or `dist/full`. It is a best-effort offline build; set `SUI_WASM_STRICT_OFFLINE=1` when you want Cargo to fail instead of reaching the network.
+
+The build keeps the upstream Sui checkout separate from generated and patched state:
 
 - `.sui-build/source/`: pristine Sui checkout at the commit in `sui-version.json`
 - `.sui-build/work/`: disposable git worktree where `sui-move-wasm` is overlaid and Cargo/WASM compatibility patches are applied
+- `.sui-build/generated/stubs/`: generated WASM compatibility stub crates
+- `.sui-build/generated/vendor/`: vendored dependency sources that need local WASM patching
+- `.sui-build/generated/local-bin/`: local build tools such as the pinned `wasm-bindgen`
+- `.sui-build/patch-state.json`: prepared workspace metadata checked by `build:wasm:prepared`
 - `dist/full` and `dist/lite`: generated npm artifacts
 
 Only edit tracked project sources such as `src/`, `sui-move-wasm/`, and `scripts/templates/`. The `.sui-build/` directory is ignored build/cache state. Set `SUI_SOURCE_DIR` or `SUI_WORK_DIR` only when you intentionally want those directories somewhere else.
 
-Each Sui version needs a matching `scripts/templates/v<version>/` WASM compatibility template set. `npm run build:wasm` fails before modifying the worktree if the selected version has not been ported yet.
+Each Sui version needs a matching `scripts/templates/v<version>/` WASM compatibility template set with a `manifest.json` checked by `prepare:wasm`. `npm run build:wasm` fails before modifying the worktree if the selected version has not been ported yet.
 
 The default patched baseline is the version in `sui-version.json`. For an intentional port to another Sui release, override it explicitly:
 
@@ -263,6 +281,8 @@ SUI_VERSION=1.x.y SUI_TAG=mainnet-v1.x.y npm run build:wasm
 # or
 node scripts/build-wasm.mjs --sui-version 1.x.y --sui-tag mainnet-v1.x.y
 ```
+
+For repeated version updates, use the process and prompt in [AGENTS.md](./AGENTS.md). The intended flow is to generate and test the new patch/template set during `prepare:wasm`, then reuse the prepared worktree for lite/full builds and release checks.
 
 ## Package Management Logic
 
