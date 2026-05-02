@@ -81,7 +81,7 @@ export interface BuildFailure {
 }
 
 import {
-  migrateLegacyLockToPublishedToml,
+  migrateV3PublicationRecordsToPublishedToml,
   stripEnvSectionsFromV3Lockfile,
 } from "./lockfileMigration.js";
 
@@ -356,8 +356,6 @@ export async function resolveDependencies(
     {
       fetchPlan: mod.lockfile_v4_fetch_plan,
       resolvePackageGroups: mod.lockfile_v4_resolve_package_groups,
-      manifestPackagePlan: mod.manifest_package_plan,
-      manifestResolvePackageGroups: mod.manifest_resolve_package_groups,
       manifestGraphResolvePackageGroups:
         mod.manifest_graph_resolve_package_groups,
     }
@@ -402,17 +400,17 @@ export async function buildMovePackage(
 
     // ORIGINAL CLI SOURCE:
     // - external-crates/move/crates/move-package-alt/src/package/root_package.rs:249-267
-    //   save_lockfile_to_disk() migrates legacy lockfile publication records to Published.toml
+    //   save_lockfile_to_disk() migrates V3 publication records to Published.toml
     // - external-crates/move/crates/move-package-alt/src/compatibility/legacy_lockfile.rs
-    //   load_legacy_lockfile() extracts publish info from V3 [env] sections
+    //   load_legacy_lockfile() is the upstream V3 publication parser.
     //
-    // Legacy V3 publication records are applied before resolve/build.
+    // V3 publication records are applied before resolve/build.
     let migratedPublishedToml: string | undefined;
-    const legacyLock = input.files["Move.lock"];
-    if (legacyLock) {
+    const inputLockfile = input.files["Move.lock"];
+    if (inputLockfile) {
       const chainId = CHAIN_IDS[environment] || environment;
-      const migrationResult = migrateLegacyLockToPublishedToml(
-        legacyLock,
+      const migrationResult = migrateV3PublicationRecordsToPublishedToml(
+        inputLockfile,
         environment,
         chainId
       );
@@ -422,8 +420,8 @@ export async function buildMovePackage(
           input.files["Published.toml"] = migratedPublishedToml;
         }
 
-        // Strip legacy [env] sections before V4 lockfile generation.
-        const strippedLock = stripEnvSectionsFromV3Lockfile(legacyLock);
+        // Remove V3 [env] publication sections before V4 lockfile generation.
+        const strippedLock = stripEnvSectionsFromV3Lockfile(inputLockfile);
         if (strippedLock) {
           input.files["Move.lock"] = strippedLock;
         }
@@ -532,15 +530,16 @@ export async function buildMovePackage(
     const buildResult = parseCompileResult(output, moveLock, environment);
 
     if (!("error" in buildResult)) {
-      // Attempt migration if Legacy Lockfile exists
-      const legacyLock = input.files["Move.lock"];
-      if (legacyLock) {
+      // Attempt V3 publication migration when Move.lock contains supported records.
+      const inputLockfile = input.files["Move.lock"];
+      if (inputLockfile) {
         const chainId = CHAIN_IDS[environment] || environment;
-        const migratedPublishedToml = migrateLegacyLockToPublishedToml(
-          legacyLock,
-          environment,
-          chainId
-        );
+        const migratedPublishedToml =
+          migrateV3PublicationRecordsToPublishedToml(
+            inputLockfile,
+            environment,
+            chainId
+          );
         if (migratedPublishedToml) {
           buildResult.publishedToml = migratedPublishedToml;
         }
@@ -581,7 +580,7 @@ export async function testMovePackage(
             resolved.dependencies,
             true
           )
-        : (mod as any).test(resolved.files, resolved.dependencies); // Fallback if test_with_color missing
+        : (mod as any).test(resolved.files, resolved.dependencies); // Compatibility path for wasm modules without test_with_color.
 
     // Check if raw result matches expected shape
     if (typeof raw.passed === "boolean" && typeof raw.output === "string") {

@@ -6,10 +6,10 @@ Build Move packages in web or Node.js with a WASM compiler path that tracks the 
 
 ## Features
 
-- **Sui CLI-oriented build flow**: Resolves dependencies in JavaScript and compiles through the Move compiler compiled to WASM.
+- **Sui CLI-oriented build flow**: Uses JavaScript for host fetching/snapshots and Rust/WASM for supported package graph, lockfile, compiler, and output semantics.
 - **Parity harness**: Compares local Sui CLI output with full and lite WASM build outputs for selected packages.
 - **Address resolution**: Tracks `original_id` for compilation and `published_at` / latest IDs for output metadata where available.
-- **Lockfile handling**: Reads V4 pinned lockfiles, handles older lockfile layouts on a best-effort basis, and migrates legacy publish data when possible.
+- **Lockfile handling**: Reads V4 pinned lockfiles, falls back from older lockfile graph formats to manifest resolution, and migrates supported V3 publish data when possible.
 - **Move.lock V4 output**: Generates V4 lockfile content with deterministic pinned sections and `manifest_digest` values.
 - **Published.toml support**: Reads deployment records per environment when present.
 - **Per-package editions**: Preserves package editions such as legacy, 2024.alpha, and 2024.beta.
@@ -17,7 +17,7 @@ Build Move packages in web or Node.js with a WASM compiler path that tracks the 
 - **Diamond dependency/linkage handling**: Keeps same-name package variants separate when the dependency graph requires it.
 - **Browser and Node.js targets**: Provides WASM-based compilation for both environments, with browser smoke tests available.
 - **GitHub integration**: Fetches Move package sources from GitHub repositories.
-- **GitHub token support**: Optional token for GitHub API requests; raw file fetches stay browser/CORS-friendly.
+- **GitHub token support**: Optional token for GitHub API requests; raw file fetch is still available for browser use.
 
 For detailed CLI behavior notes, see [CLI_PIPELINE.md](./CLI_PIPELINE.md).
 
@@ -99,9 +99,9 @@ if ("error" in result) {
   console.log("Move.lock:", result.moveLock); // string: generated V4 lockfile content
   console.log("Environment:", result.environment); // string: e.g., "mainnet"
 
-  // Migration output (V3 → V4)
+  // Migration output from supported V3 publication records
   if (result.publishedToml) {
-    console.log("Published.toml:", result.publishedToml); // string: Migrated from legacy Move.lock
+    console.log("Published.toml:", result.publishedToml); // string: Migrated from V3 Move.lock publication records
   }
 
   // Warnings (if silenceWarnings: false)
@@ -170,15 +170,15 @@ if ("error" in result) {
 
 ### Build Output Reference
 
-| Field           | Type       | Description                                     |
-| --------------- | ---------- | ----------------------------------------------- |
-| `modules`       | `string[]` | Base64-encoded compiled bytecode modules        |
-| `dependencies`  | `string[]` | Hex-encoded package IDs for linking             |
-| `digest`        | `number[]` | Package digest bytes (32 bytes)                 |
-| `moveLock`      | `string`   | Generated Move.lock V4 content                  |
-| `environment`   | `string`   | Build environment (e.g., "mainnet", "testnet")  |
-| `publishedToml` | `string?`  | Migrated Published.toml (if V3→V4 migration)    |
-| `warnings`      | `string?`  | Compiler warnings (if `silenceWarnings: false`) |
+| Field           | Type       | Description                                       |
+| --------------- | ---------- | ------------------------------------------------- |
+| `modules`       | `string[]` | Base64-encoded compiled bytecode modules          |
+| `dependencies`  | `string[]` | Hex-encoded package IDs for linking               |
+| `digest`        | `number[]` | Package digest bytes (32 bytes)                   |
+| `moveLock`      | `string`   | Generated Move.lock V4 content                    |
+| `environment`   | `string`   | Build environment (e.g., "mainnet", "testnet")    |
+| `publishedToml` | `string?`  | Migrated Published.toml from supported V3 records |
+| `warnings`      | `string?`  | Compiler warnings (if `silenceWarnings: false`)   |
 
 ## Fetching packages from GitHub
 
@@ -210,9 +210,9 @@ const result = await buildMovePackage({
 
 Dependencies are resolved from the package inputs and, where possible, follow the relevant Sui CLI build behavior:
 
-1. **Checks `Move.lock` first**: V4 pinned lockfiles are used when available for the selected environment; legacy lockfiles are handled on a best-effort basis.
+1. **Checks `Move.lock` first**: V4 pinned lockfiles are used when available for the selected environment. Older lockfile graph formats are not used as pinned graph sources and fall back to manifest resolution where supported.
 2. **Falls back to manifests**: If the lockfile path is missing or cannot be used, dependencies are resolved from `Move.toml` files.
-3. **Handles legacy publish data**: Legacy `Move.lock` publication records can be migrated into `Published.toml` output.
+3. **Handles V3 publish data**: Supported V3 `Move.lock` publication records can be migrated into `Published.toml` output.
 4. **Handles monorepos**: Local dependencies inside git-sourced packages are converted to git subdirectories.
 5. **Adds implicit framework dependencies**: The root package gets an implicit Sui framework dependency when it does not declare one.
 6. **Generates lockfile metadata**: V4 output includes computed manifest digests, and V4 pin loading checks manifest digests through the Rust/WASM helper before trusting a lockfile.
@@ -288,10 +288,10 @@ For repeated version updates, use the process and prompt in [AGENTS.md](./AGENTS
 
 ## Package Management Logic
 
-This builder follows the Sui CLI package-management precedence where that behavior is implemented in the WASM path:
+This builder follows the implemented parts of the Sui CLI package-management precedence:
 
-1. **CLI Overrides**: Explicit options (e.g., `network`) take highest precedence.
-2. **Move.lock**: V4 pinned sections are used when present for the active environment. Legacy V3 publication data may be migrated, and dependency resolution can fall back to manifests.
+1. **API options**: Explicit options (e.g., `network`) take highest precedence.
+2. **Move.lock**: V4 pinned sections are used when present for the active environment. Older lockfile graph formats fall back to manifests where supported, and supported V3 publication data may be migrated.
    - Published package addresses can come from lockfile environment records, `Published.toml`, or manifest metadata depending on the package and lockfile format.
 3. **Move.toml**: Used when there is no usable lockfile path. Defines direct dependencies and their sources.
 4. **Published.toml**:
@@ -349,7 +349,8 @@ const result2 = await buildMovePackage({
 ## Limitations
 
 - Dependencies are always compiled from source. Bytecode-only deps (.mv fallback used by the Sui CLI when sources are missing) are not supported in the wasm path.
-- CLI parity is verified for selected fixtures, not for every Sui package-manager path. Some lockfile, system dependency, and test-runner behavior is still implemented through local compatibility glue.
+- V0/V1/V2/V3 `Move.lock` graph sections are not used as pinned graph sources. Supported packages fall back to manifest resolution; V3 publication migration is supported where covered by tests.
+- CLI parity is verified for selected fixtures, not for every Sui package-manager path. Some compiler and test-runner behavior is still implemented through local compatibility glue.
 
 ## Best Practices
 
@@ -409,7 +410,5 @@ For manual browser verification, run `npm run dev:browser-parity` and open the p
 ## Planned Work
 
 - **BuildPlan-equivalent compiler path**: Reduce direct `PackagePaths` assembly where upstream Sui compiler/package-manager behavior can be reused.
-- **Legacy graph cleanup**: Decide whether v0/v1/v2 lockfile compatibility should remain best-effort or move behind the Rust package model.
-- **Legacy lockfiles**: Keep V3 migration behavior explicit and covered by fixtures where supported.
 - **Published.toml generation**: Generate deployment records after successful publication when this package adds publish support.
 - **Bytecode dependencies**: Support `.mv`-only dependency fallback used by the Sui CLI when sources are unavailable.

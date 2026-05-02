@@ -168,5 +168,5 @@ if (digestFromMoveToml("[package", "Pkg") !== "") {
 }
 
 console.log(
-  "[OK] Rust Move.toml manifest_digest helper matches legacy JSON helper"
+  "[OK] Rust Move.toml manifest_digest helper matches JSON digest compatibility helper"
 );

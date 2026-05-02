@@ -1140,60 +1140,6 @@ struct LockfileV4PackageGroupManifest {
     dependencies: serde_json::Value,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ManifestPackageGroupsInput {
-    environment: String,
-    root_package_name: String,
-    root_files: BTreeMap<String, String>,
-    packages: Vec<ManifestPackageGroupsPackage>,
-    #[serde(default)]
-    compiler_order: Vec<String>,
-    #[serde(default)]
-    lockfile_order: Vec<String>,
-    #[serde(default)]
-    root_dep_alias_to_package_name: BTreeMap<String, String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ManifestPackageGroupsPackage {
-    id: String,
-    source: LockfileV4Source,
-    #[serde(default)]
-    files: BTreeMap<String, String>,
-    #[serde(default)]
-    dep_alias_to_package_name: BTreeMap<String, String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ManifestPackagePlanInput {
-    environment: String,
-    package_id_hint: String,
-    source: LockfileV4Source,
-    #[serde(default)]
-    files: BTreeMap<String, String>,
-    #[serde(default)]
-    is_root: bool,
-    #[serde(default)]
-    framework_rev: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ManifestPackagePlan {
-    package: ManifestPackagePlanPackage,
-    dependencies: Vec<ManifestPackagePlanDependency>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ManifestPackagePlanPackage {
-    source: LockfileV4Source,
-    manifest: LockfileV4PackageManifest,
-}
-
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ManifestPackagePlanDependency {
@@ -2484,27 +2430,6 @@ fn manifest_has_move_source(files: &BTreeMap<String, String>) -> bool {
     files.keys().any(|path| path.ends_with(".move"))
 }
 
-fn manifest_validate_order(
-    label: &str,
-    order: &[String],
-    known_ids: &BTreeSet<String>,
-) -> Result<(), String> {
-    if order.is_empty() {
-        return Err(format!("Manifest package-group input is missing {}", label));
-    }
-
-    for package_id in order {
-        if !known_ids.contains(package_id) {
-            return Err(format!(
-                "Manifest package-group {} references unknown package '{}'",
-                label, package_id
-            ));
-        }
-    }
-
-    Ok(())
-}
-
 fn manifest_plan_resolve_relative_path(parent_path: &str, local_path: &str) -> String {
     let mut parts = parent_path
         .split('/')
@@ -2684,11 +2609,12 @@ fn manifest_plan_dependencies_from_move_toml(
 }
 
 fn manifest_plan_add_implicit_dependencies(
-    input: &ManifestPackagePlanInput,
+    is_root: bool,
+    framework_rev: &Option<String>,
     package_name: &str,
     dependencies: &mut Vec<ManifestPackagePlanDependency>,
 ) -> Result<(), String> {
-    if !input.is_root || is_system_package_name(package_name) {
+    if !is_root || is_system_package_name(package_name) {
         return Ok(());
     }
     if dependencies
@@ -2698,8 +2624,8 @@ fn manifest_plan_add_implicit_dependencies(
         return Ok(());
     }
 
-    let framework_rev = input.framework_rev.as_ref().ok_or_else(|| {
-        "manifest_package_plan requires frameworkRev for implicit Sui dependency".to_string()
+    let framework_rev = framework_rev.as_ref().ok_or_else(|| {
+        "manifest graph resolution requires frameworkRev for implicit Sui dependency".to_string()
     })?;
     dependencies.push(ManifestPackagePlanDependency {
         name: "Sui".to_string(),
@@ -2718,7 +2644,12 @@ fn manifest_graph_source_key(source: &LockfileV4Source) -> String {
     match source {
         LockfileV4Source::Root => "root".to_string(),
         LockfileV4Source::Git { git, rev, subdir } => {
-            format!("git|{}|{}|{}", git, rev, subdir.as_deref().unwrap_or_default())
+            format!(
+                "git|{}|{}|{}",
+                git,
+                rev,
+                subdir.as_deref().unwrap_or_default()
+            )
         }
         LockfileV4Source::Local { local } => format!("local|{}", local),
     }
@@ -2767,20 +2698,23 @@ fn manifest_graph_plan_snapshot(
     package_id_hint: &str,
     snapshot: &ManifestGraphPackageSnapshot,
     is_root: bool,
-) -> Result<(LockfileV4PackageManifest, Vec<ManifestPackagePlanDependency>), String> {
+) -> Result<
+    (
+        LockfileV4PackageManifest,
+        Vec<ManifestPackagePlanDependency>,
+    ),
+    String,
+> {
     let (manifest, move_toml) =
         lockfile_v4_manifest_from_files(package_id_hint, &snapshot.files, environment)?;
     let mut dependencies =
         manifest_plan_dependencies_from_move_toml(&move_toml, &manifest.name, &snapshot.source)?;
-    let plan_input = ManifestPackagePlanInput {
-        environment: environment.to_string(),
-        package_id_hint: package_id_hint.to_string(),
-        source: snapshot.source.clone(),
-        files: snapshot.files.clone(),
+    manifest_plan_add_implicit_dependencies(
         is_root,
-        framework_rev: framework_rev.clone(),
-    };
-    manifest_plan_add_implicit_dependencies(&plan_input, &manifest.name, &mut dependencies)?;
+        framework_rev,
+        &manifest.name,
+        &mut dependencies,
+    )?;
     manifest_graph_sort_dependencies(&mut dependencies);
     Ok((manifest, dependencies))
 }
@@ -2789,7 +2723,10 @@ fn manifest_graph_unique_id(
     manifest_name: &str,
     name_to_suffix: &mut BTreeMap<String, usize>,
 ) -> String {
-    let suffix = name_to_suffix.get(manifest_name).copied().unwrap_or_default();
+    let suffix = name_to_suffix
+        .get(manifest_name)
+        .copied()
+        .unwrap_or_default();
     name_to_suffix.insert(manifest_name.to_string(), suffix + 1);
     if suffix == 0 {
         manifest_name.to_string()
@@ -2845,7 +2782,10 @@ fn manifest_graph_add_package(
 
     source_to_id.insert(source_key, package_id.clone());
     if let Some(requested_source) = &snapshot.requested_source {
-        source_to_id.insert(manifest_graph_source_key(requested_source), package_id.clone());
+        source_to_id.insert(
+            manifest_graph_source_key(requested_source),
+            package_id.clone(),
+        );
     }
 
     let node_index = nodes.len();
@@ -2859,8 +2799,7 @@ fn manifest_graph_add_package(
 
     let mut resolved_edges = Vec::new();
     for dependency in dependencies {
-        let dependency_source =
-            manifest_graph_plan_source_to_lockfile_source(&dependency.source);
+        let dependency_source = manifest_graph_plan_source_to_lockfile_source(&dependency.source);
         let dependency_key = manifest_graph_source_key(&dependency_source);
         let target_id = if let Some(existing_id) = source_to_id.get(&dependency_key) {
             Some(existing_id.clone())
@@ -2908,10 +2847,7 @@ fn manifest_graph_add_package(
     Ok(package_id)
 }
 
-fn manifest_graph_cycle(
-    root_id: &str,
-    edges: &[LockfileV4ValidatedEdge],
-) -> Option<Vec<String>> {
+fn manifest_graph_cycle(root_id: &str, edges: &[LockfileV4ValidatedEdge]) -> Option<Vec<String>> {
     let mut edges_by_from: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for edge in edges {
         edges_by_from
@@ -2955,10 +2891,7 @@ fn manifest_graph_cycle(
     )
 }
 
-fn manifest_graph_lockfile_order(
-    root_id: &str,
-    edges: &[LockfileV4ValidatedEdge],
-) -> Vec<String> {
+fn manifest_graph_lockfile_order(root_id: &str, edges: &[LockfileV4ValidatedEdge]) -> Vec<String> {
     let mut edges_by_from: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for edge in edges {
         edges_by_from
@@ -3067,7 +3000,14 @@ fn manifest_graph_compiler_order(
                     .or_else(|| target_node.manifest.published_at.clone())
                     .unwrap_or_else(|| target_node.id.clone());
                 if let Some((_, linked_id)) = linkage.get(&linkage_key) {
-                    collect(linked_id, node_by_id, edges_by_from, linkage, visited, order);
+                    collect(
+                        linked_id,
+                        node_by_id,
+                        edges_by_from,
+                        linkage,
+                        visited,
+                        order,
+                    );
                 }
             }
         }
@@ -3185,190 +3125,11 @@ fn manifest_graph_resolve_package_groups_impl(
     }))
 }
 
-fn manifest_package_plan_impl(
-    input: ManifestPackagePlanInput,
-) -> Result<ManifestPackagePlan, String> {
-    let (manifest, move_toml) =
-        lockfile_v4_manifest_from_files(&input.package_id_hint, &input.files, &input.environment)?;
-    let mut dependencies =
-        manifest_plan_dependencies_from_move_toml(&move_toml, &manifest.name, &input.source)?;
-    manifest_plan_add_implicit_dependencies(&input, &manifest.name, &mut dependencies)?;
-
-    Ok(ManifestPackagePlan {
-        package: ManifestPackagePlanPackage {
-            source: input.source,
-            manifest,
-        },
-        dependencies,
-    })
-}
-
-fn manifest_resolve_package_groups_impl(
-    input: ManifestPackageGroupsInput,
-) -> Result<LockfileV4PackageGroups, String> {
-    let root_id = input.root_package_name.clone();
-    let mut known_ids = BTreeSet::new();
-    known_ids.insert(root_id.clone());
-
-    for package in &input.packages {
-        if matches!(package.source, LockfileV4Source::Root) {
-            return Err(format!(
-                "Manifest package-group package '{}' has unsupported root source",
-                package.id
-            ));
-        }
-        if !known_ids.insert(package.id.clone()) {
-            return Err(format!(
-                "Manifest package-group input has duplicate package id '{}'",
-                package.id
-            ));
-        }
-        if !manifest_has_move_source(&package.files) {
-            return Err(format!(
-                "Dependency '{}' has no Move source files; bytecode-only dependencies are not supported",
-                package.id
-            ));
-        }
-    }
-
-    manifest_validate_order("compilerOrder", &input.compiler_order, &known_ids)?;
-    manifest_validate_order("lockfileOrder", &input.lockfile_order, &known_ids)?;
-
-    for package_id in &known_ids {
-        if !input.lockfile_order.iter().any(|id| id == package_id) {
-            return Err(format!(
-                "Manifest package-group lockfileOrder is missing package '{}'",
-                package_id
-            ));
-        }
-    }
-
-    let (root_manifest, _) =
-        lockfile_v4_manifest_from_files(&root_id, &input.root_files, &input.environment)?;
-
-    let mut validate_packages = vec![LockfileV4ValidatePackage {
-        id: root_id.clone(),
-        source: LockfileV4Source::Root,
-        deps: input.root_dep_alias_to_package_name.clone(),
-        manifest_digest: None,
-        files: input.root_files.clone(),
-    }];
-    let mut validated_packages = vec![LockfileV4ValidatedPackage {
-        id: root_id.clone(),
-        source: LockfileV4Source::Root,
-        manifest: root_manifest,
-        dep_alias_to_package_name: input.root_dep_alias_to_package_name.clone(),
-    }];
-
-    for package in input.packages {
-        let (manifest, _) =
-            lockfile_v4_manifest_from_files(&package.id, &package.files, &input.environment)?;
-
-        validate_packages.push(LockfileV4ValidatePackage {
-            id: package.id.clone(),
-            source: package.source.clone(),
-            deps: package.dep_alias_to_package_name.clone(),
-            manifest_digest: None,
-            files: package.files.clone(),
-        });
-        validated_packages.push(LockfileV4ValidatedPackage {
-            id: package.id,
-            source: package.source,
-            manifest,
-            dep_alias_to_package_name: package.dep_alias_to_package_name,
-        });
-    }
-
-    let mut edges = vec![];
-    for package in &validated_packages {
-        for (alias, target_id) in &package.dep_alias_to_package_name {
-            if !known_ids.contains(target_id) {
-                return Err(format!(
-                    "Manifest package-group package '{}' dependency '{}' references unknown package '{}'",
-                    package.id, alias, target_id
-                ));
-            }
-            edges.push(LockfileV4ValidatedEdge {
-                from: package.id.clone(),
-                to: target_id.clone(),
-                alias: alias.clone(),
-            });
-        }
-    }
-
-    let validate_input = LockfileV4ValidateInput {
-        environment: input.environment,
-        root_package_name: root_id.clone(),
-        root_move_toml: input
-            .root_files
-            .get("Move.toml")
-            .cloned()
-            .unwrap_or_default(),
-        packages: validate_packages,
-    };
-    let graph = LockfileV4ValidatedGraph {
-        root_id,
-        lockfile_order: input.lockfile_order.clone(),
-        packages: validated_packages,
-        edges,
-    };
-
-    lockfile_v4_package_groups_from_validated_with_orders(
-        &validate_input,
-        graph,
-        &input.compiler_order,
-        &input.lockfile_order,
-    )
-}
-
-#[wasm_bindgen]
-pub fn manifest_package_plan(input_json: &str) -> String {
-    let input: ManifestPackagePlanInput = match serde_json::from_str(input_json) {
-        Ok(input) => input,
-        Err(error) => {
-            return lockfile_v4_error(format!("Invalid manifest package plan input: {}", error))
-        }
-    };
-
-    match manifest_package_plan_impl(input) {
-        Ok(plan) => serde_json::json!({
-            "status": "ok",
-            "package": plan.package,
-            "dependencies": plan.dependencies,
-        })
-        .to_string(),
-        Err(error) => lockfile_v4_error(error),
-    }
-}
-
-#[wasm_bindgen]
-pub fn manifest_resolve_package_groups(input_json: &str) -> String {
-    let input: ManifestPackageGroupsInput = match serde_json::from_str(input_json) {
-        Ok(input) => input,
-        Err(error) => {
-            return lockfile_v4_error(format!("Invalid manifest package-group input: {}", error))
-        }
-    };
-
-    match manifest_resolve_package_groups_impl(input) {
-        Ok(groups) => serde_json::json!({
-            "status": "ok",
-            "rootFiles": groups.root_files,
-            "dependencies": groups.dependencies,
-            "lockfileDependencies": groups.lockfile_dependencies,
-        })
-        .to_string(),
-        Err(error) => lockfile_v4_error(error),
-    }
-}
-
 #[wasm_bindgen]
 pub fn manifest_graph_resolve_package_groups(input_json: &str) -> String {
     let input: ManifestGraphInput = match serde_json::from_str(input_json) {
         Ok(input) => input,
-        Err(error) => {
-            return lockfile_v4_error(format!("Invalid manifest graph input: {}", error))
-        }
+        Err(error) => return lockfile_v4_error(format!("Invalid manifest graph input: {}", error)),
     };
 
     match manifest_graph_resolve_package_groups_impl(input) {

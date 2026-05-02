@@ -98,7 +98,9 @@ Rust/WASM should be the source of truth for Sui package semantics. Its responsib
 
 Do not independently reimplement Sui package-manager semantics in TypeScript when Rust or an upstream Sui crate can own the behavior. If TypeScript must mirror Rust/Sui behavior, the code or documentation must identify the corresponding upstream Rust file/function, avoid a divergent fallback, and add a targeted parity fixture for that behavior.
 
-Move source and TOML version behavior must follow the pinned CLI semantics as well. Treat `Move.toml`, network-specific `Move.<env>.toml`, `Move.lock` v0/v3/v4, `Published.toml`, package `edition`, dependency source forms, and lockfile migration rules as versioned inputs with CLI-defined behavior. Do not normalize, migrate, or ignore these files differently from the pinned Sui implementation unless the difference is documented as a WASM limitation and covered by a parity fixture.
+Move source and TOML version behavior must follow the pinned CLI semantics as well. Treat `Move.toml`, network-specific `Move.<env>.toml`, `Move.lock` schema versions, `Published.toml`, package `edition`, dependency source forms, and lockfile migration rules as versioned inputs with CLI-defined behavior. Do not normalize, migrate, or ignore these files differently from the pinned Sui implementation unless the difference is documented as a WASM limitation and covered by a parity fixture.
+
+V0/V1/V2 `Move.lock` dependency graph loading is not used as a graph source in this repository. Match the pinned CLI behavior for outdated lockfiles by rebuilding supported dependency graphs from manifests through Rust/WASM. Do not reintroduce JS compatibility graph loading for these formats.
 
 Package loading is part of the TS host boundary. TS may collect files from GitHub, local workspaces, browser uploads, File System Access API, server endpoints, or custom caches, but it should hand Rust/WASM a complete package snapshot. Missing local dependency loaders, empty fetched packages, and dependency packages without `Move.toml` should fail explicitly rather than silently changing the dependency graph.
 

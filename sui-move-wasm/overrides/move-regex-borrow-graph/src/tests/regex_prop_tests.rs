@@ -4,9 +4,9 @@
 use crate::regex::{Extension, Regex};
 use proptest::prelude::*;
 
-/// Generate arbitrary labels (for now use simple `char` or `u8`)
+/// Generate arbitrary labels for regex property tests.
 fn arb_label() -> impl Strategy<Value = char> {
-    // Avoid control characters for cleaner display/debugging
+    // Avoid control characters for cleaner display.
     prop::char::range('a', 'z')
 }
 

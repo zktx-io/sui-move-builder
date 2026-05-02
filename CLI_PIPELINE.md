@@ -1,6 +1,6 @@
 # Sui CLI Build Pipeline vs Sui Move Builder
 
-This document maps the Sui CLI build steps to the JS + WASM implementation in this project. It is a parity guide, not a guarantee that every Sui CLI path is implemented; known differences and best-effort areas are called out explicitly.
+This document maps the Sui CLI build steps to the JS + WASM implementation in this project. It is a parity guide, not a guarantee that every Sui CLI path is implemented; known differences and unsupported areas are called out explicitly.
 
 ## Build Workspace Boundaries
 
@@ -21,7 +21,7 @@ The development WASM build keeps four areas separate:
 ## 2) Dependency Resolution
 
 - **CLI**: Builds a dependency graph from usable `Move.lock` pins when available, otherwise from manifests. Applies Sui flavor implicit dependencies and dev-mode behavior.
-- **Here (JS + Rust/WASM)**: `resolveMoveToml` (`src/resolver.ts`) uses Rust/WASM for usable V4 lockfiles: Rust parses the active environment, creates the fetch plan, validates root/dependency pin digests, undefined edges, local source pins, and same-name package IDs, then returns compiler and lockfile package groups. TypeScript performs host fetching/snapshot loading and wraps the returned groups. Manifest fallback uses a JS fetch loop, but Rust/WASM owns per-package planning, dependency edge construction, same-name suffixing, cycle detection, linkage/compiler order, lockfile order, and final compiler/lockfile package-group construction. V3 falls back to manifest resolution while legacy publication data can be migrated separately, and older layouts are handled best-effort. The caller's `Move.toml` is not mutated. The root package may receive an implicit Sui framework dependency when missing; `MoveStdlib`, `SuiSystem`, and `Bridge` are not all injected as explicit JS dependencies. Git fetch is handled through `GitHubFetcher` or a supplied `Fetcher`; local dependencies from local/root packages require a host-provided `fetchLocal` snapshot loader.
+- **Here (JS + Rust/WASM)**: `resolveMoveToml` (`src/resolver.ts`) uses Rust/WASM for usable V4 lockfiles: Rust parses the active environment, creates the fetch plan, validates root/dependency pin digests, undefined edges, local source pins, and same-name package IDs, then returns compiler and lockfile package groups. TypeScript performs host fetching/snapshot loading and wraps the returned groups. Manifest fallback uses a JS fetch loop, but Rust/WASM owns per-package planning, dependency edge construction, same-name suffixing, cycle detection, linkage/compiler order, lockfile order, and final compiler/lockfile package-group construction. V0/V1/V2/V3 lockfile graphs are not used as pinned graph sources; supported packages fall back to manifest resolution, and supported V3 publication data can be migrated separately. The caller's `Move.toml` is not mutated. The root package may receive an implicit Sui framework dependency when missing; `MoveStdlib`, `SuiSystem`, and `Bridge` are not all injected as explicit JS dependencies. Git fetch is handled through `GitHubFetcher` or a supplied `Fetcher`; local dependencies from local/root packages require a host-provided `fetchLocal` snapshot loader.
 
 ## 2.1) Package File Loading Boundary
 
@@ -30,7 +30,7 @@ TypeScript owns host I/O. It prepares the package snapshots that Rust/WASM compi
 ## 3) Dependency Inclusion & Serialization
 
 - **CLI**: Keeps reachable packages from the lock/manifest graph. Chooses Source vs Bytecode per package (uses .mv when sources are absent). Sorts `.move` paths before passing to the compiler. Packages become `PackagePaths` with named address maps and edition/flavor.
-- **Here (JS/WASM)**: Applies linkage/reachability filtering for compiler input and keeps a separate all-package set for lockfile generation. Rust/WASM constructs `PackageGroup` JSON for V4 lockfile and manifest fallback paths, including `addressMapping`, manifest metadata, and root alias metadata so WASM can use parsed addresses/IDs while owning output dependency filtering. Source discovery is mode-gated in Rust following the pinned `source_discovery.rs` shape: normal build includes `sources/` and `scripts/`, while test mode also includes `examples/` and `tests/` for root and dependencies. JS does not perform a standalone `extractSourcePaths` sort. **Move.lock Generation**: Sorts generated `[pinned]` sections deterministically. **Difference:** Only source form is supported; bytecode (.mv) fallback is not implemented. Dependency IDs/order are computed by the local JS/Rust path and checked by parity tests rather than by reusing the upstream package manager end to end.
+- **Here (Rust/WASM + JS host)**: Applies linkage/reachability filtering for compiler input and keeps a separate all-package set for lockfile generation. Rust/WASM constructs `PackageGroup` JSON for V4 lockfile and manifest fallback paths, including `addressMapping`, manifest metadata, and root alias metadata so WASM can use parsed addresses/IDs while owning output dependency filtering. Source discovery is mode-gated in Rust following the pinned `source_discovery.rs` shape: normal build includes `sources/` and `scripts/`, while test mode also includes `examples/` and `tests/` for root and dependencies. JS does not perform a standalone `extractSourcePaths` sort. **Move.lock Generation**: Sorts generated `[pinned]` sections deterministically. **Difference:** Only source form is supported; bytecode (.mv) fallback is not implemented. Dependency IDs/order are computed by the local Rust/WASM package model with TypeScript host fetching, and checked by parity tests rather than by reusing the upstream package manager end to end.
 
 ## 4) Compiler Invocation
 
@@ -54,7 +54,7 @@ TypeScript owns host I/O. It prepares the package snapshots that Rust/WASM compi
 - `stripMetadata` is a reserved/pass-through API option today; it should not be documented as active compiler behavior.
 - V4 lockfile fetch-plan, graph validation, package group construction, and generation are Rust/WASM-owned for the supported V4 shape. Manifest fallback graph planning and package group construction are also Rust/WASM-owned. TypeScript still performs host fetching and snapshot assembly. This is not yet a full upstream `PackageGraphBuilder` reuse.
 - CLI dev-addresses and extra named-address override channels are not exposed as first-class `BuildInput` options.
-- V3 lockfiles are not used as pinned dependency graph sources; they trigger manifest resolution, with legacy publication data migration handled separately.
+- V0/V1/V2/V3 lockfiles are not used as pinned dependency graph sources. They trigger manifest resolution for supported packages, with V3 publication data migration handled separately. JS compatibility graph loading is not used.
 
 ## Known Implementation Boundaries
 
@@ -87,16 +87,16 @@ These areas are local compatibility boundaries rather than full reuse of the ups
 - Source discovery: `npm run test:source-discovery` covers the normal-build rule that `tests/*.move` must not leak into non-test builds and the test-mode rule that dependency tests are included in compiler input.
 - Lint setup: `npm run test:compiler-lint` covers accepted `lintFlag` values and invalid value handling.
 
-## 8) Implementation Defaults & Heuristics
+## 8) Implementation Defaults & Boundaries
 
 - **Network Default**: If not specified, the build network defaults to `mainnet`; lockfile lookup then uses the active network/chain identifiers.
-- **Address Injection**: Address handling combines parsed `Move.toml`, `Move.lock` environment data, `Published.toml`, and a unified named-address table. Some fallback paths are heuristic and should be checked with parity tests when adding new package-manager behavior.
+- **Address Injection**: Address handling combines parsed `Move.toml`, supported `Move.lock` environment data, `Published.toml`, and a unified named-address table. New package-manager address behavior should be tied to a pinned upstream source reference and a targeted parity fixture.
 - **Test Filtering**: `move test` (WASM) constructs the test plan with the root package name and excludes dependency package `tests/` from root test execution. The surrounding compiler setup still uses local `PackagePaths` assembly rather than the full upstream `BuildPlan` path.
 - **System Addresses**: `std` (0x1) and `sui` (0x2) are automatically defined in the compiler's address map if missing, ensuring standard library resolution.
 
 ## 9) Implementation Status
 
-The `sui-move-wasm` Rust source and JS integration layer use pinned Move/Sui compiler crates where practical. TypeScript still owns host fetching and snapshot assembly; V4 lockfile and manifest fallback package semantics are Rust/WASM-owned for the supported shapes. Legacy v0/v1/v2 lockfile handling still uses local JS compatibility glue and remains subject to parity testing.
+The `sui-move-wasm` Rust source and JS integration layer use pinned Move/Sui compiler crates where practical. TypeScript still owns host fetching and snapshot assembly; V4 lockfile and manifest fallback package semantics are Rust/WASM-owned for the supported shapes. V0/V1/V2/V3 `Move.lock` graph loading is intentionally not used as a pinned graph source.
 
 - `sui-move-wasm/Cargo.toml` uses Move/Sui compiler crates from the pinned Sui build workspace.
 - JS serializes package `edition` into `PackageGroup`; Rust deserializes it when constructing compiler input.
@@ -136,11 +136,11 @@ The `manifest_digest` field in generated Move.lock V4 is computed by Rust/WASM a
 3. Hash result with SHA256
 4. Format as uppercase hex
 
-**Key Implementation Details:**
+**Implementation Details:**
 
 - `ManifestDependencyInfo` uses default enum serialization (NOT `#[serde(untagged)]`)
 - `ReplacementDependency` uses `#[serde(flatten, default)]` attributes
-- Expected to match the CLI for supported dependency shapes covered by the helper (git/local/system-style inputs). Other package-manager dependency forms should be verified before claiming parity.
+- Intended to match the CLI for supported dependency shapes covered by the helper (git/local/system-style inputs). Other package-manager dependency forms should be verified before claiming parity.
 
 ---
 
@@ -196,7 +196,7 @@ Output record of deployment. Contains `original_id` and `published_at` per envir
 ### 11.2 Loading Priority (per package)
 
 ```
-Published.toml → migrated legacy data when provided by the JS wrapper → None
+Published.toml → migrated V3 publication data when provided by the JS wrapper → None
 ```
 
 - **All packages** (root + dependencies) attempt to read their own `Published.toml`
@@ -221,7 +221,7 @@ Published.toml → migrated legacy data when provided by the JS wrapper → None
 
 ### 12.2 Topological Sort
 
-Rust/WASM graph helpers produce compiler and lockfile package order for V4 lockfile and manifest fallback paths. Rust then computes root module order using `move_bytecode_utils::Modules`. Legacy v0/v1/v2 lockfile compatibility may still pass through the JS graph. Parity tests compare the resulting module bytecode order against `sui move build --dump-bytecode-as-base64`.
+Rust/WASM graph helpers produce compiler and lockfile package order for V4 lockfile and manifest fallback paths. Rust then computes root module order using `move_bytecode_utils::Modules`. Parity tests compare the resulting module bytecode order against `sui move build --dump-bytecode-as-base64`.
 
 ---
 
@@ -377,7 +377,7 @@ CLI supports diamond dependencies where multiple packages may depend on the same
 // and records them in lockfile as MoveStdlib, MoveStdlib_1, MoveStdlib_2
 ```
 
-**WASM behavior**: `resolver.ts` tracks same-name packages with suffixes such as `_1` and `_2`.
+**WASM behavior**: Rust/WASM manifest and V4 lockfile graph helpers assign same-name package suffixes such as `_1` and `_2` before constructing compiler and lockfile package groups.
 
 ### 16.6 Sibling Package Sui Framework Sharing
 
@@ -389,12 +389,7 @@ When sibling packages from the same git repository depend on Sui framework, the 
 - `PackagePath` includes resolved SHA (not tag) from git cache
 - Same `framework/mainnet` tag resolves to same SHA → same visited entry → same Sui node
 
-**WASM behavior**: Uses two caches:
-
-1. `repoRevToSuiRev`: Maps `git|rev` → resolved Sui SHA for sibling packages
-2. `suiTagToShaCache`: Pre-resolves tags to SHA before cacheKey generation
-
-This keeps sibling packages on the same resolved Sui framework node when their framework dependency resolves to the same SHA.
+**WASM behavior**: Rust/WASM plans git-sourced local dependencies as same-repository subdirs. TypeScript stores both the requested source and resolved fetch source so the Rust graph helper can match the same package across tag/SHA resolution.
 
 ### 16.7 Diamond Dependency Linkage Selection
 
@@ -413,15 +408,7 @@ let (min_depth, min_pkg, other_pkg) = if new_depth < *old_depth {
 
 **Key Behavior**: For packages sharing the same `originalId` (e.g., multiple MoveStdlib versions), CLI selects the one with **smallest depth** (closest to root) for compilation.
 
-**WASM behavior**: `dependencyGraph.ts:compilerInputOrderWithIndices()` builds a `linkageTable` with depth comparison:
-
-```typescript
-const existing = linkageTable.get(originalId);
-if (existing && existing.depth <= depth) {
-  return; // Already have shorter path
-}
-linkageTable.set(originalId, { depth, idx: index });
-```
+**WASM behavior**: Rust/WASM manifest and V4 lockfile graph helpers build the linkage/compiler order used for package-group construction. The same graph output feeds compiler dependencies and lockfile dependencies for the supported paths.
 
 ---
 

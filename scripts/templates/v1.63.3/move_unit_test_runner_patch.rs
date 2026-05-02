@@ -31,7 +31,7 @@ use move_core_types::{
     u256::U256,
     vm_status::StatusCode,
 };
-// PATCH: Removed MoveTraceBuilder usage to avoid panic in Wasm
+// WASM compatibility: trace collection is disabled.
 // use move_trace_format::format::{MoveTraceBuilder, TRACE_FILE_EXTENSION};
 
 use move_vm_runtime::{move_vm::MoveVM, native_functions::NativeFunctionTable};
@@ -44,7 +44,7 @@ use rayon::prelude::*;
 use regex::Regex;
 use std::{collections::BTreeMap, io::Write, marker::Send, sync::Mutex};
 
-// Mock Instant for Wasm
+// WASM compatibility: use a deterministic Instant wrapper.
 #[derive(Clone, Copy)]
 struct Instant;
 impl Instant {
@@ -290,9 +290,9 @@ impl SharedTestingConfig {
         let move_vm = MoveVM::new_with_config(natives, vm_config).unwrap();
         let extensions = extensions::new_extensions();
 
-        // PATCHED: Removed MoveTraceBuilder usage
+        // WASM compatibility: trace collection is disabled.
         // let mut move_tracer = MoveTraceBuilder::new();
-        let tracer = None; // Always None for now
+        let tracer = None; // Trace collection is disabled in the WASM runner.
                            /*
                            if self.trace_location.is_some() {
                                Some(&mut move_tracer)
@@ -310,7 +310,7 @@ impl SharedTestingConfig {
         let serialized_return_values_result = session.execute_function_bypass_visibility(
             &test_plan.module_id,
             IdentStr::new(function_name).unwrap(),
-            vec![], // no ty args, at least for now
+            vec![], // Unit tests are invoked without type arguments.
             serialize_values(arguments.iter()),
             &mut gas_meter,
             tracer,
@@ -326,7 +326,7 @@ impl SharedTestingConfig {
         {
             err.remove_exec_state();
         }
-        // PATCHED: No trace collection
+        // Trace collection is disabled in the WASM runner.
         let trace = None;
         /*
         let trace = if self.trace_location.is_some() {
@@ -466,7 +466,7 @@ impl SharedTestingConfig {
         let (_cs_result, _ext_result, exec_result, test_run_info) =
             self.execute_via_move_vm(test_plan, function_name, arguments);
 
-        /* PATCHED: No Trace Saving
+        /* WASM compatibility: trace saving is disabled.
         // Save the trace -- one per test -- for each test that we have traced (and if tracing is
         // enabled).
         if let Some(location) = &self.trace_location {

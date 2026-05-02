@@ -207,24 +207,8 @@ if (!parseDeps(v3Resolved).some((item) => item.name === "Dep")) {
 }
 console.log("[OK] Move.lock v3 falls back to manifest graph resolution");
 
-class GitLocalFetcher {
-  async fetch(gitUrl, rev, subdir = "") {
-    if (gitUrl !== "https://github.com/example/project.git" || rev !== "main") {
-      throw new Error(`Unexpected git fixture: ${gitUrl} ${rev}`);
-    }
-    if (subdir !== "packages/dep") {
-      throw new Error(`Unexpected git subdir: ${subdir}`);
-    }
-    return depPackage();
-  }
-
-  getResolvedSha() {
-    return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-  }
-}
-
-const legacyLockResolved = await resolveDependencies({
-  files: rootFiles({
+const v1Resolved = await resolve(
+  rootFiles({
     dependencies: `
 [dependencies]
 Dep = { local = "../dep" }
@@ -241,23 +225,12 @@ name = "Dep"
 source = { local = "../dep" }
 `,
   }),
-  network: "mainnet",
-  fetcher: new GitLocalFetcher(),
-  rootGit: {
-    git: "https://github.com/example/project.git",
-    rev: "main",
-    subdir: "packages/root",
-  },
-});
-const legacyLockDep = parseDeps(legacyLockResolved).find(
-  (item) => item.name === "Dep"
+  "mainnet"
 );
-if (!legacyLockDep?.rootDependencyAliases?.includes("Dep")) {
-  throw new Error(
-    "Legacy Move.lock root dependency aliases should reach Rust package groups"
-  );
+if (!parseDeps(v1Resolved).some((item) => item.name === "Dep")) {
+  throw new Error("Move.lock v1 fallback should resolve from manifests");
 }
-console.log("[OK] legacy Move.lock root aliases reach package groups");
+console.log("[OK] Move.lock v1 falls back to manifest graph resolution");
 
 await assertRejects(
   () =>

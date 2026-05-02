@@ -196,12 +196,12 @@ async function main() {
         /zstd-sys = "(2\.[0-9.]+)"/g,
         `zstd-sys = { version = "${buildConfig.versions.zstd_sys}", default-features = false, features = ["no_asm"] }`
       );
-      // Fallback for different version formats or existing objects
+      // Handle version strings and existing dependency object forms.
       workspaceContent = workspaceContent.replace(
         /zstd-sys = { version = "(2\.[0-9.]+)"/g,
         'zstd-sys = { version = "$1", default-features = false, features = ["no_asm"] }'
       );
-      // Force tokio time feature globally
+      // Ensure tokio time support is available across patched manifests.
       workspaceContent = workspaceContent.replace(
         /tokio = { version = "(1\.[0-9.]+)", features = \[(.*)\] }/g,
         'tokio = { version = "$1", features = [$2, "time"] }'
@@ -254,7 +254,7 @@ async function main() {
         /tempfile = "=3\.[0-9.]+"/g,
         `tempfile = { version = "${buildConfig.versions.tempfile}", default-features = false }`
       );
-      // Fallback for non-pinned
+      // Handle non-pinned tempfile version strings.
       workspaceContent = workspaceContent.replace(
         /tempfile = "3\.[0-9.]+"/g,
         `tempfile = { version = "${buildConfig.versions.tempfile}", default-features = false }`
@@ -381,7 +381,7 @@ async function main() {
           await fs.writeFile(path.join(sDir, "Cargo.toml"), cargo);
 
           const libPath = path.join(sDir, "src", "lib.rs");
-          // ALWAYS overwrite lib.rs for these core stubs to ensure fixes (like semicolons) are applied
+          // Always refresh core stub sources from the selected templates.
           if (cfg.template) {
             await fs.copyFile(
               path.join(templatesDir, `${cfg.template}.rs`),
@@ -395,7 +395,7 @@ async function main() {
 
       // 5.2 Explicitly generate hollow stubs for non-vendor workspace dependencies
       const workspaceStubs = [{ name: "stacker", template: "stacker" }];
-      // 5.3 Generate blst, secp256k1, and rayon stubs (using templates loaded above)
+      // Generate blst, secp256k1, and rayon stubs from selected templates.
       const cryptoStubs = [
         {
           name: "blst-wasm-stub",
@@ -495,7 +495,7 @@ async function main() {
         await fs.writeFile(secpCargo, content);
       }
 
-      // Patch fastcrypto to fix type inference ambiguity in secp256r1
+      // Patch fastcrypto secp256r1 for the WASM-compatible dependency set.
       const fcSecp256r1 = path.join(
         fcDir,
         "fastcrypto",
@@ -505,7 +505,7 @@ async function main() {
       );
       if (await fs.stat(fcSecp256r1).catch(() => false)) {
         console.log(
-          "Patching fastcrypto secp256r1/mod.rs (Overwriting with fixed template)..."
+          "Patching fastcrypto secp256r1/mod.rs with selected template..."
         );
         const templatePath = path.join(
           templatesDir,
@@ -514,7 +514,7 @@ async function main() {
         await fs.copyFile(templatePath, fcSecp256r1);
       }
 
-      // Apply strict patching to vendored manifests to force stubs (ALWAYS run this)
+      // Apply vendored manifest redirects on each prepare run.
       console.log("Patching vendored manifests...");
       await patchAllCargoTomls(vendorDir);
 
@@ -626,7 +626,7 @@ panic = "abort"
       await fs.writeFile(problematicCrate, content);
     }
 
-    // PATCH: Inject wasm-bindgen into move-unit-test for debugging
+    // Add wasm-bindgen when the patched move-unit-test code requires it.
     const moveUnitTestCargo = path.join(
       suiWorkDir,
       "external-crates",
@@ -644,7 +644,7 @@ panic = "abort"
       }
     }
 
-    // Fix malformed external-crates/move/Cargo.toml where ']' might be commented out
+    // Keep external-crates/move/Cargo.toml parseable after manifest rewrites.
     const moveWorkspaceToml = path.join(
       suiWorkDir,
       "external-crates",
@@ -671,7 +671,7 @@ panic = "abort"
             .endsWith('# "move-execution/$CUT/crates/move-vm-types"]')
         ) {
           console.log(
-            "Fixing unclosed members array in external-crates/move/Cargo.toml..."
+            "Adding missing closing bracket in external-crates/move/Cargo.toml..."
           );
           content = content.replace(
             '# "move-execution/$CUT/crates/move-vm-types"]',
@@ -679,9 +679,9 @@ panic = "abort"
           );
           await fs.writeFile(moveWorkspaceToml, content);
         } else if (!membersPart.trim().endsWith("]")) {
-          // Fallback: just ensure it ends with ]
+          // Ensure the members array has a closing bracket.
           console.log(
-            "Forcing closing bracket in external-crates/move/Cargo.toml..."
+            "Adding closing bracket in external-crates/move/Cargo.toml..."
           );
           content = content.replace(
             "[workspace.dependencies]",
@@ -785,7 +785,7 @@ panic = "abort"
         );
         if (await dirExists(nativesSrc)) {
           console.log(`  Stubbing nitro_attestation in ${v}...`);
-          // Overwrite nitro_attestation.rs using the template
+          // Apply the nitro_attestation compatibility template.
           await fs.copyFile(
             path.join(templatesDir, filePatches.nitroAttestation),
             path.join(nativesSrc, "crypto/nitro_attestation.rs")
@@ -812,7 +812,7 @@ panic = "abort"
       }
     }
 
-    // 4.2 Patch move-trace-format to stub out zstd AND fix Type Mismatch
+    // Patch move-trace-format for WASM-compatible zstd and reader types.
     const moveTraceFormatLib = path.join(
       suiWorkDir,
       "external-crates",
@@ -832,7 +832,7 @@ panic = "abort"
       "format.rs"
     );
 
-    // Fix existing stubbing (lib.rs)
+    // Apply the move-trace-format lib compatibility patch.
     if (await fs.stat(moveTraceFormatLib).catch(() => false)) {
       let content = await fs.readFile(moveTraceFormatLib, "utf8");
       content = content.replace(
@@ -867,7 +867,7 @@ panic = "abort"
       let content = await fs.readFile(moveTraceFormatFormat, "utf-8");
       if (content.includes("let data = zstd::stream::Decoder::new(data)?;")) {
         console.log(
-          "Patching move-trace-format/src/format.rs to fix BufReader mismatch..."
+          "Patching move-trace-format/src/format.rs for BufReader compatibility..."
         );
         content = content.replace(
           "let data = zstd::stream::Decoder::new(data)?;",
@@ -916,7 +916,7 @@ panic = "abort"
     );
     await fs.copyFile(patchedRunnerStub, moveUnitTestRunner);
 
-    // 5. Aggressively patch ALL Cargo.toml files for compatibility
+    // Patch Cargo.toml files for WASM compatibility.
     console.log("Patching all Cargo.toml files for Wasm compatibility...");
     async function patchAllCargoTomls(dir) {
       const files = await fs.readdir(dir, { withFileTypes: true });
@@ -972,7 +972,7 @@ panic = "abort"
               generatedStubsDir,
               `${item}-hollow-stub`
             );
-            // 0. GENERATE NAMED STUB (Always regenerate to capture template updates)
+            // Generate named stub from the selected template.
             await fs.mkdir(namedStubDir, { recursive: true });
             await fs.mkdir(path.join(namedStubDir, "src"), { recursive: true });
 
@@ -1008,7 +1008,7 @@ panic = "abort"
                 `[package]\nname = "${item}"\nversion = "0.1.0"\nedition = "2021"\n${extraConfig}`
               );
 
-              // Refactored Stub Generation: copy declared templates or explicit empty stubs only.
+              // Copy declared templates or explicit empty stubs only.
               const templateName = stubTemplates[item];
               const destPath = path.join(namedStubDir, "src", "lib.rs");
               if (templateName) {
@@ -1134,7 +1134,7 @@ panic = "abort"
             }
           }
 
-          // 2. DIRECT PATH STUBBING: Force inject absolute paths
+          // Redirect native dependencies to generated stub crates.
           const stubs = {
             blst: path.join(generatedStubsDir, "blst-wasm-stub"),
             "secp256k1-sys": path.join(generatedStubsDir, "secp256k1-sys-stub"),
@@ -1154,8 +1154,7 @@ panic = "abort"
             if (regex.test(content)) {
               content = content.replace(regex, (match) => {
                 const isOptional = match.includes("optional = true");
-                // For direct path injection, if the original match had a version, we might want to preserve compatibility.
-                // But for simplicity, we just point to the path.
+                // Preserve optional dependency metadata while redirecting to the generated stub.
                 return `${name} = { path = "${stubPath}"${isOptional ? ", optional = true" : ""} }`;
               });
               changed = true;
@@ -1193,7 +1192,7 @@ panic = "abort"
             }
           }
           if (content.includes("reqwest")) {
-            // Force reqwest to use blocking matching the lockfile version pattern roughly, but disable default features (TLS)
+            // Keep reqwest on a blocking-compatible version without default TLS features.
             const regex = new RegExp(
               `^\\s*reqwest(\\s*=(?:\\s*\\{[\\s\\S]*?\\}|.*$))`,
               "gm"
@@ -1201,7 +1200,6 @@ panic = "abort"
             if (regex.test(content)) {
               content = content.replace(regex, (match) => {
                 const isOptional = match.includes("optional = true");
-                // Assuming version 0.12.9 from lockfile
                 return `reqwest = { version = "0.12.9", default-features = false, features = ["json", "blocking"]${isOptional ? ", optional = true" : ""} }`;
               });
               changed = true;
@@ -1209,7 +1207,7 @@ panic = "abort"
           }
 
           if (content.includes("getrandom")) {
-            // Force getrandom to 0.2.15 with js feature
+            // Use getrandom 0.2 with the js feature for WASM.
             const regex = new RegExp(
               `^\\s*getrandom(\\s*=(?:\\s*\\{[\\s\\S]*?\\}|.*$))`,
               "gm"

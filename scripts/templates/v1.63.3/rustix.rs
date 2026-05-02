@@ -30,7 +30,7 @@ pub mod fs {
         pub st_ino: u64, 
         pub st_nlink: u64, 
         pub st_size: u64,
-        pub st_dev: u64,  // Added for tempfile
+        pub st_dev: u64,  // Required by tempfile
         pub st_uid: u32,
         pub st_gid: u32,
         pub st_atime: i64,

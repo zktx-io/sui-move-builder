@@ -22,8 +22,6 @@ export function lockfile_v4_fetch_plan(
 ): string;
 export function lockfile_v4_validate_graph(inputJson: string): string;
 export function lockfile_v4_resolve_package_groups(inputJson: string): string;
-export function manifest_package_plan(inputJson: string): string;
-export function manifest_resolve_package_groups(inputJson: string): string;
 export function manifest_graph_resolve_package_groups(
   inputJson: string
 ): string;
