@@ -113,6 +113,55 @@ async function cleanProfileOutputs(context, profileName, profiles) {
   }
 }
 
+async function optimizeFullWasm(profile) {
+  if (profile.name !== "full") return;
+
+  if (process.env.SUI_WASM_SKIP_WASM_OPT === "1") {
+    console.log(
+      "Skipping full WASM post-processing because SUI_WASM_SKIP_WASM_OPT=1."
+    );
+    return;
+  }
+
+  const wasmOptCmd = process.env.WASM_OPT || "wasm-opt";
+  try {
+    await runCapture(wasmOptCmd, ["--version"]);
+  } catch {
+    throw new Error(
+      `Full WASM post-processing requires '${wasmOptCmd}' from Binaryen. Install wasm-opt, set WASM_OPT to its path, or set SUI_WASM_SKIP_WASM_OPT=1 to build without size post-processing.`
+    );
+  }
+
+  const wasmPath = path.join(profile.outDir, "sui_move_wasm_bg.wasm");
+  const optimizedPath = `${wasmPath}.opt`;
+  const before = (await fs.stat(wasmPath)).size;
+
+  console.log("Post-processing full WASM with wasm-opt strip passes...");
+  try {
+    await run(
+      wasmOptCmd,
+      [
+        "--strip-debug",
+        "--strip-producers",
+        "--enable-bulk-memory",
+        wasmPath,
+        "-o",
+        optimizedPath,
+      ],
+      { cwd: profile.outDir }
+    );
+    await fs.rename(optimizedPath, wasmPath);
+  } finally {
+    await fs.rm(optimizedPath, { force: true });
+  }
+
+  const after = (await fs.stat(wasmPath)).size;
+  const saved = before - after;
+  console.log(
+    `Full WASM post-processing reduced raw size by ${saved} bytes (${before} -> ${after}).`
+  );
+}
+
 async function main() {
   try {
     const context = createWasmBuildContext();
@@ -230,6 +279,8 @@ async function main() {
           `Patched 'env' import and added 'now' polyfill for ${profile.name}.`
         );
       }
+
+      await optimizeFullWasm(profile);
     }
 
     console.log("\nBuild successful! Artifacts in dist/");

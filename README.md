@@ -260,7 +260,7 @@ npm run build               # WASM build + JS package build
 npm run release:check       # typecheck + lint + format check + tests
 ```
 
-`prepare:wasm` may download or update the pinned Sui source, create a disposable patched worktree, generate compatibility stubs/vendor patches, and install the matching local `wasm-bindgen` tool. The `build:wasm:prepared:*` scripts expect that prepared state to already exist and use it to build `dist/lite`, `dist/full`, or both. Prepared builds are best-effort offline builds; set `SUI_WASM_STRICT_OFFLINE=1` when you want Cargo to fail instead of reaching the network.
+`prepare:wasm` may download or update the pinned Sui source, create a disposable patched worktree, generate compatibility stubs/vendor patches, and install the matching local `wasm-bindgen` tool. The `build:wasm:prepared:*` scripts expect that prepared state to already exist and use it to build `dist/lite`, `dist/full`, or both. Full builds run a Binaryen `wasm-opt` strip pass after `wasm-bindgen`; set `WASM_OPT=/path/to/wasm-opt` if it is not on `PATH`, or `SUI_WASM_SKIP_WASM_OPT=1` to build without that size post-processing. Prepared builds are best-effort offline builds; set `SUI_WASM_STRICT_OFFLINE=1` when you want Cargo to fail instead of reaching the network.
 
 The build keeps the upstream Sui checkout separate from generated and patched state:
 

@@ -11,7 +11,7 @@ The development WASM build keeps four areas separate:
 - `.sui-build/generated/`: generated compatibility state, including stubs, vendored sources, and local build tools.
 - `dist/`: npm-facing generated lite/full artifacts.
 
-`npm run prepare:wasm` is the step that may fetch/update source, recreate the worktree, apply overlays/templates, and write `.sui-build/patch-state.json`. `npm run build:wasm:prepared:lite`, `npm run build:wasm:prepared:full`, and `npm run build:wasm:prepared:all` validate that state and build `dist/lite`, `dist/full`, or both; they should not be used as porting steps for a new upstream version. `npm run build:wasm:prepared` is an all-profile alias, and `npm run build:wasm` remains the compatibility entrypoint that runs both phases.
+`npm run prepare:wasm` is the step that may fetch/update source, recreate the worktree, apply overlays/templates, and write `.sui-build/patch-state.json`. `npm run build:wasm:prepared:lite`, `npm run build:wasm:prepared:full`, and `npm run build:wasm:prepared:all` validate that state and build `dist/lite`, `dist/full`, or both; they should not be used as porting steps for a new upstream version. Full prepared builds run a Binaryen `wasm-opt` strip pass after `wasm-bindgen` unless `SUI_WASM_SKIP_WASM_OPT=1` is set. `npm run build:wasm:prepared` is an all-profile alias, and `npm run build:wasm` remains the compatibility entrypoint that runs both phases.
 
 ## 1) Input / Source Loading
 
