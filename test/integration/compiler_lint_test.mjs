@@ -126,5 +126,15 @@ if (!("error" in invalidResult)) {
 if (!invalidResult.error.includes("Invalid lintFlag")) {
   throw new Error(`Unexpected invalid lintFlag error: ${invalidResult.error}`);
 }
+if (invalidResult.category !== "compile") {
+  throw new Error(
+    `Invalid lintFlag should report compile category, got: ${invalidResult.category}`
+  );
+}
+if (invalidResult.code !== undefined) {
+  throw new Error(
+    `Invalid lintFlag should not synthesize a code, got: ${invalidResult.code}`
+  );
+}
 
 console.log("[OK] lintFlag configures Move compiler lint visitors");

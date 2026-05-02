@@ -2,6 +2,7 @@ import { Fetcher, GitHubFetcher } from "./fetcher.js";
 import { resolve as resolveMoveToml } from "./resolver.js";
 import { parseToml } from "./tomlParser.js";
 import { generateMoveLockV4FromJson } from "./lockfileGenerator.js";
+import { structuredErrorCode } from "./structuredError.js";
 
 /** Build progress event types for tracking build status */
 export type BuildProgressEvent =
@@ -76,8 +77,21 @@ export interface BuildSuccess {
   warnings?: string;
 }
 
+export type BuildFailureCategory =
+  | "dependency_resolution"
+  | "compile"
+  | "compiler_output"
+  | "lockfile_generation"
+  | "test_runner"
+  | "wasm_init"
+  | "unknown";
+
 export interface BuildFailure {
   error: string;
+  /** Broad failing stage. Intended for reporting; the error string remains the detailed diagnostic. */
+  category?: BuildFailureCategory;
+  /** Optional structured failure code produced by Rust/WASM helpers. */
+  code?: string;
 }
 
 import {
@@ -199,14 +213,18 @@ async function loadWasm(
   return wasmReady;
 }
 
-function asFailure(err: unknown): BuildFailure {
+function asFailure(
+  err: unknown,
+  category: BuildFailureCategory = "unknown"
+): BuildFailure {
   const msg =
     err instanceof Error
       ? err.message
       : typeof err === "string"
         ? err
         : "Unknown error";
-  return { error: msg };
+  const code = structuredErrorCode(err);
+  return code ? { error: msg, category, code } : { error: msg, category };
 }
 
 function ensureCompileResult(result: unknown): {
@@ -280,7 +298,7 @@ function parseCompileResult(
       warnings: parsed.warnings,
     };
   } catch (error) {
-    return asFailure(error);
+    return asFailure(error, "compiler_output");
   }
 }
 
@@ -434,9 +452,14 @@ export async function buildMovePackage(
     input.onProgress?.({ type: "resolve_start" });
 
     // Use pre-resolved dependencies if provided, otherwise resolve them
-    const resolved = input.resolvedDependencies
-      ? input.resolvedDependencies
-      : await resolveDependencies(input);
+    let resolved: ResolvedDependencies;
+    try {
+      resolved = input.resolvedDependencies
+        ? input.resolvedDependencies
+        : await resolveDependencies(input);
+    } catch (error) {
+      return asFailure(error, "dependency_resolution");
+    }
 
     // Emit resolve_complete event
     let depCount = 0;
@@ -448,7 +471,12 @@ export async function buildMovePackage(
     }
     input.onProgress?.({ type: "resolve_complete", count: depCount });
 
-    const mod = await loadWasm(input.wasm);
+    let mod: WasmModule;
+    try {
+      mod = await loadWasm(input.wasm);
+    } catch (error) {
+      return asFailure(error, "wasm_init");
+    }
     // Log dependency addresses passed to compiler (best-effort)
     logDependencyAddresses(resolved.dependencies);
 
@@ -468,19 +496,23 @@ export async function buildMovePackage(
     // Emit compile_start event
     input.onProgress?.({ type: "compile_start" });
 
-    const raw = (mod as any).compile(
-      resolved.files,
-      resolved.dependencies, // Pass original array for compilation
-      JSON.stringify({
-        silenceWarnings: input.silenceWarnings,
-        testMode: input.testMode,
-        lintFlag: input.lintFlag,
-        stripMetadata: input.stripMetadata,
-        ansiColor: input.ansiColor,
-      })
-    );
-
-    const result = ensureCompileResult(raw);
+    let result: { success: () => boolean; output: () => string };
+    try {
+      const raw = (mod as any).compile(
+        resolved.files,
+        resolved.dependencies, // Pass original array for compilation
+        JSON.stringify({
+          silenceWarnings: input.silenceWarnings,
+          testMode: input.testMode,
+          lintFlag: input.lintFlag,
+          stripMetadata: input.stripMetadata,
+          ansiColor: input.ansiColor,
+        })
+      );
+      result = ensureCompileResult(raw);
+    } catch (error) {
+      return asFailure(error, "compile");
+    }
     const ok = result.success();
     const output = result.output();
 
@@ -488,7 +520,7 @@ export async function buildMovePackage(
     input.onProgress?.({ type: "compile_complete" });
 
     if (!ok) {
-      return asFailure(output);
+      return asFailure(output, "compile");
     }
 
     // Emit lockfile_generate event
@@ -516,16 +548,21 @@ export async function buildMovePackage(
     // Generate Move.lock V4
     // ORIGINAL: root_package.rs:272-282 - Pass existing lockfile to preserve other environments
     // Use lockfileDependencies which includes ALL packages (no linkage filtering)
-    const existingLockfile = input.files["Move.lock"];
-    const moveLock = generateMoveLockV4FromJson(
-      resolved.lockfileDependencies,
-      rootPackageName,
-      environment,
-      rootDepAliasToPackageName,
-      existingLockfile, // Preserve other environments from existing lockfile
-      mod.lockfile_v4_generate,
-      input.files
-    );
+    let moveLock: string;
+    try {
+      const existingLockfile = input.files["Move.lock"];
+      moveLock = generateMoveLockV4FromJson(
+        resolved.lockfileDependencies,
+        rootPackageName,
+        environment,
+        rootDepAliasToPackageName,
+        existingLockfile, // Preserve other environments from existing lockfile
+        mod.lockfile_v4_generate,
+        input.files
+      );
+    } catch (error) {
+      return asFailure(error, "lockfile_generation");
+    }
 
     const buildResult = parseCompileResult(output, moveLock, environment);
 
@@ -565,11 +602,21 @@ export async function testMovePackage(
 ): Promise<TestSuccess | BuildFailure> {
   try {
     // Use pre-resolved dependencies if provided, otherwise resolve them
-    const resolved = input.resolvedDependencies
-      ? input.resolvedDependencies
-      : await resolveDependencies(input);
+    let resolved: ResolvedDependencies;
+    try {
+      resolved = input.resolvedDependencies
+        ? input.resolvedDependencies
+        : await resolveDependencies(input);
+    } catch (error) {
+      return asFailure(error, "dependency_resolution");
+    }
 
-    const mod = await loadWasm(input.wasm);
+    let mod: WasmModule;
+    try {
+      mod = await loadWasm(input.wasm);
+    } catch (error) {
+      return asFailure(error, "wasm_init");
+    }
     // Log dependency addresses passed to compiler (best-effort)
     logDependencyAddresses(resolved.dependencies);
 
@@ -596,7 +643,7 @@ export async function testMovePackage(
 
     return { passed, output };
   } catch (error) {
-    return asFailure(error);
+    return asFailure(error, "test_runner");
   }
 }
 

@@ -43,7 +43,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "clean": "rm -rf dist .sui-build vendor scripts/stubs local-bin",
+    "clean": "rm -rf dist .sui-build",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

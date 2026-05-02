@@ -10,7 +10,11 @@ import {
   runCapture,
 } from "./sui-workspace.mjs";
 import { loadTemplateManifest } from "./wasm/template-manifest.mjs";
-import { createWasmBuildContext, writePatchState } from "./wasm/context.mjs";
+import {
+  createWasmBuildContext,
+  deletePatchState,
+  writePatchState,
+} from "./wasm/context.mjs";
 
 const context = createWasmBuildContext();
 const {
@@ -89,6 +93,8 @@ async function ensureWasmBindgenCli(localBin, requiredVersion) {
 
 async function main() {
   try {
+    await deletePatchState(context);
+
     if (restArgs.length > 0) {
       throw new Error(`Unknown build arguments: ${restArgs.join(" ")}`);
     }

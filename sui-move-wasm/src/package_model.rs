@@ -397,20 +397,121 @@ fn ensure_std_and_sui_addresses(root_named_address_map: &mut BTreeMap<String, Nu
     }
 }
 
+fn dependency_file_paths(dep_packages: &[PackageGroup]) -> HashSet<&str> {
+    let mut paths = HashSet::new();
+    for pkg_group in dep_packages {
+        for path in pkg_group.files.keys() {
+            paths.insert(path.as_str());
+        }
+    }
+    paths
+}
+
+fn compiler_package_config(is_dependency: bool, edition: Edition, flavor: Flavor) -> PackageConfig {
+    PackageConfig {
+        is_dependency,
+        edition,
+        flavor,
+        warning_filter: WarningFiltersBuilder::new_for_source(),
+        ..PackageConfig::default()
+    }
+}
+
+fn package_paths_for_compiler(
+    package_id: &str,
+    is_dependency: bool,
+    edition: Edition,
+    flavor: Flavor,
+    paths: Vec<Symbol>,
+    named_address_map: BTreeMap<String, NumericalAddress>,
+) -> PackagePaths<Symbol, String> {
+    PackagePaths {
+        name: Some((
+            Symbol::from(package_id),
+            compiler_package_config(is_dependency, edition, flavor),
+        )),
+        paths,
+        named_address_map,
+    }
+}
+
+fn merge_dependency_addresses(
+    root_named_address_map: &mut BTreeMap<String, NumericalAddress>,
+    dependency_named_address_map: &BTreeMap<String, NumericalAddress>,
+) {
+    for (name, addr) in dependency_named_address_map {
+        if !root_named_address_map.contains_key(name) {
+            root_named_address_map.insert(name.clone(), *addr);
+        }
+    }
+}
+
+fn dependency_output_id_entry(snapshot: &ResolvedPackageSnapshot) -> Option<(String, [u8; 32])> {
+    let bytes = snapshot.dependency_id_for_output?;
+    if !should_emit_dependency_id(&bytes, snapshot.is_explicit_root_dependency) {
+        return None;
+    }
+
+    let sort_name = snapshot
+        .manifest_name
+        .clone()
+        .unwrap_or_else(|| snapshot.package_id.clone());
+    Some((sort_name, bytes))
+}
+
+fn dependency_addresses_for_compiler(
+    snapshot: &ResolvedPackageSnapshot,
+) -> BTreeMap<String, NumericalAddress> {
+    let mut named_address_map = snapshot.named_address_map.clone();
+    ensure_std_and_sui_addresses(&mut named_address_map);
+    named_address_map
+}
+
+fn dependency_package_paths(
+    pkg_group: &PackageGroup,
+    snapshot: &ResolvedPackageSnapshot,
+    mode: &CompilerInputMode,
+    named_address_map: BTreeMap<String, NumericalAddress>,
+) -> PackagePaths<Symbol, String> {
+    let paths = source_paths_for_package(
+        &pkg_group.files,
+        mode.dependency_test_mode(),
+        Some(snapshot.package_id.as_str()),
+        None,
+    );
+
+    package_paths_for_compiler(
+        snapshot.package_id.as_str(),
+        true,
+        snapshot.edition,
+        snapshot.flavor,
+        paths,
+        named_address_map,
+    )
+}
+
+fn root_package_paths(
+    snapshot: &RootPackageSnapshot,
+    paths: Vec<Symbol>,
+    named_address_map: BTreeMap<String, NumericalAddress>,
+) -> PackagePaths<Symbol, String> {
+    package_paths_for_compiler(
+        snapshot.name.as_str(),
+        false,
+        snapshot.edition,
+        snapshot.flavor,
+        paths,
+        named_address_map,
+    )
+}
+
 pub(crate) fn build_compiler_input(
     files: &BTreeMap<String, String>,
     dep_packages: &[PackageGroup],
     mode: CompilerInputMode,
 ) -> CompilerInput {
     let root_snapshot = root_package_snapshot(files);
-
-    let mut dependency_paths = HashSet::new();
-    for pkg_group in dep_packages {
-        for path in pkg_group.files.keys() {
-            dependency_paths.insert(path.as_str());
-        }
-    }
-
+    let dependency_paths = dependency_file_paths(dep_packages);
     let root_targets =
         source_paths_for_package(files, mode.root_test_mode(), None, Some(&dependency_paths));
 
@@ -421,67 +522,25 @@ pub(crate) fn build_compiler_input(
 
     for pkg_group in dep_packages {
         let snapshot = resolved_package_snapshot(pkg_group, &root_snapshot.dependency_aliases);
-        let dependency_sort_name = snapshot
-            .manifest_name
-            .clone()
-            .unwrap_or_else(|| snapshot.package_id.clone());
 
-        let dep_files_sorted = source_paths_for_package(
-            &pkg_group.files,
-            mode.dependency_test_mode(),
-            Some(snapshot.package_id.as_str()),
-            None,
-        );
-
-        if let Some(bytes) = snapshot.dependency_id_for_output {
-            if should_emit_dependency_id(&bytes, snapshot.is_explicit_root_dependency)
-                && emitted_dependency_ids.insert(bytes)
-            {
-                dependency_ids_by_name.push((dependency_sort_name, bytes));
+        if let Some((sort_name, bytes)) = dependency_output_id_entry(&snapshot) {
+            if emitted_dependency_ids.insert(bytes) {
+                dependency_ids_by_name.push((sort_name, bytes));
             }
         }
 
-        let mut dependency_named_address_map = snapshot.named_address_map.clone();
-        ensure_std_and_sui_addresses(&mut dependency_named_address_map);
-
-        for (name, addr) in &dependency_named_address_map {
-            if !root_named_address_map.contains_key(name) {
-                root_named_address_map.insert(name.clone(), *addr);
-            }
-        }
-
-        dep_package_paths.push(PackagePaths {
-            name: Some((
-                Symbol::from(snapshot.package_id.as_str()),
-                PackageConfig {
-                    is_dependency: true,
-                    edition: snapshot.edition,
-                    flavor: snapshot.flavor,
-                    warning_filter: WarningFiltersBuilder::new_for_source(),
-                    ..PackageConfig::default()
-                },
-            )),
-            paths: dep_files_sorted,
-            named_address_map: dependency_named_address_map,
-        });
+        let dependency_named_address_map = dependency_addresses_for_compiler(&snapshot);
+        merge_dependency_addresses(&mut root_named_address_map, &dependency_named_address_map);
+        dep_package_paths.push(dependency_package_paths(
+            pkg_group,
+            &snapshot,
+            &mode,
+            dependency_named_address_map,
+        ));
     }
 
     ensure_std_and_sui_addresses(&mut root_named_address_map);
-
-    let target_package = PackagePaths {
-        name: Some((
-            Symbol::from(root_snapshot.name.as_str()),
-            PackageConfig {
-                is_dependency: false,
-                edition: root_snapshot.edition,
-                flavor: root_snapshot.flavor,
-                warning_filter: WarningFiltersBuilder::new_for_source(),
-                ..PackageConfig::default()
-            },
-        )),
-        paths: root_targets,
-        named_address_map: root_named_address_map,
-    };
+    let target_package = root_package_paths(&root_snapshot, root_targets, root_named_address_map);
 
     let mut package_paths = vec![target_package];
     package_paths.extend(dep_package_paths);

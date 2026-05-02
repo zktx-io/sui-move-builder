@@ -1,4 +1,4 @@
-const { resolveDependencies } = await import(
+const { buildMovePackage, resolveDependencies } = await import(
   new URL("../../dist/full/index.js", import.meta.url)
 );
 
@@ -116,6 +116,14 @@ class LocalFetcher {
 
 async function resolve(files, network = "testnet") {
   return resolveDependencies({
+    files,
+    network,
+    fetcher: new LocalFetcher(),
+  });
+}
+
+async function buildForFailure(files, network = "mainnet") {
+  return buildMovePackage({
     files,
     network,
     fetcher: new LocalFetcher(),
@@ -246,6 +254,21 @@ MissingSource = { local = "../missing-source" }
   /bytecode-only dependencies are not supported/,
   "source-only dependency enforcement"
 );
+await assertBuildFailureCode(
+  () =>
+    buildForFailure(
+      rootFiles({
+        dependencies: `
+[dependencies]
+MissingSource = { local = "../missing-source" }
+`,
+      }),
+      "mainnet"
+    ),
+  "dependency_resolution",
+  "bytecode_only_dependency_unsupported",
+  "source-only dependency failure code"
+);
 console.log("[OK] manifest fallback rejects source-less dependencies");
 
 await assertRejects(
@@ -261,6 +284,21 @@ Unsupported = { version = "1.0.0" }
     ),
   /unsupported source form/,
   "unsupported dependency source"
+);
+await assertBuildFailureCode(
+  () =>
+    buildForFailure(
+      rootFiles({
+        dependencies: `
+[dependencies]
+Unsupported = { version = "1.0.0" }
+`,
+      }),
+      "mainnet"
+    ),
+  "dependency_resolution",
+  "unsupported_dependency_source",
+  "unsupported dependency source failure code"
 );
 console.log("[OK] manifest fallback rejects unsupported dependency sources");
 
@@ -291,4 +329,19 @@ async function assertRejects(fn, pattern, label) {
     return;
   }
   throw new Error(`${label}: expected rejection`);
+}
+
+async function assertBuildFailureCode(fn, category, code, label) {
+  const result = await fn();
+  if (!("error" in result)) {
+    throw new Error(`${label}: expected build failure`);
+  }
+  if (result.category !== category) {
+    throw new Error(
+      `${label}: expected category ${category}, got ${result.category}`
+    );
+  }
+  if (result.code !== code) {
+    throw new Error(`${label}: expected code ${code}, got ${result.code}`);
+  }
 }

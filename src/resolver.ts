@@ -7,6 +7,7 @@
 
 import { parseToml } from "./tomlParser.js";
 import type { Fetcher, FetchLocalContext } from "./fetcher.js";
+import { StructuredBuildError } from "./structuredError.js";
 
 // Load from shared config (synchronized with scripts/build-wasm.mjs)
 import suiVersionConfig from "../sui-version.json" with { type: "json" };
@@ -56,6 +57,7 @@ interface LockfileV4PlanPackage {
 interface LockfileV4FetchPlanResponse {
   status: "ok" | "missing" | "error";
   error?: string;
+  code?: string;
   reason?: string;
   rootId?: string;
   lockfileOrder?: string[];
@@ -65,6 +67,7 @@ interface LockfileV4FetchPlanResponse {
 interface LockfileV4ResolvePackageGroupsResponse {
   status: "ok" | "out_of_date" | "error";
   error?: string;
+  code?: string;
   reason?: string;
   packageId?: string;
   rootFiles?: Record<string, string>;
@@ -75,6 +78,7 @@ interface LockfileV4ResolvePackageGroupsResponse {
 interface ManifestGraphPackageGroupsResponse {
   status: "needFetch" | "ok" | "error";
   error?: string;
+  code?: string;
   requests?: ManifestGraphFetchRequest[];
   rootFiles?: Record<string, string>;
   dependencies?: unknown[];
@@ -273,7 +277,10 @@ export class Resolver {
       }
 
       if (resolved.status === "error") {
-        throw new Error(resolved.error || "Manifest graph resolution failed");
+        throw new StructuredBuildError(
+          resolved.error || "Manifest graph resolution failed",
+          resolved.code
+        );
       }
 
       const requests = resolved.requests || [];
@@ -545,7 +552,10 @@ export class Resolver {
       return null;
     }
     if (plan.status === "error") {
-      throw new Error(plan.error || "Move.lock V4 fetch plan failed");
+      throw new StructuredBuildError(
+        plan.error || "Move.lock V4 fetch plan failed",
+        plan.code
+      );
     }
     if (plan.status !== "ok" || !plan.packages) {
       throw new Error("Move.lock V4 fetch plan did not include packages");
@@ -594,8 +604,9 @@ export class Resolver {
       return null;
     }
     if (resolved.status === "error") {
-      throw new Error(
-        resolved.error || "Move.lock V4 package-group resolution failed"
+      throw new StructuredBuildError(
+        resolved.error || "Move.lock V4 package-group resolution failed",
+        resolved.code
       );
     }
     if (

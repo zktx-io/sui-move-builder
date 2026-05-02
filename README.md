@@ -89,6 +89,8 @@ const result = await buildMovePackage({
 
 if ("error" in result) {
   console.error("Build failed:", result.error);
+  console.error("Stage:", result.category);
+  if (result.code) console.error("Code:", result.code);
 } else {
   // Compilation outputs
   console.log("Modules:", result.modules); // Array<string>: Base64-encoded bytecode
@@ -147,6 +149,8 @@ const result = await testMovePackage({
 
 if ("error" in result) {
   console.error("Test failed to run:", result.error);
+  console.error("Stage:", result.category);
+  if (result.code) console.error("Code:", result.code);
 } else {
   console.log("Tests Passed:", result.passed);
   console.log("Output:", result.output);
@@ -179,6 +183,8 @@ if ("error" in result) {
 | `environment`   | `string`   | Build environment (e.g., "mainnet", "testnet")    |
 | `publishedToml` | `string?`  | Migrated Published.toml from supported V3 records |
 | `warnings`      | `string?`  | Compiler warnings (if `silenceWarnings: false`)   |
+
+Build and test failures return `{ error, category, code? }`. The `category` value is a broad stage label such as `dependency_resolution`, `compile`, `compiler_output`, `lockfile_generation`, `test_runner`, `wasm_init`, or `unknown`; the `error` string remains the detailed diagnostic. `code` is present only when a Rust/WASM helper produced a structured failure code.
 
 ## Fetching packages from GitHub
 
@@ -260,7 +266,7 @@ npm run build               # WASM build + JS package build
 npm run release:check       # typecheck + lint + format check + tests
 ```
 
-`prepare:wasm` may download or update the pinned Sui source, create a disposable patched worktree, generate compatibility stubs/vendor patches, and install the matching local `wasm-bindgen` tool. The `build:wasm:prepared:*` scripts expect that prepared state to already exist and use it to build `dist/lite`, `dist/full`, or both. Full builds run a Binaryen `wasm-opt` strip pass after `wasm-bindgen`; set `WASM_OPT=/path/to/wasm-opt` if it is not on `PATH`, or `SUI_WASM_SKIP_WASM_OPT=1` to build without that size post-processing. Prepared builds are best-effort offline builds; set `SUI_WASM_STRICT_OFFLINE=1` when you want Cargo to fail instead of reaching the network.
+`prepare:wasm` may download or update the pinned Sui source, create a disposable patched worktree, generate compatibility stubs/vendor patches, and install the matching local `wasm-bindgen` tool. It removes stale patch state at startup and writes `.sui-build/patch-state.json` only after successful preparation. The `build:wasm:prepared:*` scripts expect that prepared state to already exist and use it to build `dist/lite`, `dist/full`, or both. Full builds run a Binaryen `wasm-opt` strip pass after `wasm-bindgen`; set `WASM_OPT=/path/to/wasm-opt` if it is not on `PATH`, or `SUI_WASM_SKIP_WASM_OPT=1` to build without that size post-processing. Prepared builds are best-effort offline builds; set `SUI_WASM_STRICT_OFFLINE=1` when you want Cargo to fail instead of reaching the network.
 
 The build keeps the upstream Sui checkout separate from generated and patched state:
 
@@ -269,10 +275,10 @@ The build keeps the upstream Sui checkout separate from generated and patched st
 - `.sui-build/generated/stubs/`: generated WASM compatibility stub crates
 - `.sui-build/generated/vendor/`: vendored dependency sources that need local WASM patching
 - `.sui-build/generated/local-bin/`: local build tools such as the pinned `wasm-bindgen`
-- `.sui-build/patch-state.json`: prepared workspace metadata checked by `build:wasm:prepared`
+- `.sui-build/patch-state.json`: successful prepare marker checked by `build:wasm:prepared`
 - `dist/full` and `dist/lite`: generated npm artifacts
 
-Only edit tracked project sources such as `src/`, `sui-move-wasm/`, and `scripts/templates/`. The `.sui-build/` directory is ignored build/cache state. Set `SUI_SOURCE_DIR` or `SUI_WORK_DIR` only when you intentionally want those directories somewhere else.
+Only edit tracked project sources such as `src/`, `sui-move-wasm/`, and `scripts/templates/`. The `.sui-build/` directory is ignored build/cache state and can be removed with `npm run clean` together with `dist/`. Set `SUI_SOURCE_DIR` or `SUI_WORK_DIR` only when you intentionally want those directories somewhere else.
 
 Each Sui version needs a matching `scripts/templates/v<version>/` WASM compatibility template set with a `manifest.json` checked by `prepare:wasm`. `npm run build:wasm` fails before modifying the worktree if the selected version has not been ported yet.
 
@@ -407,8 +413,12 @@ Passing parity tests are evidence for the covered fixtures only. See `CLI_PIPELI
 
 For manual browser verification, run `npm run dev:browser-parity` and open the printed `http://127.0.0.1:<port>/` URL. The page loads a Move package from the pinned Sui examples, a local package path, or a GitHub repository; builds it with the selected browser WASM artifact; asks the local server to build the same package with `sui move build --dump-bytecode-as-base64 --path <package>`; then compares module bytecode, dependency IDs, and digest.
 
-## Planned Work
+## Support Status
 
-- **BuildPlan-equivalent compiler path**: Reduce direct `PackagePaths` assembly where upstream Sui compiler/package-manager behavior can be reused.
-- **Published.toml generation**: Generate deployment records after successful publication when this package adds publish support.
-- **Bytecode dependencies**: Support `.mv`-only dependency fallback used by the Sui CLI when sources are unavailable.
+| Area                                                       | Status                | Current contract                                                                                                                                                                        |
+| ---------------------------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Full upstream `BuildPlan` reuse                            | `planned`             | Snapshot adapter feasibility is tracked in `CLI_PIPELINE.md`. Do not change package order, address resolution, source discovery, lint, or test-mode behavior without targeted fixtures. |
+| Bytecode-only `.mv` dependency fallback                    | `unsupported`         | Source snapshots are required. The package does not synthesize source or package metadata to stand in for missing `.mv` fallback behavior.                                              |
+| `stripMetadata`                                            | `reserved/no-op`      | The option is part of the public shape but should not be described as active compiler behavior.                                                                                         |
+| Dev-address / extra named-address API                      | `requires API design` | No stable public override API exists yet.                                                                                                                                               |
+| V0/V1/V2/V3 lockfile graph loading as pinned graph sources | `unsupported`         | Supported packages use manifest fallback instead; V3 publication migration is separate from graph loading.                                                                              |

@@ -378,13 +378,9 @@ fn compile_impl(
         }
     };
 
-    let flags = if options.test_mode {
-        Flags::testing()
-    } else {
-        Flags::empty()
-    };
-
-    compiler = configure_compiler_for_sui(compiler, flags, lint_level);
+    let build_config =
+        compiler_build_config(options.test_mode, options.silence_warnings, lint_level);
+    compiler = configure_compiler_for_sui(compiler, &build_config);
 
     let (compiler_files, res) = match compiler.build() {
         Ok(res) => res,
@@ -578,8 +574,8 @@ fn test_impl(files_json: &str, dependencies_json: &str) -> MoveTestResult {
         }
     };
 
-    let flags = move_compiler::Flags::testing();
-    let compiler = configure_compiler_for_sui(compiler, flags, LintLevel::None);
+    let build_config = compiler_build_config(true, false, LintLevel::None);
+    let compiler = configure_compiler_for_sui(compiler, &build_config);
     let (files_info, comments_and_compiler_res) =
         match compiler.run::<{ move_compiler::PASS_CFGIR }>() {
             Ok(res) => res,
@@ -1214,17 +1210,61 @@ fn manifest_plan_is_false(value: &bool) -> bool {
     !*value
 }
 
-fn lockfile_v4_error(error: impl Into<String>) -> String {
-    serde_json::json!({
+#[derive(Debug)]
+struct HelperError {
+    message: String,
+    code: Option<&'static str>,
+}
+
+impl HelperError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: None,
+        }
+    }
+
+    fn with_code(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: Some(code),
+        }
+    }
+}
+
+impl From<String> for HelperError {
+    fn from(message: String) -> Self {
+        Self::new(message)
+    }
+}
+
+fn lockfile_v4_error_response(error: String, code: Option<&'static str>) -> String {
+    let mut response = serde_json::json!({
         "status": "error",
-        "error": error.into(),
-    })
-    .to_string()
+        "error": error,
+    });
+    if let Some(code) = code {
+        response["code"] = serde_json::json!(code);
+    }
+    response.to_string()
+}
+
+fn lockfile_v4_error(error: impl Into<String>) -> String {
+    lockfile_v4_error_response(error.into(), None)
+}
+
+fn lockfile_v4_error_with_code(code: &'static str, error: impl Into<String>) -> String {
+    lockfile_v4_error_response(error.into(), Some(code))
+}
+
+fn lockfile_v4_error_from_helper(error: HelperError) -> String {
+    lockfile_v4_error_response(error.message, error.code)
 }
 
 fn lockfile_v4_out_of_date(package_id: impl Into<String>) -> String {
     serde_json::json!({
         "status": "out_of_date",
+        "code": "lockfile_out_of_date",
         "reason": "out_of_date",
         "packageId": package_id.into(),
     })
@@ -1243,14 +1283,14 @@ fn lockfile_v4_parse_source(
     environment: &str,
     package_id: &str,
     source_value: Option<&toml::Value>,
-) -> Result<LockfileV4Source, String> {
+) -> Result<LockfileV4Source, HelperError> {
     let source = source_value
         .and_then(|value| value.as_table())
         .ok_or_else(|| {
-            format!(
+            HelperError::new(format!(
                 "Move.lock V4 pinned.{}.{} has no source",
                 environment, package_id
-            )
+            ))
         })?;
 
     if source.contains_key("root") {
@@ -1262,10 +1302,10 @@ fn lockfile_v4_parse_source(
             .get("rev")
             .and_then(|value| value.as_str())
             .ok_or_else(|| {
-                format!(
+                HelperError::new(format!(
                     "Move.lock V4 pinned.{}.{} git source is missing rev",
                     environment, package_id
-                )
+                ))
             })?;
         return Ok(LockfileV4Source::Git {
             git: git.to_string(),
@@ -1283,9 +1323,12 @@ fn lockfile_v4_parse_source(
         });
     }
 
-    Err(format!(
-        "Move.lock V4 pinned.{}.{} has unsupported source",
-        environment, package_id
+    Err(HelperError::with_code(
+        "unsupported_dependency_source",
+        format!(
+            "Move.lock V4 pinned.{}.{} has unsupported source",
+            environment, package_id
+        ),
     ))
 }
 
@@ -1304,10 +1347,13 @@ fn lockfile_v4_parse_deps(pin: &toml::Table) -> BTreeMap<String, String> {
 fn lockfile_v4_plan_from_toml(
     move_lock_toml: &str,
     environment: &str,
-) -> Result<Option<(String, Vec<String>, Vec<LockfileV4PlanPackage>)>, String> {
-    let parsed = move_lock_toml
-        .parse::<toml::Value>()
-        .map_err(|error| format!("Failed to parse Move.lock: {}", error))?;
+) -> Result<Option<(String, Vec<String>, Vec<LockfileV4PlanPackage>)>, HelperError> {
+    let parsed = move_lock_toml.parse::<toml::Value>().map_err(|error| {
+        HelperError::with_code(
+            "malformed_lockfile",
+            format!("Failed to parse Move.lock: {}", error),
+        )
+    })?;
 
     let pinned_env = match parsed
         .get("pinned")
@@ -1324,10 +1370,10 @@ fn lockfile_v4_plan_from_toml(
 
     for (package_id, pin_value) in pinned_env {
         let pin = pin_value.as_table().ok_or_else(|| {
-            format!(
+            HelperError::new(format!(
                 "Move.lock V4 pinned.{}.{} is not a table",
                 environment, package_id
-            )
+            ))
         })?;
         let source = lockfile_v4_parse_source(environment, package_id, pin.get("source"))?;
         if matches!(source, LockfileV4Source::Root) {
@@ -1347,16 +1393,16 @@ fn lockfile_v4_plan_from_toml(
     }
 
     if root_ids.is_empty() {
-        return Err(format!(
+        return Err(HelperError::new(format!(
             "Move.lock V4 pinned.{} has no root package entry",
             environment
-        ));
+        )));
     }
     if root_ids.len() > 1 {
-        return Err(format!(
+        return Err(HelperError::new(format!(
             "Move.lock V4 pinned.{} has multiple root package entries",
             environment
-        ));
+        )));
     }
 
     Ok(Some((root_ids.remove(0), lockfile_order, packages)))
@@ -1376,7 +1422,7 @@ pub fn lockfile_v4_fetch_plan(move_lock_toml: &str, environment: &str) -> String
             "Move.lock V4 has no pinned.{} section",
             environment
         )),
-        Err(error) => lockfile_v4_error(error),
+        Err(error) => lockfile_v4_error_from_helper(error),
     }
 }
 
@@ -1885,14 +1931,17 @@ fn lockfile_v4_append_other_environment_sections(
     lines: &mut Vec<String>,
     existing_lockfile: &str,
     environment: &str,
-) -> Result<(), String> {
+) -> Result<(), HelperError> {
     if existing_lockfile.trim().is_empty() {
         return Ok(());
     }
 
-    existing_lockfile
-        .parse::<toml::Value>()
-        .map_err(|error| format!("Failed to parse existing Move.lock: {}", error))?;
+    existing_lockfile.parse::<toml::Value>().map_err(|error| {
+        HelperError::with_code(
+            "malformed_lockfile",
+            format!("Failed to parse existing Move.lock: {}", error),
+        )
+    })?;
 
     let mut current_section = vec![];
     let mut in_other_environment = false;
@@ -1939,9 +1988,11 @@ fn lockfile_v4_append_other_environment_sections(
     Ok(())
 }
 
-fn lockfile_v4_generate_impl(input: LockfileV4GenerateInput) -> Result<String, String> {
+fn lockfile_v4_generate_impl(input: LockfileV4GenerateInput) -> Result<String, HelperError> {
     if !matches!(input.root.source, LockfileV4Source::Root) {
-        return Err("Move.lock V4 generation root package must have root source".to_string());
+        return Err(HelperError::new(
+            "Move.lock V4 generation root package must have root source",
+        ));
     }
 
     let mut packages = vec![];
@@ -1957,10 +2008,10 @@ fn lockfile_v4_generate_impl(input: LockfileV4GenerateInput) -> Result<String, S
 
     for package in input.packages {
         if matches!(package.source, LockfileV4Source::Root) {
-            return Err(format!(
+            return Err(HelperError::new(format!(
                 "Move.lock V4 generation package '{}' has unsupported root source",
                 package.id
-            ));
+            )));
         }
         let manifest =
             lockfile_v4_manifest_from_files(&package.id, &package.files, &input.environment)?;
@@ -1979,10 +2030,10 @@ fn lockfile_v4_generate_impl(input: LockfileV4GenerateInput) -> Result<String, S
     let mut manifest_name_to_ids: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for package in &packages {
         if !package_ids.insert(package.id.clone()) {
-            return Err(format!(
+            return Err(HelperError::new(format!(
                 "Move.lock V4 generation has duplicate package id '{}'",
                 package.id
-            ));
+            )));
         }
         manifest_name_to_ids
             .entry(package.manifest_name.clone())
@@ -2017,10 +2068,10 @@ fn lockfile_v4_generate_impl(input: LockfileV4GenerateInput) -> Result<String, S
             &input.environment,
         );
         if digest.is_empty() {
-            return Err(format!(
+            return Err(HelperError::new(format!(
                 "Failed to compute manifest_digest for '{}'",
                 package.id
-            ));
+            )));
         }
         lines.push(format!(
             "manifest_digest = {}",
@@ -2048,7 +2099,10 @@ pub fn lockfile_v4_generate(input_json: &str) -> String {
     let input: LockfileV4GenerateInput = match serde_json::from_str(input_json) {
         Ok(input) => input,
         Err(error) => {
-            return lockfile_v4_error(format!("Invalid lockfile V4 generation input: {}", error))
+            return lockfile_v4_error_with_code(
+                "invalid_helper_input",
+                format!("Invalid lockfile V4 generation input: {}", error),
+            );
         }
     };
 
@@ -2058,7 +2112,7 @@ pub fn lockfile_v4_generate(input_json: &str) -> String {
             "lockfile": lockfile,
         })
         .to_string(),
-        Err(error) => lockfile_v4_error(error),
+        Err(error) => lockfile_v4_error_from_helper(error),
     }
 }
 
@@ -2509,16 +2563,16 @@ fn manifest_plan_dependency_source(
     dep_name: &str,
     dep_table: &toml::Table,
     parent_source: &LockfileV4Source,
-) -> Result<ManifestPackagePlanSource, String> {
+) -> Result<ManifestPackagePlanSource, HelperError> {
     if let Some(git) = dep_table.get("git").and_then(|value| value.as_str()) {
         let rev = dep_table
             .get("rev")
             .and_then(|value| value.as_str())
             .ok_or_else(|| {
-                format!(
+                HelperError::new(format!(
                     "Dependency '{}.{}' has git source without rev",
                     package_name, dep_name
-                )
+                ))
             })?;
         let subdir = dep_table
             .get("subdir")
@@ -2564,9 +2618,12 @@ fn manifest_plan_dependency_source(
         };
     }
 
-    Err(format!(
-        "Dependency '{}.{}' has unsupported source form",
-        package_name, dep_name
+    Err(HelperError::with_code(
+        "unsupported_dependency_source",
+        format!(
+            "Dependency '{}.{}' has unsupported source form",
+            package_name, dep_name
+        ),
     ))
 }
 
@@ -2574,11 +2631,14 @@ fn manifest_plan_dependencies_from_move_toml(
     move_toml: &str,
     package_name: &str,
     parent_source: &LockfileV4Source,
-) -> Result<Vec<ManifestPackagePlanDependency>, String> {
+) -> Result<Vec<ManifestPackagePlanDependency>, HelperError> {
     let value = move_toml.parse::<toml::Value>().map_err(|error| {
-        format!(
-            "Failed to parse Move.toml for '{}': {}",
-            package_name, error
+        HelperError::with_code(
+            "manifest_parse_failed",
+            format!(
+                "Failed to parse Move.toml for '{}': {}",
+                package_name, error
+            ),
         )
     })?;
     let Some(deps_table) = value.get("dependencies").and_then(|deps| deps.as_table()) else {
@@ -2588,9 +2648,12 @@ fn manifest_plan_dependencies_from_move_toml(
     let mut dependencies = vec![];
     for (dep_name, dep_value) in deps_table {
         let dep_table = dep_value.as_table().ok_or_else(|| {
-            format!(
-                "Dependency '{}.{}' must be a table with a supported source",
-                package_name, dep_name
+            HelperError::with_code(
+                "unsupported_dependency_source",
+                format!(
+                    "Dependency '{}.{}' must be a table with a supported source",
+                    package_name, dep_name
+                ),
             )
         })?;
         dependencies.push(ManifestPackagePlanDependency {
@@ -2703,7 +2766,7 @@ fn manifest_graph_plan_snapshot(
         LockfileV4PackageManifest,
         Vec<ManifestPackagePlanDependency>,
     ),
-    String,
+    HelperError,
 > {
     let (manifest, move_toml) =
         lockfile_v4_manifest_from_files(package_id_hint, &snapshot.files, environment)?;
@@ -2747,7 +2810,7 @@ fn manifest_graph_add_package(
     nodes: &mut Vec<ManifestGraphNode>,
     edges: &mut Vec<LockfileV4ValidatedEdge>,
     requests: &mut BTreeMap<String, ManifestGraphFetchRequest>,
-) -> Result<String, String> {
+) -> Result<String, HelperError> {
     let source_key = manifest_graph_source_key(&snapshot.source);
     if let Some(existing_id) = source_to_id.get(&source_key) {
         return Ok(existing_id.clone());
@@ -2774,9 +2837,12 @@ fn manifest_graph_add_package(
         manifest_graph_unique_id(&manifest.name, name_to_suffix)
     };
     if !is_root && !manifest_has_move_source(&snapshot.files) {
-        return Err(format!(
-            "Dependency '{}' has no Move source files; bytecode-only dependencies are not supported",
-            package_id
+        return Err(HelperError::with_code(
+            "bytecode_only_dependency_unsupported",
+            format!(
+                "Dependency '{}' has no Move source files; bytecode-only dependencies are not supported",
+                package_id
+            ),
         ));
     }
 
@@ -3026,11 +3092,13 @@ fn manifest_graph_compiler_order(
 
 fn manifest_graph_resolve_package_groups_impl(
     input: ManifestGraphInput,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, HelperError> {
     let mut known_by_source = BTreeMap::new();
     for package in &input.packages {
         if matches!(package.source, LockfileV4Source::Root) {
-            return Err("Manifest graph dependency package cannot use root source".to_string());
+            return Err(HelperError::new(
+                "Manifest graph dependency package cannot use root source",
+            ));
         }
         known_by_source.insert(manifest_graph_source_key(&package.source), package.clone());
         if let Some(requested_source) = &package.requested_source {
@@ -3064,7 +3132,10 @@ fn manifest_graph_resolve_package_groups_impl(
     }
 
     if let Some(cycle) = manifest_graph_cycle(&root_id, &edges) {
-        return Err(format!("Dependency cycle detected: {}", cycle.join(" -> ")));
+        return Err(HelperError::with_code(
+            "dependency_cycle",
+            format!("Dependency cycle detected: {}", cycle.join(" -> ")),
+        ));
     }
 
     let lockfile_order = manifest_graph_lockfile_order(&root_id, &edges);
@@ -3077,9 +3148,12 @@ fn manifest_graph_resolve_package_groups_impl(
     let mut validate_packages = Vec::new();
     let mut validated_packages = Vec::new();
     for package_id in &lockfile_order {
-        let node = node_by_id
-            .get(package_id)
-            .ok_or_else(|| format!("Manifest graph has unknown package '{}'", package_id))?;
+        let node = node_by_id.get(package_id).ok_or_else(|| {
+            HelperError::new(format!(
+                "Manifest graph has unknown package '{}'",
+                package_id
+            ))
+        })?;
         validate_packages.push(LockfileV4ValidatePackage {
             id: node.id.clone(),
             source: node.source.clone(),
@@ -3129,12 +3203,17 @@ fn manifest_graph_resolve_package_groups_impl(
 pub fn manifest_graph_resolve_package_groups(input_json: &str) -> String {
     let input: ManifestGraphInput = match serde_json::from_str(input_json) {
         Ok(input) => input,
-        Err(error) => return lockfile_v4_error(format!("Invalid manifest graph input: {}", error)),
+        Err(error) => {
+            return lockfile_v4_error_with_code(
+                "invalid_helper_input",
+                format!("Invalid manifest graph input: {}", error),
+            );
+        }
     };
 
     match manifest_graph_resolve_package_groups_impl(input) {
         Ok(response) => response.to_string(),
-        Err(error) => lockfile_v4_error(error),
+        Err(error) => lockfile_v4_error_from_helper(error),
     }
 }
 
@@ -3143,7 +3222,10 @@ pub fn lockfile_v4_validate_graph(input_json: &str) -> String {
     let input: LockfileV4ValidateInput = match serde_json::from_str(input_json) {
         Ok(input) => input,
         Err(error) => {
-            return lockfile_v4_error(format!("Invalid lockfile V4 validation input: {}", error))
+            return lockfile_v4_error_with_code(
+                "invalid_helper_input",
+                format!("Invalid lockfile V4 validation input: {}", error),
+            );
         }
     };
 
@@ -3167,10 +3249,10 @@ pub fn lockfile_v4_resolve_package_groups(input_json: &str) -> String {
     let input: LockfileV4ValidateInput = match serde_json::from_str(input_json) {
         Ok(input) => input,
         Err(error) => {
-            return lockfile_v4_error(format!(
-                "Invalid lockfile V4 package-group input: {}",
-                error
-            ))
+            return lockfile_v4_error_with_code(
+                "invalid_helper_input",
+                format!("Invalid lockfile V4 package-group input: {}", error),
+            );
         }
     };
 
@@ -3218,8 +3300,41 @@ fn parse_lint_level(lint_flag: Option<&str>) -> Result<LintLevel, String> {
     }
 }
 
-fn configure_compiler_for_sui(compiler: Compiler, flags: Flags, lint_level: LintLevel) -> Compiler {
-    let mut compiler = compiler.set_flags(flags);
+struct CompilerBuildConfig {
+    test_mode: bool,
+    silence_warnings: bool,
+    lint_level: LintLevel,
+}
+
+fn compiler_build_config(
+    test_mode: bool,
+    silence_warnings: bool,
+    lint_level: LintLevel,
+) -> CompilerBuildConfig {
+    CompilerBuildConfig {
+        test_mode,
+        silence_warnings,
+        lint_level,
+    }
+}
+
+fn compiler_flags_for_build_config(build_config: &CompilerBuildConfig) -> Flags {
+    let flags = if build_config.test_mode {
+        Flags::testing()
+    } else {
+        Flags::empty()
+    };
+
+    flags
+        .set_warnings_are_errors(false)
+        .set_json_errors(false)
+        .set_silence_warnings(build_config.silence_warnings)
+        .set_modes(Vec::new())
+}
+
+fn configure_compiler_for_sui(compiler: Compiler, build_config: &CompilerBuildConfig) -> Compiler {
+    let lint_level = build_config.lint_level;
+    let mut compiler = compiler.set_flags(compiler_flags_for_build_config(build_config));
 
     let (filter_attr_name, filters) = move_compiler::sui_mode::linters::known_filters();
     compiler = compiler

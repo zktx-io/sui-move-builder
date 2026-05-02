@@ -134,12 +134,26 @@ function assertOk(result, label) {
   return result;
 }
 
-function assertError(result, pattern, label) {
+function assertError(
+  result,
+  pattern,
+  label,
+  category = "lockfile_generation",
+  code
+) {
   if (!("error" in result)) {
     throw new Error(`${label}: expected error`);
   }
   if (!pattern.test(result.error)) {
     throw new Error(`${label}: unexpected error '${result.error}'`);
+  }
+  if (result.category !== category) {
+    throw new Error(
+      `${label}: expected category ${category}, got ${result.category}`
+    );
+  }
+  if (code && result.code !== code) {
+    throw new Error(`${label}: expected code ${code}, got ${result.code}`);
   }
 }
 
@@ -220,7 +234,9 @@ const malformedResult = await buildWith(
 assertError(
   malformedResult,
   /Failed to parse existing Move\.lock/,
-  "malformed existing lockfile"
+  "malformed existing lockfile",
+  "lockfile_generation",
+  "malformed_lockfile"
 );
 
 console.log(

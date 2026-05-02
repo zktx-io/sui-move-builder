@@ -11,11 +11,16 @@
  * The build path uses lockfile_v4_generate from the WASM module.
  */
 
+import {
+  StructuredBuildError,
+  structuredErrorCode,
+} from "./structuredError.js";
+
 export type LockfileV4GenerateFn = (inputJson: string) => string;
 
 type LockfileV4GenerateResponse =
   | { status: "ok"; lockfile: string }
-  | { status: "error"; error?: string };
+  | { status: "error"; error?: string; code?: string };
 
 function parseLockfileV4GenerateResponse(
   raw: string
@@ -102,10 +107,17 @@ export function generateMoveLockV4FromJson(
       rustGenerateFn(JSON.stringify(input))
     );
     if (response.status !== "ok") {
-      throw new Error(response.error || "Rust lockfile V4 generation failed");
+      throw new StructuredBuildError(
+        response.error || "Rust lockfile V4 generation failed",
+        response.code
+      );
     }
     return response.lockfile;
   } catch (error: any) {
-    throw new Error(`Lockfile generation error: ${error?.message || error}`);
+    throw new StructuredBuildError(
+      `Lockfile generation error: ${error?.message || error}`,
+      structuredErrorCode(error),
+      error
+    );
   }
 }

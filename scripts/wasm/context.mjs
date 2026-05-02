@@ -58,6 +58,10 @@ export async function readPatchState(context) {
   return JSON.parse(raw);
 }
 
+export async function deletePatchState(context) {
+  await fs.rm(context.patchStatePath, { force: true });
+}
+
 export async function writePatchState(context, details = {}) {
   const state = {
     version: 1,
@@ -83,21 +87,42 @@ export async function writePatchState(context, details = {}) {
   };
 
   await fs.mkdir(path.dirname(context.patchStatePath), { recursive: true });
-  await fs.writeFile(
-    context.patchStatePath,
-    JSON.stringify(state, null, 2) + "\n"
-  );
+  const tempPath = `${context.patchStatePath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tempPath, JSON.stringify(state, null, 2) + "\n");
+  await fs.rename(tempPath, context.patchStatePath);
   return state;
+}
+
+function recoveryHint() {
+  return "Run npm run prepare:wasm.";
+}
+
+function normalizeStatePath(value) {
+  return value ? path.resolve(value) : undefined;
+}
+
+async function assertPathExists(requiredPath, label) {
+  if (!(await dirExists(requiredPath))) {
+    throw new Error(
+      `Prepared WASM workspace is missing ${label} at ${requiredPath}. ${recoveryHint()}`
+    );
+  }
 }
 
 export async function assertPreparedWorkspace(context) {
   if (!(await dirExists(context.patchStatePath))) {
     throw new Error(
-      `Missing patch state ${context.patchStatePath}. Run npm run prepare:wasm first.`
+      `Missing patch state ${context.patchStatePath}. ${recoveryHint()}`
     );
   }
 
   const state = await readPatchState(context);
+  if (state.version !== 1) {
+    throw new Error(
+      `Unsupported patch state version ${state.version ?? "undefined"} in ${context.patchStatePath}. ${recoveryHint()}`
+    );
+  }
+
   const expected = {
     version: context.suiVersion.version,
     tag: context.suiVersion.tag,
@@ -114,24 +139,57 @@ export async function assertPreparedWorkspace(context) {
   for (const [key, expectedValue] of Object.entries(expected)) {
     if ((expectedValue ?? null) !== (actual[key] ?? null)) {
       throw new Error(
-        `Prepared WASM workspace was created for ${key}=${actual[key] ?? "undefined"}, expected ${expectedValue ?? "undefined"}. Run npm run prepare:wasm.`
+        `Prepared WASM workspace was created for ${key}=${actual[key] ?? "undefined"}, expected ${expectedValue ?? "undefined"}. ${recoveryHint()}`
+      );
+    }
+  }
+
+  const expectedPaths = {
+    sourceDir: context.suiBuildConfig.sourceDir,
+    workDir: context.suiWorkDir,
+    generatedDir: context.generatedDir,
+    stubsDir: context.generatedStubsDir,
+    vendorDir: context.generatedVendorDir,
+    localBinDir: context.localBinDir,
+    crateDir: path.join(context.suiWorkDir, "crates", "sui-move-wasm"),
+  };
+
+  for (const [key, expectedPath] of Object.entries(expectedPaths)) {
+    const actualPath = normalizeStatePath(state.paths?.[key]);
+    const normalizedExpected = path.resolve(expectedPath);
+    if (actualPath !== normalizedExpected) {
+      throw new Error(
+        `Prepared WASM workspace path mismatch for paths.${key}: ${actualPath ?? "undefined"}; expected ${normalizedExpected}. ${recoveryHint()}`
       );
     }
   }
 
   const requiredPaths = [
-    path.join(context.suiWorkDir, "Cargo.toml"),
-    path.join(context.suiWorkDir, "Cargo.lock"),
-    path.join(context.suiWorkDir, "crates", "sui-move-wasm", "Cargo.toml"),
-    context.generatedStubsDir,
+    {
+      label: "work Cargo.toml",
+      path: path.join(context.suiWorkDir, "Cargo.toml"),
+    },
+    {
+      label: "work Cargo.lock",
+      path: path.join(context.suiWorkDir, "Cargo.lock"),
+    },
+    {
+      label: "sui-move-wasm Cargo.toml",
+      path: path.join(
+        context.suiWorkDir,
+        "crates",
+        "sui-move-wasm",
+        "Cargo.toml"
+      ),
+    },
+    { label: "generated directory", path: context.generatedDir },
+    { label: "generated stubs directory", path: context.generatedStubsDir },
+    { label: "generated vendor directory", path: context.generatedVendorDir },
+    { label: "local tool directory", path: context.localBinDir },
   ];
 
-  for (const requiredPath of requiredPaths) {
-    if (!(await dirExists(requiredPath))) {
-      throw new Error(
-        `Prepared WASM workspace is missing ${requiredPath}. Run npm run prepare:wasm first.`
-      );
-    }
+  for (const required of requiredPaths) {
+    await assertPathExists(required.path, required.label);
   }
 
   return state;
