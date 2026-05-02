@@ -1,17 +1,16 @@
-// Copied from move-package/src/source_package/parsed_manifest.rs
-// Adapted for WASM compatibility (removed file system dependencies where possible)
+// Adapted from move-package/src/source_package/parsed_manifest.rs for WASM manifest parsing.
+#![allow(dead_code, unused_imports)]
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use move_compiler::editions::{Edition, Flavor};
 use move_core_types::account_address::AccountAddress;
-// use move_symbol_pool::symbol::Symbol; // Removed to avoid WASM issues
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     path::{Component, Path, PathBuf},
 };
 
-pub type Symbol = String; // Polyfill Symbol as String
+pub type Symbol = String;
 
 pub type NamedAddress = Symbol;
 pub type PackageName = Symbol;
@@ -29,7 +28,7 @@ pub type Substitution = BTreeMap<NamedAddress, SubstOrRename>;
 pub struct SourceManifest {
     pub package: PackageInfo,
     pub addresses: Option<AddressDeclarations>,
-    // Removed unused fields to avoid strict parsing issues with 'deps'
+    // Keep only fields consumed by the WASM compiler path.
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -38,10 +37,10 @@ pub struct PackageInfo {
     #[serde(default)]
     pub authors: Vec<Symbol>,
     pub license: Option<Symbol>,
-    pub edition: Option<String>, // Changed to String for manual parsing
+    pub edition: Option<String>,
     pub flavor: Option<Flavor>,
     #[serde(rename = "published-at")]
-    pub published_at: Option<String>, // Changed to String for safety
+    pub published_at: Option<String>,
     #[serde(default)]
     pub custom_properties: BTreeMap<Symbol, String>,
 }
@@ -90,5 +89,3 @@ pub enum SubstOrRename {
     RenameFrom(NamedAddress),
     Assign(AccountAddress),
 }
-
-// NOTE: reroot and normalize_path removed as we don't need them for basic parsing in WASM context

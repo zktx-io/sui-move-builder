@@ -160,9 +160,10 @@ if ("error" in result) {
 | `files`           | `Record<string, string>`             | **Required**. Virtual file system with `Move.toml` and sources                                      |
 | `network`         | `"mainnet" \| "testnet" \| "devnet"` | Network environment (default: `"mainnet"`)                                                          |
 | `githubToken`     | `string`                             | GitHub API token to increase rate limits                                                            |
+| `fetcher`         | `Fetcher`                            | Optional host loader for git and local dependency package snapshots                                 |
 | `silenceWarnings` | `boolean`                            | Suppress compiler warnings (default: `false`)                                                       |
 | `testMode`        | `boolean`                            | Compile in test mode (include `#[test_only]` modules)                                               |
-| `lintFlag`        | `string`                             | Reserved for lint configuration; currently passed through but not applied by the WASM compiler path |
+| `lintFlag`        | `"none" \| "default" \| "all"`       | Move compiler lint level. Defaults to `"none"`                                                      |
 | `ansiColor`       | `boolean`                            | Enable ANSI color codes in output                                                                   |
 | `stripMetadata`   | `boolean`                            | Reserved for metadata stripping; currently passed through but not applied by the WASM compiler path |
 | `onProgress`      | `(event) => void`                    | Callback for build progress events                                                                  |
@@ -214,7 +215,7 @@ Dependencies are resolved from the package inputs and, where possible, follow th
 3. **Handles legacy publish data**: Legacy `Move.lock` publication records can be migrated into `Published.toml` output.
 4. **Handles monorepos**: Local dependencies inside git-sourced packages are converted to git subdirectories.
 5. **Adds implicit framework dependencies**: The root package gets an implicit Sui framework dependency when it does not declare one.
-6. **Generates lockfile metadata**: V4 output includes computed manifest digests; some dependency digest validation paths are intentionally best-effort in the JS resolver.
+6. **Generates lockfile metadata**: V4 output includes computed manifest digests, and V4 pin loading checks manifest digests through the Rust/WASM helper before trusting a lockfile.
 
 ```ts
 import { initMoveCompiler, buildMovePackage } from "@zktx.io/sui-move-builder";
@@ -250,15 +251,16 @@ The WASM build is split into a preparation step and a prepared build step:
 
 ```bash
 npm run prepare:wasm
-npm run build:wasm:prepared -- --profile lite
-npm run build:wasm:prepared -- --profile full
-npm run build:wasm:prepared # builds both variants
+npm run build:wasm:prepared:lite # builds dist/lite from prepared state
+npm run build:wasm:prepared:full # builds dist/full from prepared state
+npm run build:wasm:prepared:all  # builds both variants from prepared state
+npm run build:wasm:prepared      # alias for build:wasm:prepared:all
 npm run build:wasm          # compatibility script: prepare + prepared build
 npm run build               # WASM build + JS package build
 npm run release:check       # typecheck + lint + format check + tests
 ```
 
-`prepare:wasm` may download or update the pinned Sui source, create a disposable patched worktree, generate compatibility stubs/vendor patches, and install the matching local `wasm-bindgen` tool. `build:wasm:prepared` expects that prepared state to already exist and uses it to build `dist/lite` and/or `dist/full`. It is a best-effort offline build; set `SUI_WASM_STRICT_OFFLINE=1` when you want Cargo to fail instead of reaching the network.
+`prepare:wasm` may download or update the pinned Sui source, create a disposable patched worktree, generate compatibility stubs/vendor patches, and install the matching local `wasm-bindgen` tool. The `build:wasm:prepared:*` scripts expect that prepared state to already exist and use it to build `dist/lite`, `dist/full`, or both. Prepared builds are best-effort offline builds; set `SUI_WASM_STRICT_OFFLINE=1` when you want Cargo to fail instead of reaching the network.
 
 The build keeps the upstream Sui checkout separate from generated and patched state:
 
@@ -347,6 +349,7 @@ const result2 = await buildMovePackage({
 ## Limitations
 
 - Dependencies are always compiled from source. Bytecode-only deps (.mv fallback used by the Sui CLI when sources are missing) are not supported in the wasm path.
+- CLI parity is verified for selected fixtures, not for every Sui package-manager path. Some lockfile, system dependency, and test-runner behavior is still implemented through local compatibility glue.
 
 ## Best Practices
 
@@ -365,17 +368,27 @@ if (entry.name === "build" || entry.name === ".git") continue;
 
 ## CLI-vs-WASM Parity Tests
 
-This package compares the same local Move package through the official Sui CLI and the WASM builder. The default package set is discovered from the pinned Sui checkout under `.sui-build/parity-work/examples/move`; pass explicit package paths when you want to test a specific fixture.
+This package compares the same local Move package through the official Sui CLI and the WASM builder. The default package set includes auto-discovered examples from `.sui-build/parity-work/examples/move` plus fixed framework fixtures at `crates/sui-framework/packages/deepbook` and `crates/sui-framework/packages/sui-system`; pass explicit package paths when you want to test a specific fixture.
 
 ```bash
 npm run build       # required once; produces dist/full and dist/lite WASM artifacts
-npm run test:runtime # validate dist full/lite ESM/CJS loading
-npm run test:full   # compare Sui CLI vs full WASM
-npm run test:lite   # compare Sui CLI vs lite WASM
+npm run test:dist-load # validate dist full/lite ESM/CJS loading
+npm run test:template-manifest # validate versioned template manifest coverage
+npm run test:package-loading # validate git/local package snapshot loading boundaries
+npm run test:manifest-digest # validate Rust Move.toml manifest digest helper
+npm run test:manifest-fallback # validate Rust-owned manifest fallback package groups
+npm run test:lockfile-graph # validate lockfile digest and malformed graph handling
+npm run test:lockfile-generation # validate Rust-owned V4 lockfile generation
+npm run test:source-discovery # validate normal build source filtering
+npm run test:compiler-lint # validate compiler lintFlag handling
+npm run test:output-deps # validate explicit system dependency output filtering
+npm run test:unit-test-ownership # validate full test runner root package ownership
+npm run test:parity:full # compare Sui CLI vs full WASM
+npm run test:parity:lite # compare Sui CLI vs lite WASM
 npm run test:parity # compare Sui CLI vs both full and lite WASM
 npm run test:browser # optional local browser smoke test for full and lite
 npm run dev:browser-parity # interactive browser build + CLI comparison page
-npm test            # runtime smoke + full/lite CLI parity
+npm test            # runtime + semantic fixtures + full/lite CLI parity
 ```
 
 `dist/` artifacts are generated output and are not checked into this repository. Runtime, parity, and browser tests expect `npm run build` to have produced `dist/full` and `dist/lite` first.
@@ -384,17 +397,19 @@ Useful options:
 
 - `SUI_CLI=/path/to/sui` selects the local Sui CLI binary.
 - `BROWSER_BIN=/path/to/chrome` selects the browser binary for `test:browser`.
-- `SUI_PARITY_LIMIT=10` changes the number of auto-discovered examples.
+- `SUI_PARITY_LIMIT=10` changes the number of auto-discovered examples. Fixed framework fixtures still run unless explicit package paths are supplied.
 - `SUI_PARITY_MIN_MOVE_FILES=3` requires larger multi-file examples.
 
 The parity test warns when the local Sui CLI version differs from `sui-version.json` and fails when the CLI is missing. It fails on any mismatch in module bytecode, dependency IDs, or package digest. It does not patch outputs or maintain expected-result snapshots.
 
+Passing parity tests are evidence for the covered fixtures only. See `CLI_PIPELINE.md` for current implementation boundaries.
+
 For manual browser verification, run `npm run dev:browser-parity` and open the printed `http://127.0.0.1:<port>/` URL. The page loads a Move package from the pinned Sui examples, a local package path, or a GitHub repository; builds it with the selected browser WASM artifact; asks the local server to build the same package with `sui move build --dump-bytecode-as-base64 --path <package>`; then compares module bytecode, dependency IDs, and digest.
 
-## Roadmap
+## Planned Work
 
-- **Move.lock V4 Generation**: Generates deterministic V4 lockfile content with `manifest_digest`
-- **Multi-Environment Support**: Preserves other environments from existing Move.lock content when generating the active environment
-- **V3→V4 Migration**: Generates `Published.toml` from legacy publish records when available
-- **Published.toml Generation**: Generate Published.toml after successful deployment
-- **Bytecode Dependencies**: Support for .mv-only dependencies (CLI fallback path)
+- **BuildPlan-equivalent compiler path**: Reduce direct `PackagePaths` assembly where upstream Sui compiler/package-manager behavior can be reused.
+- **Legacy graph cleanup**: Decide whether v0/v1/v2 lockfile compatibility should remain best-effort or move behind the Rust package model.
+- **Legacy lockfiles**: Keep V3 migration behavior explicit and covered by fixtures where supported.
+- **Published.toml generation**: Generate deployment records after successful publication when this package adds publish support.
+- **Bytecode dependencies**: Support `.mv`-only dependency fallback used by the Sui CLI when sources are unavailable.

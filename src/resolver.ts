@@ -1,13 +1,12 @@
 /**
- * New Resolver using 3-layer architecture matching Sui CLI
+ * Resolver for host-side package loading.
  *
- * Layer 1: DependencyGraph - Build DAG of packages
- * Layer 2: ResolvedGraph - Unified address resolution
- * Layer 3: CompilationDependencies - Compiler-ready format
+ * TypeScript owns fetch/fetchLocal and snapshot assembly. Rust/WASM owns
+ * manifest/lockfile package-group construction for compiler input.
  */
 
 import { parseToml } from "./tomlParser.js";
-import type { Fetcher } from "./fetcher.js";
+import type { Fetcher, FetchLocalContext } from "./fetcher.js";
 import {
   DependencyGraph,
   Package,
@@ -16,9 +15,8 @@ import {
   PackageManifest,
   DependencySource,
   LockfileDependencyInfo,
+  SubstOrRename,
 } from "./dependencyGraph.js";
-import { ResolvedGraph } from "./resolvedGraph.js";
-import { CompilationDependencies } from "./compilationDependencies.js";
 
 // Load from shared config (synchronized with scripts/build-wasm.mjs)
 import suiVersionConfig from "../sui-version.json" with { type: "json" };
@@ -40,8 +38,93 @@ const WASM_BUILD_FRAMEWORK_REV = suiVersionConfig.commit;
 const ZERO_ADDRESS =
   "0x0000000000000000000000000000000000000000000000000000000000000000";
 
-function isMoveNamedAddress(name: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+export interface LockfileV4Helpers {
+  fetchPlan: (moveLockToml: string, environment: string) => string;
+  resolvePackageGroups: (inputJson: string) => string;
+  manifestPackagePlan?: (inputJson: string) => string;
+  manifestResolvePackageGroups?: (inputJson: string) => string;
+  manifestGraphResolvePackageGroups?: (inputJson: string) => string;
+}
+
+interface LockfileV4PlanSource {
+  type: "root" | "git" | "local";
+  git?: string;
+  rev?: string;
+  subdir?: string;
+  local?: string;
+}
+
+interface LockfileV4PlanPackage {
+  id: string;
+  source: LockfileV4PlanSource;
+  deps?: Record<string, string>;
+  manifestDigest?: string;
+  files?: Record<string, string>;
+}
+
+interface LockfileV4FetchPlanResponse {
+  status: "ok" | "missing" | "error";
+  error?: string;
+  reason?: string;
+  rootId?: string;
+  lockfileOrder?: string[];
+  packages?: LockfileV4PlanPackage[];
+}
+
+interface LockfileV4ResolvePackageGroupsResponse {
+  status: "ok" | "out_of_date" | "error";
+  error?: string;
+  reason?: string;
+  packageId?: string;
+  rootFiles?: Record<string, string>;
+  dependencies?: unknown[];
+  lockfileDependencies?: unknown[];
+}
+
+interface ManifestResolvePackageGroupsResponse {
+  status: "ok" | "error";
+  error?: string;
+  rootFiles?: Record<string, string>;
+  dependencies?: unknown[];
+  lockfileDependencies?: unknown[];
+}
+
+interface ManifestGraphPackageGroupsResponse {
+  status: "needFetch" | "ok" | "error";
+  error?: string;
+  requests?: ManifestGraphFetchRequest[];
+  rootFiles?: Record<string, string>;
+  dependencies?: unknown[];
+  lockfileDependencies?: unknown[];
+}
+
+interface ManifestGraphFetchRequest {
+  source: LockfileV4PlanSource;
+  dependencyName: string;
+  parentPackageName: string;
+  parentSource: LockfileV4PlanSource;
+}
+
+interface ManifestGraphFetchedPackage {
+  source: LockfileV4PlanSource;
+  requestedSource?: LockfileV4PlanSource;
+  files: Record<string, string>;
+}
+
+interface ManifestPackagePlanDependency {
+  name: string;
+  source: DependencySource;
+  subst?: Record<string, SubstOrRename>;
+}
+
+interface ManifestPackagePlanResponse {
+  status: "ok" | "error";
+  error?: string;
+  package?: {
+    source: LockfileV4PlanSource;
+    manifest: PackageManifest;
+  };
+  dependencies?: ManifestPackagePlanDependency[];
 }
 
 export class Resolver {
@@ -57,9 +140,8 @@ export class Resolver {
   // Maps package name -> suffix counter (0 = no suffix, 1 = _1, etc.)
   private packageNameToSuffix: Map<string, number> = new Map();
 
-  // Track which Sui framework revision each git repo+rev combo uses
-  // This ensures sibling packages (e.g., deepbook and token from same repo)
-  // share the same Sui version (Sui_2 instead of different Sui instances)
+  // Track which Sui framework revision each git repo+rev combo uses.
+  // Sibling packages from the same repository must share the same framework instance.
   // Key: "git|rev" (excluding subdir), Value: resolved Sui framework revision
   private repoRevToSuiRev: Map<string, string> = new Map();
 
@@ -73,28 +155,18 @@ export class Resolver {
 
   private lockfileVersion: number | undefined;
 
-  // CLI compat: store diamond package info for lockfile generation
-  // ORIGINAL: builder.rs:286 - visited key = (env, PackagePath)
-  // CLI adds all rev-specific packages to graph and records them in lockfile
-  // Key: cacheKey (git|rev|subdir), Value: { name, source, manifestDigestDeps }
-  private diamondPackages: Map<
-    string,
-    {
-      name: string;
-      source: DependencySource;
-      manifestDeps: string[];
-      depAliasToSource: Record<string, DependencySource>;
-    }
-  > = new Map();
+  private lockfileV4Helpers: LockfileV4Helpers | undefined;
 
   constructor(
     fetcher: Fetcher,
     network: "mainnet" | "testnet" | "devnet" = "mainnet",
-    rootSource: DependencySource | null = null
+    rootSource: DependencySource | null = null,
+    lockfileV4Helpers?: LockfileV4Helpers
   ) {
     this.fetcher = fetcher;
     this.network = network;
     this.rootSource = rootSource;
+    this.lockfileV4Helpers = lockfileV4Helpers;
   }
 
   /**
@@ -108,29 +180,40 @@ export class Resolver {
     dependencies: string;
     lockfileDependencies: string;
   }> {
+    const networkTomlName = `Move.${this.network}.toml`;
+    const selectedRootMoveToml = rootFiles[networkTomlName] || rootMoveToml;
+
     // Parse root Move.toml
-    const rootParsed = parseToml(rootMoveToml);
+    const rootParsed = parseToml(selectedRootMoveToml);
     const rootPackageName = rootParsed.package?.name || "RootPackage";
 
-    // Extract edition from root Move.lock if available
-    const rootEdition: string | undefined = rootParsed.package?.edition;
+    const resolvedFromLockfileV4 = await this.resolveFromLockfileV4(
+      rootFiles,
+      rootPackageName
+    );
+    if (resolvedFromLockfileV4) {
+      return resolvedFromLockfileV4;
+    }
 
-    // === LAYER 1: Build DependencyGraph ===
+    const lockfileVersion = rootFiles["Move.lock"]
+      ? (parseToml(rootFiles["Move.lock"]) as any).move?.version
+      : undefined;
+    this.lockfileVersion = lockfileVersion;
+
+    if (lockfileVersion === undefined || lockfileVersion >= 3) {
+      return this.resolveManifestGraphPackageGroups(rootFiles);
+    }
+
     const depGraph = new DependencyGraph(rootPackageName);
 
     // Build root package (isRoot: true enables implicit dependency injection)
     const rootPackage = await this.buildPackage(
       rootPackageName,
       this.rootSource,
-      rootMoveToml,
+      selectedRootMoveToml,
       rootFiles,
       true // isRoot - inject implicit dependencies for root only
     );
-
-    // Update root package edition from Move.lock
-    if (rootEdition) {
-      rootPackage.manifest.edition = rootEdition;
-    }
 
     // Sui CLI behavior: If root package address is 0x0 and original-published-id exists,
     // replace the 0x0 address with original-published-id in the addresses table
@@ -169,251 +252,401 @@ export class Resolver {
       throw new Error(`Dependency cycle detected: ${cycle.join(" → ")}`);
     }
 
-    // === LAYER 2: Resolve Addresses ===
-    const resolvedGraph = new ResolvedGraph(depGraph, {});
-    await resolvedGraph.resolve();
+    return this.resolveManifestPackageGroups(depGraph, rootPackage, rootFiles);
+  }
 
-    // Ensure we use the correct Move.toml for compilation (handling Move.mainnet.toml etc)
-    const networkTomlName = `Move.${this.network}.toml`;
-    for (const [_pkgName, files] of this.packageFiles) {
-      if (files[networkTomlName]) {
-        // If a network-specific TOML exists, it takes precedence as the "Move.toml"
-        // for the compilation phase. This handles cases where Move.toml
-        // is just a symlink/placeholder and Move.mainnet.toml has real config.
-        files["Move.toml"] = files[networkTomlName];
-      }
-    }
-
-    // === LAYER 3: Prepare Compilation Dependencies ===
-    const compilationDeps = new CompilationDependencies(resolvedGraph);
-    await compilationDeps.compute(this.packageFiles);
-
-    // === Convert to Compiler Input Format ===
-    // Rebuild root Move.toml with unified addresses (matches CLI named_address_map)
-    const unifiedTable = resolvedGraph.getUnifiedAddressTable();
-
-    // Fix: Ensure unified table reflects the actual published IDs of packages
-    // This allows aliases for dependencies with mismatched names to resolve to the correct published address.
-    // We prioritize originalId for compilation (stability).
-    for (const pkg of depGraph.getAllPackages()) {
-      const publishedId =
-        pkg.manifest.originalId ||
-        pkg.manifest.publishedAt ||
-        pkg.manifest.latestPublishedId;
-
-      const isRoot = pkg.manifest.name === rootPackage.manifest.name;
-
-      // 1. Root Package Priority: Always respect explicit address in TOML (e.g. 0x0)
-      // This ensures that when building a package, we use the address strictly defined in its manifest.
-      if (isRoot) {
-        const selfAddressKey = Object.keys(pkg.manifest.addresses).find(
-          (key) => key.toLowerCase() === pkg.manifest.name.toLowerCase()
-        );
-        if (selfAddressKey && pkg.manifest.addresses[selfAddressKey]) {
-          const selfAddr = this.normalizeAddress(
-            pkg.manifest.addresses[selfAddressKey]
-          );
-          unifiedTable[pkg.manifest.name] = selfAddr;
-          unifiedTable[pkg.manifest.name.toLowerCase()] = selfAddr;
-          continue;
-        }
-      }
-
-      // 2. Dependency Priority: Prefer Published ID from Lockfile
-      // For dependencies, we want the version that matches the lockfile/manifest 'published-at'.
-      if (
-        publishedId &&
-        publishedId !== "0x0" &&
-        !publishedId.startsWith(ZERO_ADDRESS)
-      ) {
-        const normalized = this.normalizeAddress(publishedId);
-        unifiedTable[pkg.manifest.name] = normalized;
-        unifiedTable[pkg.manifest.name.toLowerCase()] = normalized;
-        continue;
-      }
-
-      // 3. Fallback: Check overrides for dependencies if no published ID (e.g. local unpublished devs)
-      const selfAddressKey = Object.keys(pkg.manifest.addresses).find(
-        (key) => key.toLowerCase() === pkg.manifest.name.toLowerCase()
+  private parseManifestPackageGroupsResponse(
+    raw: string
+  ): ManifestResolvePackageGroupsResponse {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(
+        `Rust manifest package-group resolution returned invalid JSON: ${
+          error instanceof Error ? error.message : String(error)
+        }`
       );
-
-      if (selfAddressKey && pkg.manifest.addresses[selfAddressKey]) {
-        const selfAddr = this.normalizeAddress(
-          pkg.manifest.addresses[selfAddressKey]
-        );
-        unifiedTable[pkg.manifest.name] = selfAddr;
-        unifiedTable[pkg.manifest.name.toLowerCase()] = selfAddr;
-        continue;
-      }
     }
 
-    const updatedRootToml = this.reconstructMoveToml(
-      rootParsed,
-      rootPackage.manifest.dependencies, // Pass manifest deps
-      unifiedTable,
-      true,
-      rootEdition
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof (parsed as { status?: unknown }).status !== "string"
+    ) {
+      throw new Error(
+        "Rust manifest package-group resolution returned an invalid response shape"
+      );
+    }
+
+    return parsed as ManifestResolvePackageGroupsResponse;
+  }
+
+  private parseManifestGraphPackageGroupsResponse(
+    raw: string
+  ): ManifestGraphPackageGroupsResponse {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(
+        `Rust manifest graph resolution returned invalid JSON: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof (parsed as { status?: unknown }).status !== "string"
+    ) {
+      throw new Error(
+        "Rust manifest graph resolution returned an invalid response shape"
+      );
+    }
+
+    return parsed as ManifestGraphPackageGroupsResponse;
+  }
+
+  private parseManifestPackagePlanResponse(
+    raw: string
+  ): ManifestPackagePlanResponse {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(
+        `Rust manifest package plan returned invalid JSON: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof (parsed as { status?: unknown }).status !== "string"
+    ) {
+      throw new Error("Rust manifest package plan returned an invalid shape");
+    }
+
+    return parsed as ManifestPackagePlanResponse;
+  }
+
+  private packageSourceToRustSource(
+    source: DependencySource | null,
+    packageId: string
+  ): LockfileV4PlanSource {
+    if (!source) {
+      return { type: "root" };
+    }
+    return this.dependencySourceToRustSource(source, packageId);
+  }
+
+  private dependencySourceToRustSource(
+    source: DependencySource,
+    packageId: string
+  ): LockfileV4PlanSource {
+    if (source.type === "git") {
+      if (!source.git || !source.rev) {
+        throw new Error(
+          `Manifest package '${packageId}' has invalid git source`
+        );
+      }
+      return {
+        type: "git",
+        git: source.git,
+        rev: source.rev,
+        subdir: source.subdir,
+      };
+    }
+
+    if (source.type === "local") {
+      if (!source.local) {
+        throw new Error(
+          `Manifest package '${packageId}' has invalid local source`
+        );
+      }
+      return {
+        type: "local",
+        local: source.local,
+      };
+    }
+
+    throw new Error(
+      `Manifest package '${packageId}' has unsupported source ${this.describeSource(source)}`
+    );
+  }
+
+  private async resolveManifestPackageGroups(
+    depGraph: DependencyGraph,
+    rootPackage: Package,
+    rootFiles: Record<string, string>
+  ): Promise<{
+    files: string;
+    dependencies: string;
+    lockfileDependencies: string;
+  }> {
+    if (!this.lockfileV4Helpers?.manifestResolvePackageGroups) {
+      throw new Error(
+        "Rust manifest_resolve_package_groups helper is required"
+      );
+    }
+
+    const compilerOrder = depGraph.compilerInputOrderWithIndices();
+    const lockfileOrder = depGraph.allPackagesOrderWithIndices();
+    const packages = [];
+
+    for (let i = 0; i < lockfileOrder.indices.length; i++) {
+      const packageIndex = lockfileOrder.indices[i];
+      const packageId = lockfileOrder.ids[i];
+      const pkg = depGraph.getPackageByIndex(packageIndex);
+      if (!pkg || !packageId || pkg.id.name === rootPackage.id.name) {
+        continue;
+      }
+
+      const files =
+        this.packageFiles.get(packageId) ||
+        this.packageFiles.get(pkg.id.name) ||
+        this.packageFiles.get(pkg.manifest.name) ||
+        {};
+      if (Object.keys(files).length === 0) {
+        throw new Error(`Manifest package '${packageId}' has no files`);
+      }
+
+      packages.push({
+        id: packageId,
+        source: this.dependencySourceToRustSource(pkg.id.source, packageId),
+        files,
+        depAliasToPackageName: pkg.depAliasToPackageName || {},
+      });
+    }
+
+    const resolved = this.parseManifestPackageGroupsResponse(
+      this.lockfileV4Helpers.manifestResolvePackageGroups(
+        JSON.stringify({
+          environment: this.network,
+          rootPackageName: rootPackage.manifest.name,
+          rootFiles,
+          packages,
+          compilerOrder: compilerOrder.ids,
+          lockfileOrder: lockfileOrder.ids,
+          rootDepAliasToPackageName: rootPackage.depAliasToPackageName || {},
+        })
+      )
     );
 
-    const updatedRootFiles = { ...rootFiles };
-    delete updatedRootFiles["Move.lock"];
-    updatedRootFiles["Move.toml"] = updatedRootToml;
-
-    // Use new package-grouped format for per-package edition support
-    const packageGroups = compilationDeps.toPackageGroupedFormat(
-      this.packageFiles
-    );
-
-    // Lockfile needs ALL packages including diamond duplicates (no linkage filtering)
-    const lockfilePackageGroups =
-      compilationDeps.toPackageGroupedFormatForLockfile(this.packageFiles);
+    if (resolved.status !== "ok") {
+      throw new Error(
+        resolved.error || "Manifest package-group resolution failed"
+      );
+    }
+    if (
+      !resolved.rootFiles ||
+      !resolved.dependencies ||
+      !resolved.lockfileDependencies
+    ) {
+      throw new Error(
+        "Manifest package-group resolution did not include package groups"
+      );
+    }
 
     return {
-      files: JSON.stringify(updatedRootFiles),
-      dependencies: JSON.stringify(packageGroups),
-      lockfileDependencies: JSON.stringify(lockfilePackageGroups),
+      files: JSON.stringify(resolved.rootFiles),
+      dependencies: JSON.stringify(resolved.dependencies),
+      lockfileDependencies: JSON.stringify(resolved.lockfileDependencies),
+    };
+  }
+
+  private async resolveManifestGraphPackageGroups(
+    rootFiles: Record<string, string>
+  ): Promise<{
+    files: string;
+    dependencies: string;
+    lockfileDependencies: string;
+  }> {
+    if (!this.lockfileV4Helpers?.manifestGraphResolvePackageGroups) {
+      throw new Error(
+        "Rust manifest_graph_resolve_package_groups helper is required"
+      );
+    }
+
+    const packages: ManifestGraphFetchedPackage[] = [];
+    const fetchedRequests = new Set<string>();
+    const rootSource = this.packageSourceToRustSource(this.rootSource, "root");
+
+    for (let iteration = 0; iteration < 1024; iteration++) {
+      const resolved = this.parseManifestGraphPackageGroupsResponse(
+        this.lockfileV4Helpers.manifestGraphResolvePackageGroups(
+          JSON.stringify({
+            environment: this.network,
+            frameworkRev: WASM_BUILD_FRAMEWORK_REV,
+            root: {
+              source: rootSource,
+              files: rootFiles,
+            },
+            packages,
+          })
+        )
+      );
+
+      if (resolved.status === "ok") {
+        if (
+          !resolved.rootFiles ||
+          !resolved.dependencies ||
+          !resolved.lockfileDependencies
+        ) {
+          throw new Error(
+            "Manifest graph resolution did not include package groups"
+          );
+        }
+        return {
+          files: JSON.stringify(resolved.rootFiles),
+          dependencies: JSON.stringify(resolved.dependencies),
+          lockfileDependencies: JSON.stringify(resolved.lockfileDependencies),
+        };
+      }
+
+      if (resolved.status === "error") {
+        throw new Error(resolved.error || "Manifest graph resolution failed");
+      }
+
+      const requests = resolved.requests || [];
+      if (requests.length === 0) {
+        throw new Error(
+          "Manifest graph resolution requested fetches but returned no requests"
+        );
+      }
+
+      let fetchedAny = false;
+      for (const request of requests) {
+        const requestKey = this.lockfileV4PlanSourceKey(request.source);
+        if (fetchedRequests.has(requestKey)) {
+          continue;
+        }
+        fetchedRequests.add(requestKey);
+        packages.push(await this.fetchManifestGraphPackage(request));
+        fetchedAny = true;
+      }
+
+      if (!fetchedAny) {
+        throw new Error(
+          "Manifest graph resolution could not make progress fetching dependencies"
+        );
+      }
+    }
+
+    throw new Error("Manifest graph resolution exceeded the iteration limit");
+  }
+
+  private async fetchManifestGraphPackage(
+    request: ManifestGraphFetchRequest
+  ): Promise<ManifestGraphFetchedPackage> {
+    const requestedSource = { ...request.source };
+    const source = { ...request.source };
+    let files: Record<string, string>;
+
+    if (source.type === "git") {
+      if (!source.git || !source.rev) {
+        throw new Error(
+          `Manifest dependency '${request.dependencyName}' has invalid git source`
+        );
+      }
+      files = await this.fetcher.fetch(source.git, source.rev, source.subdir);
+      if (!files || Object.keys(files).length === 0) {
+        throw new Error(
+          `Dependency '${request.dependencyName}' from ${this.describeLockfileV4Source(source)} returned no files`
+        );
+      }
+      const resolvedSha = this.fetcher.getResolvedSha(source.git, source.rev);
+      if (resolvedSha) {
+        source.rev = resolvedSha;
+      }
+    } else if (source.type === "local") {
+      if (!source.local) {
+        throw new Error(
+          `Manifest dependency '${request.dependencyName}' has invalid local source`
+        );
+      }
+      if (typeof this.fetcher.fetchLocal !== "function") {
+        throw new Error(
+          `Local dependency '${request.dependencyName}' at '${source.local}' requires fetcher.fetchLocal(localPath, context)`
+        );
+      }
+      files = await this.fetcher.fetchLocal(source.local, {
+        dependencyName: request.dependencyName,
+        parentPackageName: request.parentPackageName,
+        parentSource: this.lockfileV4SourceToParentDependencySource(
+          request.parentSource
+        ),
+        network: this.network,
+      });
+      if (!files || Object.keys(files).length === 0) {
+        throw new Error(
+          `Local dependency '${request.dependencyName}' at '${source.local}' returned no files`
+        );
+      }
+    } else {
+      throw new Error(
+        `Dependency '${request.dependencyName}' has unsupported source ${this.describeLockfileV4Source(source)}`
+      );
+    }
+
+    if (!this.filesIncludeMoveToml(files)) {
+      throw new Error(
+        `Dependency '${request.dependencyName}' from ${this.describeLockfileV4Source(source)} did not provide Move.toml`
+      );
+    }
+
+    return {
+      source,
+      requestedSource,
+      files,
     };
   }
 
   /**
-   * Build a Package object from Move.toml and files
-   * @param isRoot - If true, inject implicit dependencies (CLI behavior: implicit deps only for root)
+   * Build a package from a host-provided file snapshot.
    */
   private async buildPackage(
     name: string,
     source: DependencySource | null,
-    moveTomlContent: string,
+    _moveTomlContent: string,
     files: Record<string, string>,
     isRoot: boolean = false
   ): Promise<Package> {
-    const parsed = parseToml(moveTomlContent);
+    if (!this.lockfileV4Helpers?.manifestPackagePlan) {
+      throw new Error("Rust manifest_package_plan helper is required");
+    }
 
-    // Resolve published-at and original-id using CLI logic (Move.lock [env] + Move.toml)
-    const moveLockContent = files["Move.lock"];
-    const chainId = this.getChainIdForNetwork(this.network);
-    const publishedAtResult = this.resolvePublishedAt(
-      moveTomlContent,
-      moveLockContent,
-      chainId,
-      this.network
+    const planned = this.parseManifestPackagePlanResponse(
+      this.lockfileV4Helpers.manifestPackagePlan(
+        JSON.stringify({
+          environment: this.network,
+          packageIdHint: name,
+          source: this.packageSourceToRustSource(source, name),
+          files,
+          isRoot,
+          frameworkRev: WASM_BUILD_FRAMEWORK_REV,
+        })
+      )
     );
 
-    const latestPublishedId = publishedAtResult.latestId
-      ? this.normalizeAddress(publishedAtResult.latestId)
-      : undefined;
-
-    // Check for Published.toml (Sui CLI compatibility)
-    // The CLI uses this to track published versions per environment.
-    const publishedTomlContent = files["Published.toml"];
-    let publishedAtFromPublishedToml: string | undefined;
-    let originalIdFromPublishedToml: string | undefined;
-
-    if (publishedTomlContent) {
-      try {
-        const publishedToml = parseToml(publishedTomlContent);
-        // Format: [published.<network>]
-        const envSection = publishedToml.published?.[this.network];
-        if (envSection) {
-          if (envSection["published-at"]) {
-            publishedAtFromPublishedToml = this.normalizeAddress(
-              envSection["published-at"]
-            );
-          }
-          if (envSection["original-id"]) {
-            originalIdFromPublishedToml = this.normalizeAddress(
-              envSection["original-id"]
-            );
-          }
-        }
-      } catch (_e) {
-        // console.warn("Failed to parse Published.toml", e);
-      }
+    if (planned.status !== "ok") {
+      throw new Error(planned.error || "Rust manifest package plan failed");
+    }
+    if (!planned.package) {
+      throw new Error("Rust manifest package plan did not include a package");
     }
 
-    if (publishedAtResult.error) {
-      // suppress noisy warnings
-    }
-
-    const manifest: PackageManifest = {
-      name: parsed.package?.name || name,
-      version: parsed.package?.version || "0.0.0",
-      edition: parsed.package?.edition,
-      publishedAt:
-        publishedAtFromPublishedToml || publishedAtResult.publishedAt,
-      originalId: originalIdFromPublishedToml || publishedAtResult.originalId,
-      latestPublishedId,
-      addresses: parsed.addresses || {},
-      // CLI compat: implicit dependencies only apply to root package
-      // ORIGINAL: sui_flavor.rs:96-109 - implicit_dependencies apply as root's dep replacement only
-      // Each dependency package must use the version specified in its own Move.toml
-      dependencies: isRoot
-        ? this.injectImplicitDependencies(
-            parsed.dependencies || {},
-            parsed.package?.name
-          )
-        : parsed.dependencies || {},
-      devDependencies: parsed["dev-dependencies"],
-    };
-
-    // Check if package defines its own address in [addresses] (case-insensitive)
-    // This handles cases where a package explicitly defines its address in `[addresses]` which might differ from `published-at`
-    const selfAddressKey = Object.keys(manifest.addresses).find(
-      (key) => key.toLowerCase() === manifest.name.toLowerCase()
-    );
-
-    if (selfAddressKey && manifest.addresses[selfAddressKey]) {
-      const selfAddr = this.normalizeAddress(
-        manifest.addresses[selfAddressKey]
-      );
-      // Treat explicit address as originalId if not 0x0
-      if (selfAddr !== ZERO_ADDRESS) {
-        manifest.originalId = selfAddr;
-      }
-    }
-
-    // Ensure package has an address entry for its own name.
-    // ORIGINAL CLI SOURCE:
-    // In `external-crates/move/crates/move-package-alt/src/graph/package_info.rs`, `node_to_addr` prioritization
-    // determines the address used for a package node. It specifically prioritizes the address defined in the
-    // manifest's `[addresses]` table (if it exists and matches the package name) over other sources like `published-at`.
-    // This is critical for packages where `published-at` differs from the `[addresses]` entry.
-    const addressToUse = manifest.originalId || manifest.publishedAt;
-    const normalizedPublished =
-      addressToUse && addressToUse !== "0x0"
-        ? this.normalizeAddress(addressToUse)
-        : undefined;
-
-    const currentAddr =
-      manifest.addresses[manifest.name] ||
-      (selfAddressKey ? manifest.addresses[selfAddressKey] : undefined);
-    const normalizedCurrent = currentAddr
-      ? this.normalizeAddress(currentAddr)
-      : undefined;
-
-    if (normalizedPublished) {
-      // Fix: Do not overwrite if the package explicitly defines its own address in [addresses]
-      // This handles cases where [addresses] pkg = "0x..." but published-at = "0x..." differs.
-      if (!isMoveNamedAddress(manifest.name)) {
-        // Package names may contain spaces, but named addresses cannot.
-      } else if (!currentAddr) {
-        manifest.addresses[manifest.name] = normalizedPublished;
-      } else if (currentAddr === ZERO_ADDRESS) {
-        manifest.addresses[manifest.name] = normalizedPublished;
-      }
-    } else if (!normalizedCurrent && isMoveNamedAddress(manifest.name)) {
-      manifest.addresses[manifest.name] = "0x0";
-    } else if (normalizedCurrent && isMoveNamedAddress(manifest.name)) {
-      manifest.addresses[manifest.name] = normalizedCurrent;
-    }
-
+    const manifest = planned.package.manifest;
     const dependencies = new Map<string, Dependency>();
-    if (manifest.dependencies) {
-      for (const [depName, depInfo] of Object.entries(manifest.dependencies)) {
-        const dep = this.parseDependencyInfo(depInfo);
-        if (dep) {
-          dependencies.set(depName, dep);
-        }
-      }
+    for (const dep of planned.dependencies || []) {
+      dependencies.set(dep.name, {
+        source: this.manifestPlanSourceToDependencySource(dep.source, dep.name),
+        subst: dep.subst,
+      });
     }
 
     const id: PackageIdentifier = {
@@ -430,65 +663,38 @@ export class Resolver {
     };
   }
 
-  /**
-   * Parse dependency info from Move.toml
-   * Supports: git, local, addr-subst, rename-from (new package manager)
-   */
-  private parseDependencyInfo(depInfo: any): Dependency | null {
-    if (!depInfo) return null;
-
-    const dep: Dependency = {
-      source: { type: "local" }, // Will be overwritten
-    };
-
-    // Parse source
-    if (depInfo.git && depInfo.rev) {
-      dep.source = {
+  private manifestPlanSourceToDependencySource(
+    source: DependencySource,
+    dependencyName: string
+  ): DependencySource {
+    if (source.type === "git") {
+      if (!source.git || !source.rev) {
+        throw new Error(
+          `Manifest dependency '${dependencyName}' has invalid git source`
+        );
+      }
+      return {
         type: "git",
-        git: depInfo.git,
-        rev: depInfo.rev,
-        subdir: depInfo.subdir,
+        git: source.git,
+        rev: source.rev,
+        subdir: source.subdir,
+        isImplicit: source.isImplicit,
       };
-      if (depInfo.isImplicit) {
-        (dep.source as any).isImplicit = true;
+    }
+    if (source.type === "local") {
+      if (!source.local) {
+        throw new Error(
+          `Manifest dependency '${dependencyName}' has invalid local source`
+        );
       }
-    } else if (depInfo.local) {
-      dep.source = {
+      return {
         type: "local",
-        local: depInfo.local,
+        local: source.local,
       };
-    } else {
-      return null; // No valid source
     }
-
-    // Parse address substitutions/renames (new package manager feature)
-    // addr-subst = { SomeAddress = "0x123", OtherAddress = "AnotherName" }
-    if (depInfo["addr-subst"] || depInfo.addr_subst) {
-      const substTable = depInfo["addr-subst"] || depInfo.addr_subst;
-      const subst: Record<
-        string,
-        import("./dependencyGraph.js").SubstOrRename
-      > = {};
-
-      for (const [addrName, value] of Object.entries(substTable)) {
-        if (typeof value === "string") {
-          // Check if it's an address (starts with 0x) or a name
-          if (value.startsWith("0x") || /^[0-9a-fA-F]+$/.test(value)) {
-            // It's an address assignment
-            subst[addrName] = { type: "assign", address: value };
-          } else {
-            // It's a rename-from
-            subst[addrName] = { type: "renameFrom", name: value };
-          }
-        }
-      }
-
-      if (Object.keys(subst).length > 0) {
-        dep.subst = subst;
-      }
-    }
-
-    return dep;
+    throw new Error(
+      `Manifest dependency '${dependencyName}' has unsupported source ${this.describeSource(source)}`
+    );
   }
 
   /**
@@ -505,8 +711,8 @@ export class Resolver {
     const sortedDeps = Array.from(pkg.dependencies.entries()).sort(
       ([nameA, depA], [nameB, depB]) => {
         // First: Implicit deps come first (descending)
-        const isImplicitA = (depA.source as any).isImplicit ? 1 : 0;
-        const isImplicitB = (depB.source as any).isImplicit ? 1 : 0;
+        const isImplicitA = depA.source.isImplicit ? 1 : 0;
+        const isImplicitB = depB.source.isImplicit ? 1 : 0;
         if (isImplicitA !== isImplicitB) {
           return isImplicitB - isImplicitA;
         }
@@ -517,39 +723,22 @@ export class Resolver {
     );
 
     for (const [depName, dep] of sortedDeps) {
-      // Convert local dependencies to git dependencies using parent's git info
-      if (dep.source.type === "local") {
-        if (pkg.id.source.type === "git" && dep.source.local) {
-          // Parent is from git, convert local path to git subdir
-          const parentSubdir = pkg.id.source.subdir || "";
-          const localPath = dep.source.local;
+      let files: Record<string, string>;
 
-          // Resolve relative path: ../token from packages/deepbook -> packages/token
-          const resolvedSubdir = this.resolveRelativePath(
-            parentSubdir,
-            localPath
-          );
-
-          // Replace with git dependency
-          dep.source = {
-            type: "git",
-            git: pkg.id.source.git,
-            rev: pkg.id.source.rev,
-            subdir: resolvedSubdir,
-          };
-        } else {
-          continue;
-        }
-      }
-
-      if (dep.source.type !== "git") {
-        continue;
+      if (dep.source.type !== "git" && dep.source.type !== "local") {
+        throw new Error(
+          `Dependency '${depName}' has unsupported source ${this.describeSource(dep.source)}`
+        );
       }
 
       // CLI behavior: local deps from same git repo share parent's framework version
       // Override Sui rev BEFORE cacheKey generation so sibling packages hit same visited entry
       // ORIGINAL: pin.rs:283-285 - local dep inherits parent's git tree including rev
-      if (dep.source.git && this.isSuiRepo(dep.source.git)) {
+      if (
+        dep.source.type === "git" &&
+        dep.source.git &&
+        this.isSuiRepo(dep.source.git)
+      ) {
         // Infer subdir for Sui framework packages
         if (!dep.source.subdir) {
           const inferredSubdir = this.inferSuiFrameworkSubdir(depName);
@@ -566,13 +755,13 @@ export class Resolver {
         if (parentRepoKey) {
           const cachedSuiRev = this.repoRevToSuiRev.get(parentRepoKey);
           if (cachedSuiRev && dep.source.rev !== cachedSuiRev) {
-            // Override with sibling's Sui revision (e.g., token uses deepbook's Sui_2)
+            // Reuse the framework revision already selected for this repository.
             dep.source.rev = cachedSuiRev;
           }
         }
 
-        // Pre-resolve Sui tags to SHA for consistent cacheKey generation
-        // This ensures deepbook's Sui (framework/mainnet) and token's Sui use same SHA in cacheKey
+        // Pre-resolve Sui tags to SHA for consistent cacheKey generation.
+        // Sibling dependency aliases must resolve to the same fetched package key.
         const suiTagKey = `${dep.source.git}|${dep.source.rev}|${dep.source.subdir || ""}`;
         const cachedSha = this.suiTagToShaCache.get(suiTagKey);
         if (cachedSha) {
@@ -597,104 +786,60 @@ export class Resolver {
         }
       }
 
-      const cacheKey = `${dep.source.git}|${dep.source.rev}|${dep.source.subdir || ""}`;
+      const cacheKey = this.dependencySourceKey(dep.source);
 
       if (this.visited.has(cacheKey)) {
-        // Already processed, just add edge
         // ORIGINAL: builder.rs:330 - graph.add_edge(index, dep_index, dep.clone())
-        // edge stores PinnedDependencyInfo with original source
-        const existingPkg = this.findPackageBySource(graph, dep.source);
-        if (existingPkg) {
-          graph.addDependency(pkg.id.name, existingPkg.id.name, dep);
-
-          // ORIGINAL: to_lockfile.rs:27-35 - deps = { alias = "PackageID" }
-          // Store original source for lockfile diamond dependency tracking
-          if (!pkg.depAliasToPackageName) {
-            pkg.depAliasToPackageName = {};
-          }
-          pkg.depAliasToPackageName[depName] = existingPkg.id.name;
-
-          // Store original source info for diamond dependency lockfile generation
-          // ORIGINAL: builder.rs:286 - visited key includes PackagePath (git+rev+subdir)
-          if (!pkg.depAliasToSource) {
-            pkg.depAliasToSource = {};
-          }
-          pkg.depAliasToSource[depName] = {
-            name: existingPkg.id.name,
-            type: dep.source.type,
-            git: dep.source.git,
-            rev: dep.source.rev,
-            subdir: dep.source.subdir,
-          };
-        }
+        this.addExistingDependencyEdge(graph, pkg, depName, dep);
         continue;
       }
 
       this.visited.add(cacheKey);
 
-      // Subdir already set in pre-cacheKey Sui handling above
-      const subdir = dep.source.subdir;
+      if (dep.source.type === "git") {
+        const subdir = dep.source.subdir;
+        files = await this.fetcher.fetch(
+          dep.source.git!,
+          dep.source.rev!,
+          subdir
+        );
+        if (Object.keys(files).length === 0) {
+          throw new Error(
+            `Dependency '${depName}' from ${this.describeSource(dep.source)} returned no files`
+          );
+        }
 
-      // Fetch dependency files
-      const files = await this.fetcher.fetch(
-        dep.source.git!,
-        dep.source.rev!,
-        subdir
-      );
+        // Update rev with resolved commit SHA (resolves tags/branches to actual SHA)
+        const resolvedSha = this.fetcher.getResolvedSha(
+          dep.source.git!,
+          dep.source.rev!
+        );
+        if (resolvedSha) {
+          dep.source.rev = resolvedSha;
+        }
 
-      // Update rev with resolved commit SHA (resolves tags/branches to actual SHA)
-      const resolvedSha = this.fetcher.getResolvedSha(
-        dep.source.git!,
-        dep.source.rev!
-      );
-      if (resolvedSha) {
-        dep.source.rev = resolvedSha;
-      }
-
-      // Store Sui framework revision for sibling packages from same git repo
-      // ORIGINAL: CLI's visited map shares nodes for same fetched path
-      // If this is a Sui framework dep, store its resolved rev for sibling packages to use
-      if (dep.source.git && this.isSuiRepo(dep.source.git)) {
-        const parentRepoKey =
-          pkg.id.source.type === "git"
-            ? `${pkg.id.source.git}|${pkg.id.source.rev}`
-            : null;
-        if (parentRepoKey && dep.source.rev) {
-          // Only set if not already set (first sibling's Sui wins)
-          if (!this.repoRevToSuiRev.has(parentRepoKey)) {
-            this.repoRevToSuiRev.set(parentRepoKey, dep.source.rev);
+        // Store Sui framework revision for sibling packages from same git repo
+        // ORIGINAL: CLI's visited map shares nodes for same fetched path
+        if (dep.source.git && this.isSuiRepo(dep.source.git)) {
+          const parentRepoKey =
+            pkg.id.source.type === "git"
+              ? `${pkg.id.source.git}|${pkg.id.source.rev}`
+              : null;
+          if (parentRepoKey && dep.source.rev) {
+            if (!this.repoRevToSuiRev.has(parentRepoKey)) {
+              this.repoRevToSuiRev.set(parentRepoKey, dep.source.rev);
+            }
           }
         }
+      } else {
+        files = await this.fetchLocalPackage(dep.source.local!, depName, pkg);
       }
 
-      // Find Move.toml
-      let moveTomlContent: string | null = null;
-      const networkTomlName = `Move.${this.network}.toml`;
-
-      // Try network-specific Move.toml first
-      for (const [path, content] of Object.entries(files)) {
-        if (path.endsWith(networkTomlName)) {
-          moveTomlContent = content;
-          break;
-        }
-      }
-
-      // Fallback to Move.toml
-      if (!moveTomlContent) {
-        for (const [path, content] of Object.entries(files)) {
-          if (path.endsWith("Move.toml")) {
-            moveTomlContent = content;
-            break;
-          }
-        }
-      }
-
-      if (!moveTomlContent) {
-        // If we are in 'build' mode, Move.toml must exist for compilation.
-        // If we are in 'build' mode, Move.toml must exist for compilation.
-        // Otherwise, we can skip this dependency if it's not critical.
-        continue;
-      }
+      const moveTomlContent = this.findMoveTomlForPackage(
+        files,
+        depName,
+        dep.source
+      );
 
       // Build package
       const depPackage = await this.buildPackage(
@@ -718,24 +863,16 @@ export class Resolver {
       // Update package ID (used as unique identifier in graph)
       depPackage.id.name = pkgId;
 
-      // published-at is already resolved in buildPackage via resolvePublishedAt
-      // We rely on buildPackage to populate manifest.addresses correctly
-
       // Use edition only from Move.toml (Move.lock editions are unreliable)
       // If Move.toml doesn't specify edition, default to 'legacy' for safety
       //
       // ORIGINAL SOURCE REFERENCE:
       // - move-package-alt-compilation/src/compilation.rs:385
-      //   ".unwrap_or(Edition::LEGACY), // TODO require edition"
+      //   falls back to Edition::LEGACY when the manifest omits edition.
       // - move-package/src/resolution/resolution_graph.rs:661 (same pattern)
       if (!depPackage.manifest.edition) {
         depPackage.manifest.edition = "legacy";
       }
-
-      // CLI behavior: Dependency IDs are extracted from:
-      // 1. [addresses] section with package's own name (if not 0x0)
-      // 2. published-at field from [package] section (resolved via resolvePublishedAt)
-      // No hardcoded fallback - WASM code handles extraction
 
       // Add to graph
       graph.addPackage(depPackage);
@@ -762,141 +899,11 @@ export class Resolver {
       };
 
       // Use source files directly - compiler needs source, not bytecode
-      console.log(
-        `[V3 Files] Storing: ${depPackage.id.name} (manifest: ${depPackage.manifest.name})`
-      );
       this.packageFiles.set(depPackage.id.name, files);
 
       // Recursively resolve this package's dependencies
       await this.buildDependencyGraph(graph, depPackage);
     }
-  }
-
-  /**
-   * Get chain ID for network (following Sui conventions)
-   * These are the actual chain identifiers used by Sui networks
-   *
-   * ORIGINAL SOURCE REFERENCE:
-   * - sui-types/src/digests.rs:164-165 - Base58 encoded chain identifiers
-   *   MAINNET_CHAIN_IDENTIFIER_BASE58 = "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S"
-   *   TESTNET_CHAIN_IDENTIFIER_BASE58 = "69WiPg3DAQiwdxfncX6wYQ2siKwAe6L9BZthQea3JNMD"
-   * - sui-types/src/digests.rs:262-269 - ChainIdentifier::fmt() outputs first 4 bytes as hex
-   *   Mainnet: 35834a8a (first 4 bytes of Base58-decoded mainnet identifier)
-   *   Testnet: 4c78adac (first 4 bytes of Base58-decoded testnet identifier)
-   * - sui-package-alt/src/environments.rs:10-22 - Environment definitions
-   */
-  private getChainIdForNetwork(network: string): string | undefined {
-    // Known chain IDs (from ChainIdentifier.to_string() - first 4 bytes of genesis checkpoint digest as hex)
-    const chainIdMap: Record<string, string> = {
-      mainnet: "35834a8a", // From MAINNET_CHAIN_IDENTIFIER_BASE58 first 4 bytes
-      testnet: "4c78adac", // From TESTNET_CHAIN_IDENTIFIER_BASE58 first 4 bytes
-      devnet: "2", // devnet chain id is not stable; use placeholder
-      localnet: "localnet",
-    };
-    return chainIdMap[network] || network;
-  }
-
-  /**
-   * Resolve published-at and original-id following CLI logic
-   *
-   * ORIGINAL SOURCE REFERENCE: move-package-alt/src/package/package_impl.rs
-   *
-   * Input Sources (in priority order):
-   * 1. Move.lock [env.<chain_id>] section (line 232-248, load_publication)
-   *    - original-published-id: First publish address (compilation)
-   *    - latest-published-id: Current address (linking)
-   * 2. Move.toml [package] section (line 214-226)
-   *    - published-at: Current package address
-   *    - original-id: Optional override
-   *
-   * Output:
-   * - publishedAt: Current/latest address for linking
-   * - originalId: First publish address for compilation
-   * - latestId: Same as publishedAt (alias)
-   *
-   * Related: sui-package-management/lib.rs for conflict detection
-   */
-  private resolvePublishedAt(
-    moveTomlContent: string,
-    moveLockContent: string | undefined,
-    chainId: string | undefined,
-    network: string
-  ): {
-    publishedAt?: string;
-    originalId?: string;
-    latestId?: string;
-    error?: string;
-  } {
-    const moveToml = parseToml(moveTomlContent);
-
-    // Read published-at from Move.toml
-    const publishedAtInManifest =
-      moveToml.package?.published_at || moveToml.package?.["published-at"];
-    const manifestIdRaw =
-      publishedAtInManifest && publishedAtInManifest !== "0x0"
-        ? publishedAtInManifest
-        : undefined;
-    const manifestId = manifestIdRaw
-      ? this.normalizeAddress(manifestIdRaw)
-      : undefined;
-
-    // Read original-id from Move.toml (if specified manually)
-    const originalIdInManifest = moveToml.package?.["original-id"];
-
-    // Read from Move.lock if available
-    let lockOriginalId: string | undefined;
-    let lockLatestId: string | undefined;
-
-    if (moveLockContent) {
-      try {
-        const lock = parseToml(moveLockContent);
-
-        // Check both [env.<chainId>] and [env.<network>]
-        // Sui CLI writes [env.<chain_id>] but might fall back to alias in some contexts
-        const envSection =
-          (chainId && lock.env?.[chainId]) || lock.env?.[network];
-
-        if (envSection) {
-          if (envSection["original-published-id"]) {
-            lockOriginalId = this.normalizeAddress(
-              envSection["original-published-id"]
-            );
-          }
-          if (envSection["latest-published-id"]) {
-            lockLatestId = this.normalizeAddress(
-              envSection["latest-published-id"]
-            );
-          }
-        } else {
-          // No env section found for this chain
-        }
-      } catch (_e) {
-        // failed to parse lock, ignore
-      }
-    } else {
-      // No Move.lock content provided
-    }
-
-    // Logic: Prefer Move.toml if present (it overrides).
-    // Fallback to Move.lock for dependencies that don't have published-at in Manifest but have it in Lock.
-
-    // CRITICAL: We explicitly distinguish between:
-    // 1. `originalId`: The address the package was ORIGINALLY published at. Used for COMPILATION (build consistency).
-    // 2. `latestId` (or `publishedAt`): The CURRENT address of the package. Used for LINKING/RESOLUTION.
-
-    // Move.toml [package] published-at overrides the "current" address.
-    const effectiveLatestId = manifestId || lockLatestId || lockOriginalId;
-
-    // Original ID primarily comes from Lockfile (history), but can be overridden/specified in Manifest.
-    // If not in manifest, fallback to lockfile.
-    const effectiveOriginalId = originalIdInManifest || lockOriginalId;
-
-    const result = {
-      publishedAt: effectiveLatestId, // "publishedAt" generally means the current/latest address in this context
-      originalId: effectiveOriginalId,
-      latestId: effectiveLatestId,
-    };
-    return result;
   }
 
   /**
@@ -912,7 +919,8 @@ export class Resolver {
         pkgSource.type === source.type &&
         pkgSource.git === source.git &&
         pkgSource.rev === source.rev &&
-        pkgSource.subdir === source.subdir
+        pkgSource.subdir === source.subdir &&
+        pkgSource.local === source.local
       ) {
         return pkg;
       }
@@ -922,7 +930,7 @@ export class Resolver {
 
   /**
    * Resolve relative path for local dependencies
-   * Example: parentSubdir="packages/deepbook", localPath="../token" -> "packages/token"
+   * Example: parentSubdir="packages/a", localPath="../b" -> "packages/b"
    */
   private resolveRelativePath(parentSubdir: string, localPath: string): string {
     // Split paths into parts
@@ -950,20 +958,147 @@ export class Resolver {
     return resultParts.join("/");
   }
 
-  /**
-   * Compute manifest digest for lockfile validation (Sui CLI compatible)
-   */
-  private async computeManifestDigest(
-    moveTomlContent: string
-  ): Promise<string> {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(moveTomlContent);
-    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const hashHex = hashArray
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-    return hashHex.toUpperCase();
+  private dependencySourceKey(source: DependencySource): string {
+    if (source.type === "git") {
+      return `git|${source.git}|${source.rev}|${source.subdir || ""}`;
+    }
+    if (source.type === "local") {
+      return `local|${source.local || ""}`;
+    }
+    return `${source.type}`;
+  }
+
+  private lockfileV4PlanSourceKey(source: LockfileV4PlanSource): string {
+    if (source.type === "git") {
+      return `git|${source.git || ""}|${source.rev || ""}|${source.subdir || ""}`;
+    }
+    if (source.type === "local") {
+      return `local|${source.local || ""}`;
+    }
+    return "root";
+  }
+
+  private lockfileV4SourceToParentDependencySource(
+    source: LockfileV4PlanSource
+  ): DependencySource {
+    if (source.type === "git") {
+      return {
+        type: "git",
+        git: source.git,
+        rev: source.rev,
+        subdir: source.subdir,
+      };
+    }
+    if (source.type === "local") {
+      return {
+        type: "local",
+        local: source.local,
+      };
+    }
+    return this.rootSource || { type: "local" };
+  }
+
+  private describeSource(source: DependencySource): string {
+    if (source.type === "git") {
+      return `${source.git}@${source.rev}${source.subdir ? `/${source.subdir}` : ""}`;
+    }
+    if (source.type === "local") {
+      return source.local ? `local:${source.local}` : "local:<root>";
+    }
+    return source.type;
+  }
+
+  private describeLockfileV4Source(source: LockfileV4PlanSource): string {
+    if (source.type === "git") {
+      return `${source.git}@${source.rev}${source.subdir ? `/${source.subdir}` : ""}`;
+    }
+    if (source.type === "local") {
+      return source.local ? `local:${source.local}` : "local:<empty>";
+    }
+    return "root";
+  }
+
+  private filesIncludeMoveToml(files: Record<string, string>): boolean {
+    return Object.keys(files).some((path) => path.endsWith("Move.toml"));
+  }
+
+  private findMoveTomlForPackage(
+    files: Record<string, string>,
+    packageName: string,
+    source: DependencySource
+  ): string {
+    const networkTomlName = `Move.${this.network}.toml`;
+    const networkMoveToml = Object.entries(files).find(([path]) =>
+      path.endsWith(networkTomlName)
+    );
+    const moveToml = networkMoveToml?.[1] ?? files["Move.toml"];
+
+    if (!moveToml) {
+      throw new Error(
+        `Dependency '${packageName}' from ${this.describeSource(source)} did not provide Move.toml`
+      );
+    }
+    return moveToml;
+  }
+
+  private async fetchLocalPackage(
+    localPath: string,
+    dependencyName: string,
+    parentPackage: Package
+  ): Promise<Record<string, string>> {
+    if (typeof this.fetcher.fetchLocal !== "function") {
+      throw new Error(
+        `Local dependency '${dependencyName}' at '${localPath}' requires fetcher.fetchLocal(localPath, context)`
+      );
+    }
+
+    const context: FetchLocalContext = {
+      dependencyName,
+      parentPackageName: parentPackage.manifest.name,
+      parentSource: parentPackage.id.source,
+      network: this.network,
+    };
+    const files = await this.fetcher.fetchLocal(localPath, context);
+    if (!files || Object.keys(files).length === 0) {
+      throw new Error(
+        `Local dependency '${dependencyName}' at '${localPath}' returned no files`
+      );
+    }
+    return files;
+  }
+
+  private addExistingDependencyEdge(
+    graph: DependencyGraph,
+    pkg: Package,
+    depName: string,
+    dep: Dependency
+  ): boolean {
+    const existingPkg = this.findPackageBySource(graph, dep.source);
+    if (!existingPkg) {
+      return false;
+    }
+
+    graph.addDependency(pkg.id.name, existingPkg.id.name, dep);
+
+    // ORIGINAL: to_lockfile.rs:27-35 - deps = { alias = "PackageID" }
+    if (!pkg.depAliasToPackageName) {
+      pkg.depAliasToPackageName = {};
+    }
+    pkg.depAliasToPackageName[depName] = existingPkg.id.name;
+
+    // ORIGINAL: builder.rs:286 - visited key includes PackagePath.
+    if (!pkg.depAliasToSource) {
+      pkg.depAliasToSource = {};
+    }
+    pkg.depAliasToSource[depName] = {
+      name: existingPkg.id.name,
+      type: dep.source.type,
+      git: dep.source.git,
+      rev: dep.source.rev,
+      subdir: dep.source.subdir,
+      local: dep.source.local,
+    };
+    return true;
   }
 
   /**
@@ -983,10 +1118,6 @@ export class Resolver {
     const lockfile = parseToml(moveLockContent) as any;
     this.lockfileVersion = lockfile.move?.version;
 
-    console.log(
-      `[Lockfile] version=${this.lockfileVersion}, hasPinned=${!!lockfile.pinned}`
-    );
-
     // Support both version 3 ([[move.package]]) and version 4 (pinned) formats
     const lockfileVersion = lockfile.move?.version;
     if (lockfileVersion === 3) {
@@ -996,18 +1127,9 @@ export class Resolver {
       // CLI behavior: V3 lockfile is ignored, dependencies are re-resolved from Move.toml
       return false; // fallback to buildDependencyGraph (re-resolve from manifests)
     } else if (lockfileVersion && lockfileVersion >= 4) {
-      // Try v4+ format first (pinned)
-      if (lockfile.pinned) {
-        return await this.loadFromLockfileV4(
-          graph,
-          lockfile,
-          rootFiles,
-          rootPackage
-        );
-      } else {
-        // Fallback for pinned property missing in v4+ (unlikely but safe)
-        return false;
-      }
+      // V4 pins are handled by resolveFromLockfileV4 before the JS graph path.
+      // If that path returns here, the lockfile was missing, out of date, or unusable.
+      return false;
     } else {
       // Legacy versions (v0/v1/v2) - best-effort support following CLI layout
       return await this.loadFromLockfileV0(graph, lockfile, rootPackage);
@@ -1123,7 +1245,7 @@ export class Resolver {
             graph.addDependency(pkg.id.name, depPkg.id.name, dep);
 
             // ORIGINAL: dependency_graph.rs:1284-1289 - lockfile deps come from package_graph.edges()
-            // Populate depAliasToPackageName so lockfileGenerator outputs correct deps
+            // Preserve lockfile dependency aliases for package-group construction.
             if (!pkg.depAliasToPackageName) {
               pkg.depAliasToPackageName = {};
             }
@@ -1134,12 +1256,27 @@ export class Resolver {
       }
     }
 
-    // Root edges from manifest dependencies
+    // Root dependency edges and aliases must also reach package-group construction.
     for (const depName of rootPackage.dependencies.keys()) {
       const depPkg = packageByName.get(depName);
       if (depPkg) {
         const dep = rootPackage.dependencies.get(depName)!;
         graph.addDependency(rootPackage.id.name, depPkg.id.name, dep);
+        if (!rootPackage.depAliasToPackageName) {
+          rootPackage.depAliasToPackageName = {};
+        }
+        rootPackage.depAliasToPackageName[depName] = depPkg.id.name;
+        if (!rootPackage.depAliasToSource) {
+          rootPackage.depAliasToSource = {};
+        }
+        rootPackage.depAliasToSource[depName] = {
+          name: depPkg.id.name,
+          type: dep.source.type,
+          git: dep.source.git,
+          rev: dep.source.rev,
+          subdir: dep.source.subdir,
+          local: dep.source.local,
+        };
       }
     }
 
@@ -1147,344 +1284,177 @@ export class Resolver {
   }
 
   /**
-   * Load from Move.lock version 3 format ([[move.package]] array)
-   */
-  private async loadFromLockfileV3(
-    graph: DependencyGraph,
-    lockfile: any,
-    rootPackage: Package
-  ): Promise<boolean> {
-    const packages = lockfile.move?.package;
-    if (!packages || !Array.isArray(packages)) {
-      return false;
-    }
-
-    const packageById = new Map<string, Package>();
-    const pkgInfoById = new Map<string, any>();
-    const lockfileOrder: string[] = [];
-
-    for (const pkgInfo of packages) {
-      if (pkgInfo.id) {
-        pkgInfoById.set(pkgInfo.id, pkgInfo);
-      }
-    }
-
-    // First pass: Fetch and create all packages
-    for (const pkgInfo of packages) {
-      const pkgId = pkgInfo.id;
-      const source = pkgInfo.source;
-
-      // Track the order from [[move.package]] array - this is the order we need to preserve
-      lockfileOrder.push(pkgId);
-
-      // Resolve source: prefer git, or convert local to root git if hint available
-      let depSource: DependencySource | null = null;
-      if (source?.git && source.rev) {
-        depSource = {
-          type: "git",
-          git: source.git,
-          rev: source.rev,
-          subdir: source.subdir,
-        };
-      } else if (source?.local && this.rootSource?.type === "git") {
-        const resolvedSubdir = this.resolveRelativePath(
-          this.rootSource.subdir || "",
-          source.local
-        );
-        depSource = {
-          type: "git",
-          git: this.rootSource.git!,
-          rev: this.rootSource.rev!,
-          subdir: resolvedSubdir,
-        };
-      } else {
-        continue;
-      }
-
-      if (!depSource.git || !depSource.rev) {
-        continue;
-      }
-
-      // Fetch package files
-      const files = await this.fetcher.fetch(
-        depSource.git,
-        depSource.rev,
-        depSource.subdir
-      );
-
-      if (Object.keys(files).length === 0) {
-        continue;
-      }
-
-      // ORIGINAL: pin.rs:61-63 (docstring) - "revisions for git dependencies are replaced with 40-character shas"
-      // ORIGINAL: pin.rs:254-262 - ManifestGitDependency.pin() calls cache.resolve_to_tree() to convert rev to SHA
-      // This ensures lockfile generation uses SHA, not tags/branches (critical for V3→V4 migration)
-      const resolvedSha = this.fetcher.getResolvedSha(
-        depSource.git!,
-        depSource.rev!
-      );
-      if (resolvedSha) {
-        depSource.rev = resolvedSha;
-      }
-
-      // Find Move.toml
-      const moveToml = files["Move.toml"];
-      if (!moveToml) {
-        continue;
-      }
-
-      // Build package
-      const pkg = await this.buildPackage(pkgId, depSource, moveToml, files);
-      packageById.set(pkgId, pkg);
-      this.packageFiles.set(pkg.manifest.name, files);
-      graph.addPackage(pkg);
-    }
-
-    // Set lockfile order from [[move.package]] array (this is the order from BuildInfo.yaml)
-    graph.setLockfileOrder(lockfileOrder);
-
-    // Second pass: Add dependency edges using lockfile dependencies
-    for (const pkgInfo of packages) {
-      const pkgId = pkgInfo.id;
-      const pkg = packageById.get(pkgId);
-      if (!pkg) continue;
-
-      const deps = pkgInfo.dependencies;
-      if (!deps || !Array.isArray(deps)) continue;
-
-      for (const depInfo of deps) {
-        const depId = depInfo.id;
-        let depPkg = packageById.get(depId);
-
-        // If dependency package not yet built (e.g., local source), try to build it now using parent context
-        if (!depPkg) {
-          const depPkgInfo = pkgInfoById.get(depId);
-          if (depPkgInfo?.source?.local && pkg.id.source.type === "git") {
-            const resolvedSubdir = this.resolveRelativePath(
-              pkg.id.source.subdir || "",
-              depPkgInfo.source.local
-            );
-            const depSource: DependencySource = {
-              type: "git",
-              git: pkg.id.source.git!,
-              rev: pkg.id.source.rev!,
-              subdir: resolvedSubdir,
-            };
-            const files = await this.fetcher.fetch(
-              depSource.git!,
-              depSource.rev!,
-              depSource.subdir
-            );
-            const moveToml = files["Move.toml"];
-            if (moveToml) {
-              const built = await this.buildPackage(
-                depId,
-                depSource,
-                moveToml,
-                files
-              );
-              packageById.set(depId, built);
-              this.packageFiles.set(built.manifest.name, files);
-              graph.addPackage(built);
-              depPkg = built;
-            }
-          }
-        }
-
-        if (depPkg) {
-          // Create a dependency object
-          const dep: Dependency = {
-            source: depPkg.id.source,
-          };
-          graph.addDependency(pkg.id.name, depPkg.id.name, dep);
-
-          // ORIGINAL: dependency_graph.rs:1284-1289 - lockfile deps come from package_graph.edges()
-          // Populate depAliasToPackageName so lockfileGenerator outputs correct deps
-          // V3 lockfile uses { id, name } format where name is the alias from Move.toml
-          if (!pkg.depAliasToPackageName) {
-            pkg.depAliasToPackageName = {};
-          }
-          const depAlias = depInfo.name || depId; // name is the alias, id is the package identifier
-          pkg.depAliasToPackageName[depAlias] = depPkg.id.name;
-        }
-      }
-    }
-
-    // Also add root package dependencies from Move.toml
-    for (const depName of rootPackage.dependencies.keys()) {
-      const depPkg = packageById.get(depName);
-      if (depPkg) {
-        const dep = rootPackage.dependencies.get(depName)!;
-        graph.addDependency(rootPackage.id.name, depPkg.id.name, dep);
-      }
-    }
-
-    return true;
-  }
-
-  /**
    * Load from Move.lock version 4+ format (pinned section)
    */
-  private async loadFromLockfileV4(
-    graph: DependencyGraph,
-    lockfile: any,
-    rootFiles: Record<string, string>,
-    rootPackage: Package
-  ): Promise<boolean> {
-    // Check if lockfile has pinned dependencies for this network
-    const pinnedPackages = lockfile.pinned?.[this.network];
-    // Version 4+ format: Use pinned section
-    if (!pinnedPackages) return false;
-
-    // Root package is already built and passed in (graph already has it from resolve())
-
-    // Check manifest digest
-    const rootToml = rootFiles["Move.toml"];
-    if (
-      rootToml &&
-      lockfile.move?.manifest_digest &&
-      (await this.computeManifestDigest(rootToml)) !==
-        lockfile.move.manifest_digest
-    ) {
-      return false;
-    }
-
-    // Build graph from pinned packages
-    const packageById = new Map<string, Package>();
-    const packageByName = new Map<string, Package>();
-    const lockfileOrder: string[] = [];
-
-    // First pass: Create all packages
-    // ORIGINAL: builder.rs:108-145 - iterate over lockfile pins
-    console.log(
-      `[V4 Load] Loading ${Object.keys(pinnedPackages).length} packages from lockfile`
-    );
-    for (const [pkgId, pin] of Object.entries(pinnedPackages)) {
-      console.log(`[V4 Load] Processing: ${pkgId}`);
-      lockfileOrder.push(pkgId);
-      const source = this.lockfileSourceToDependencySource((pin as any).source);
-      if (!source) {
-        continue;
-      }
-
-      // ORIGINAL: builder.rs:132-140 - Skip root package, it's already built
-      // Root package is passed in via rootPackage parameter and doesn't need re-fetching
-      if ("root" in (pin as any).source) {
-        packageById.set(pkgId, rootPackage);
-        packageByName.set(rootPackage.manifest.name, rootPackage);
-        continue;
-      }
-
-      // Fetch package files
-      const files = await this.fetchFromSource(source);
-      if (!files) {
-        return false;
-      }
-
-      // Find Move.toml
-      const moveToml = files["Move.toml"];
-      if (!moveToml) {
-        return false;
-      }
-
-      // NOTE: Skipping manifest_digest validation
-      // ORIGINAL: builder.rs:122-128 - CLI computes digest from serialized dependencies (package_impl.rs:287-308)
-      // using compute_digest(&deps) which serializes CombinedDependency to TOML then SHA-256.
-      // WASM cannot easily replicate this without full dependency graph construction.
-      // Since lockfile rev is correct, trust it and skip digest check.
-      // If Move.toml actually changed, the build will fail anyway.
-
-      // Build package
-      // ORIGINAL: builder.rs:132-140 - Package is created with ID from lockfile (including suffix)
-      const pkg = await this.buildPackage(pkgId, source, moveToml, files);
-
-      // CLI compat: use pkgId from lockfile (including suffix)
-      // ORIGINAL: builder.rs:232-265 create_ids() - lockfile already has suffix-applied ID
-      // pkg.manifest.name is original name (MoveStdlib), pkg.id.name is lockfile ID (MoveStdlib_1)
-      pkg.id.name = pkgId;
-
-      packageById.set(pkgId, pkg);
-      // Use pkgId (including suffix) as key to avoid overwriting diamond packages
-      packageByName.set(pkgId, pkg);
-      console.log(
-        `[V4 Files] Storing: ${pkgId} (manifest: ${pkg.manifest.name})`
+  private parseLockfileV4Response<
+    T extends { status?: string; error?: string },
+  >(raw: string, operation: string): T {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(
+        `Rust lockfile V4 ${operation} returned invalid JSON: ${
+          error instanceof Error ? error.message : String(error)
+        }`
       );
-      this.packageFiles.set(pkgId, files);
-
-      // Add to graph (if not root)
-      if (source.type !== "local" || !("root" in (pin as any).source)) {
-        graph.addPackage(pkg);
-      }
     }
 
-    // Preserve lockfile order
-    if (lockfileOrder.length > 0) {
-      graph.setLockfileOrder(lockfileOrder);
-    }
-
-    // Second pass: Add dependency edges
-    // ORIGINAL: Sui CLI builder.rs direct dependency edge construction
-    // CLI iterates source_package.direct_deps() which INCLUDES implicit deps (std, sui)
-    // injected by F::implicit_dependencies() in package_impl.rs:253-267.
-    // CLI then looks up target_id from source_pin.deps (lockfile's deps mapping).
-    //
-    // WASM difference: pkg.dependencies only has Move.toml [dependencies] (no implicit).
-    // Fix: Trust lockfile's deps directly. If lockfile says { std = "MoveStdlib" },
-    // create edge even if pkg.dependencies doesn't have "std".
-    for (const [pkgId, pin] of Object.entries(pinnedPackages)) {
-      const pkg = packageById.get(pkgId);
-      if (!pkg) continue;
-
-      if ((pin as any).deps) {
-        for (const [depName, depId] of Object.entries((pin as any).deps)) {
-          const depPkg = packageById.get(depId as string);
-          if (depPkg) {
-            // ORIGINAL: builder.rs:169-177 - CLI creates PinnedDependencyInfo from combined dep
-            // We trust the lockfile's deps mapping and create synthetic Dependency if needed.
-            const dep = pkg.dependencies.get(depName) || {
-              source: depPkg.id.source,
-            };
-            graph.addDependency(pkg.id.name, depPkg.id.name, dep);
-
-            // ORIGINAL: dependency_graph.rs:1284-1289 - lockfile deps come from package_graph.edges()
-            // Populate depAliasToPackageName so lockfileGenerator outputs correct deps
-            if (!pkg.depAliasToPackageName) {
-              pkg.depAliasToPackageName = {};
-            }
-            pkg.depAliasToPackageName[depName] = depPkg.id.name;
-          }
-        }
-      }
-    }
-
-    // Add root edges from Move.lock [move] dependencies if available
     if (
-      lockfile.move?.dependencies &&
-      Array.isArray(lockfile.move.dependencies)
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof (parsed as { status?: unknown }).status !== "string"
     ) {
-      for (const depInfo of lockfile.move.dependencies) {
-        const depId = depInfo.id;
-        const depPkg = packageById.get(depId);
-        if (depPkg) {
-          // Create a synthetic dependency object
-          const dep: Dependency = {
-            source: depPkg.id.source,
-          };
-          graph.addDependency(rootPackage.id.name, depPkg.id.name, dep);
-        }
-      }
-    } else {
-      // Fallback: Add root edges from manifest dependencies to pinned packages
-      for (const depName of rootPackage.dependencies.keys()) {
-        const depPkg = packageByName.get(depName) || packageById.get(depName);
-        if (depPkg) {
-          const dep = rootPackage.dependencies.get(depName)!;
-          graph.addDependency(rootPackage.id.name, depPkg.id.name, dep);
-        }
-      }
+      throw new Error(
+        `Rust lockfile V4 ${operation} returned an invalid response shape`
+      );
     }
 
-    return true;
+    return parsed as T;
+  }
+
+  private lockfileV4SourceToDependencySource(
+    source: LockfileV4PlanSource,
+    packageId: string
+  ): DependencySource {
+    if (source.type === "root") {
+      return { type: "local" };
+    }
+
+    if (source.type === "git") {
+      if (!source.git || !source.rev) {
+        throw new Error(
+          `Move.lock V4 package '${packageId}' has invalid git source`
+        );
+      }
+      return {
+        type: "git",
+        git: source.git,
+        rev: source.rev,
+        subdir: source.subdir,
+      };
+    }
+
+    if (source.type === "local") {
+      if (!source.local) {
+        throw new Error(
+          `Move.lock V4 package '${packageId}' has invalid local source`
+        );
+      }
+      return {
+        type: "local",
+        local: source.local,
+      };
+    }
+
+    throw new Error(
+      `Move.lock V4 package '${packageId}' has unsupported source`
+    );
+  }
+
+  private async resolveFromLockfileV4(
+    rootFiles: Record<string, string>,
+    rootPackageName: string
+  ): Promise<{
+    files: string;
+    dependencies: string;
+    lockfileDependencies: string;
+  } | null> {
+    if (!this.lockfileV4Helpers) {
+      return null;
+    }
+
+    const moveLockContent = rootFiles["Move.lock"];
+    if (!moveLockContent) {
+      return null;
+    }
+
+    const plan = this.parseLockfileV4Response<LockfileV4FetchPlanResponse>(
+      this.lockfileV4Helpers.fetchPlan(moveLockContent, this.network),
+      "fetch plan"
+    );
+    if (plan.status === "missing") {
+      return null;
+    }
+    if (plan.status === "error") {
+      throw new Error(plan.error || "Move.lock V4 fetch plan failed");
+    }
+    if (plan.status !== "ok" || !plan.packages) {
+      throw new Error("Move.lock V4 fetch plan did not include packages");
+    }
+
+    const packagesWithFiles: LockfileV4PlanPackage[] = [];
+
+    for (const packagePlan of plan.packages) {
+      let files: Record<string, string>;
+      if (packagePlan.source.type === "root") {
+        files = rootFiles;
+      } else {
+        const source = this.lockfileV4SourceToDependencySource(
+          packagePlan.source,
+          packagePlan.id
+        );
+        files = await this.fetchFromSource(source, packagePlan.id, {
+          id: {
+            name: rootPackageName,
+            version: "0.0.0",
+            source: this.rootSource || { type: "local" },
+          },
+          manifest: {
+            name: rootPackageName,
+            version: "0.0.0",
+            addresses: {},
+            dependencies: {},
+          },
+          dependencies: new Map(),
+          devDependencies: new Map(),
+        });
+      }
+
+      packagesWithFiles.push({
+        ...packagePlan,
+        files,
+      });
+    }
+
+    const validationInput = {
+      environment: this.network,
+      rootPackageName,
+      rootMoveToml: rootFiles["Move.toml"] || "",
+      packages: packagesWithFiles,
+    };
+    const resolved =
+      this.parseLockfileV4Response<LockfileV4ResolvePackageGroupsResponse>(
+        this.lockfileV4Helpers.resolvePackageGroups(
+          JSON.stringify(validationInput)
+        ),
+        "package-group resolution"
+      );
+
+    if (resolved.status === "out_of_date") {
+      return null;
+    }
+    if (resolved.status === "error") {
+      throw new Error(
+        resolved.error || "Move.lock V4 package-group resolution failed"
+      );
+    }
+    if (
+      resolved.status !== "ok" ||
+      !resolved.rootFiles ||
+      !resolved.dependencies ||
+      !resolved.lockfileDependencies
+    ) {
+      throw new Error(
+        "Move.lock V4 package-group resolution did not include package groups"
+      );
+    }
+
+    return {
+      files: JSON.stringify(resolved.rootFiles),
+      dependencies: JSON.stringify(resolved.dependencies),
+      lockfileDependencies: JSON.stringify(resolved.lockfileDependencies),
+    };
   }
 
   /**
@@ -1519,66 +1489,33 @@ export class Resolver {
    * Fetch files from a dependency source
    */
   private async fetchFromSource(
-    source: DependencySource
-  ): Promise<Record<string, string> | null> {
+    source: DependencySource,
+    dependencyName: string,
+    parentPackage: Package
+  ): Promise<Record<string, string>> {
     if (source.type === "git" && source.git && source.rev) {
-      try {
-        return await this.fetcher.fetch(source.git, source.rev, source.subdir);
-      } catch {
-        /* Ignore fetch errors */
-        return null;
+      const files = await this.fetcher.fetch(
+        source.git,
+        source.rev,
+        source.subdir
+      );
+      if (Object.keys(files).length === 0) {
+        throw new Error(
+          `Dependency '${dependencyName}' from ${this.describeSource(source)} returned no files`
+        );
       }
+      return files;
     }
-    return null;
-  }
-
-  /**
-   * Reconstruct Move.toml with unified addresses
-   */
-  private reconstructMoveToml(
-    originalParsed: any,
-    dependencies: Record<string, any>,
-    addresses: Record<string, string>,
-    isRoot: boolean,
-    editionOverride?: string
-  ): string {
-    const packageName = originalParsed.package.name;
-    let newToml = `[package]\nname = "${packageName}"\nversion = "${originalParsed.package.version}"\n`;
-
-    // Priority: editionOverride (from Move.lock) > originalParsed.package.edition
-    // If neither exists, don't add edition field (let compiler use default)
-    const editionToUse = editionOverride || originalParsed.package.edition;
-    if (editionToUse) {
-      newToml += `edition = "${editionToUse}"\n`;
+    if (source.type === "local" && source.local) {
+      return this.fetchLocalPackage(
+        source.local,
+        dependencyName,
+        parentPackage
+      );
     }
-
-    newToml += `\n[dependencies]\n`;
-    if (dependencies) {
-      // User Request: Do NOT sort dependencies. Preserve original/parsed order.
-      const deps = Object.entries(dependencies);
-      for (const [name, info] of deps) {
-        const depInfo = info as any;
-        if (depInfo.local) {
-          newToml += `${name} = { local = "${depInfo.local}" }\n`;
-        } else if (depInfo.git && depInfo.rev) {
-          if (depInfo.subdir) {
-            newToml += `${name} = { git = "${depInfo.git}", subdir = "${depInfo.subdir}", rev = "${depInfo.rev}" }\n`;
-          } else {
-            newToml += `${name} = { git = "${depInfo.git}", rev = "${depInfo.rev}" }\n`;
-          }
-        }
-      }
-    }
-
-    newToml += `\n[addresses]\n`;
-    // User Request: Do NOT sort addresses.
-    const addrs = Object.entries(addresses);
-    for (const [addrName, addrVal] of addrs) {
-      if (!isMoveNamedAddress(addrName)) continue;
-      newToml += `${addrName} = "${addrVal}"\n`;
-    }
-
-    return newToml;
+    throw new Error(
+      `Dependency '${dependencyName}' has unsupported source ${this.describeSource(source)}`
+    );
   }
 
   /**
@@ -1635,38 +1572,6 @@ export class Resolver {
       suiPackageMap[packageName] || suiPackageMap[packageName.toLowerCase()]
     );
   }
-
-  /**
-   * Helper to inject implicit dependencies (Sui) if missing
-   */
-  private injectImplicitDependencies(
-    dependencies: Record<string, any>,
-    packageName?: string
-  ): Record<string, any> {
-    // Basic implicit dependency logic for Sui
-    // If 'Sui' is not present, add it.
-    // We skip this if the package itself IS 'Sui' or 'MoveStdlib' or 'SuiSystem' (to avoid circularity or redundancy)
-    if (
-      packageName === "Sui" ||
-      packageName === "MoveStdlib" ||
-      packageName === "SuiSystem" ||
-      packageName === "sui" // Lowercase check
-    ) {
-      return dependencies;
-    }
-
-    if (!dependencies["Sui"] && !dependencies["sui"]) {
-      // Use WASM build-time SHA (like CLI's latest_system_packages().git_revision)
-      // This ensures lockfile structure matches CLI when built from same framework version
-      dependencies["Sui"] = {
-        git: "https://github.com/MystenLabs/sui.git",
-        subdir: "crates/sui-framework/packages/sui-framework",
-        rev: WASM_BUILD_FRAMEWORK_REV,
-        isImplicit: true,
-      };
-    }
-    return dependencies;
-  }
 }
 
 /**
@@ -1677,12 +1582,18 @@ export async function resolve(
   rootSourceFiles: Record<string, string>,
   fetcher: Fetcher,
   network: "mainnet" | "testnet" | "devnet" = "mainnet",
-  rootSource?: DependencySource
+  rootSource?: DependencySource,
+  lockfileV4Helpers?: LockfileV4Helpers
 ): Promise<{
   files: string;
   dependencies: string;
   lockfileDependencies: string;
 }> {
-  const resolver = new Resolver(fetcher, network, rootSource || null);
+  const resolver = new Resolver(
+    fetcher,
+    network,
+    rootSource || null,
+    lockfileV4Helpers
+  );
   return resolver.resolve(rootMoveTomlContent, rootSourceFiles);
 }

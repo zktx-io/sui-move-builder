@@ -51,9 +51,9 @@ export interface BuildInput {
   silenceWarnings?: boolean;
   /** Use this option to enable test mode (includes #[test_only] modules). */
   testMode?: boolean;
-  /** Use this option to specify lint level (e.g. "all", "none"). */
-  lintFlag?: string;
-  /** Use this option to strip metadata from the output (e.g. for mainnet dep matching). */
+  /** Move compiler lint level. Accepted values: "none", "default", "all". */
+  lintFlag?: "none" | "default" | "all";
+  /** Reserved for metadata stripping; not applied by the current WASM compiler path. */
   stripMetadata?: boolean;
   /** Optional progress callback for build events */
   onProgress?: OnProgressCallback;
@@ -83,7 +83,6 @@ export interface BuildFailure {
 import {
   migrateLegacyLockToPublishedToml,
   stripEnvSectionsFromV3Lockfile,
-  convertV3MovePackageToV4Pinned as _convertV3MovePackageToV4Pinned,
 } from "./lockfileMigration.js";
 
 // ORIGINAL SOURCE REFERENCE: sui-types/src/digests.rs:164-165, 262-269
@@ -96,6 +95,11 @@ const CHAIN_IDS: Record<string, string> = {
   devnet: "2",
   localnet: "localnet",
 };
+
+function isMoveManifestPath(path: string): boolean {
+  const fileName = path.split(/[\\/]/).pop() || path;
+  return fileName === "Move.toml" || /^Move\.[^.\\/]+\.toml$/.test(fileName);
+}
 
 type WasmModule = typeof import("./sui_move_wasm.js");
 
@@ -236,7 +240,6 @@ function ensureCompileResult(result: unknown): {
 
 function parseCompileResult(
   output: string,
-  nameMap?: Map<string, string>,
   moveLock?: string,
   environment?: string
 ): BuildSuccess | BuildFailure {
@@ -268,32 +271,9 @@ function parseCompileResult(
         ? hexToBytes(parsed.digest)
         : Array.from(parsed.digest);
 
-    let dependencies = parsed.dependencies;
-
-    // Fix: CLI uses the Dependency Graph to generate the dependency list, NOT the compiler output.
-    // The compiler output only includes dependencies actually *used* in bytecode.
-    // The CLI includes all *published* dependencies in the graph.
-    // We recreate this list from `nameMap` (which contains graph deps with published IDs).
-    if (nameMap) {
-      dependencies = Array.from(nameMap.keys()).filter(
-        (id) =>
-          // Filter out 0x0 (Unpublished / Source-only)
-          id !==
-          "0x0000000000000000000000000000000000000000000000000000000000000000"
-      );
-
-      // Sort dependencies alphabetically by package name to match Sui CLI behavior (ASCII case-sensitive)
-      dependencies.sort((a, b) => {
-        const nameA = nameMap.get(a) || "";
-        const nameB = nameMap.get(b) || "";
-        return nameA < nameB ? -1 : nameA > nameB ? 1 : 0;
-      });
-    }
-
     return {
       modules: parsed.modules,
-      // Filter out implicit system dependencies to match CLI behavior
-      dependencies,
+      dependencies: parsed.dependencies,
       digest: digestBytes,
       moveLock: moveLock || "",
       environment: environment || "mainnet",
@@ -359,6 +339,7 @@ export async function resolveDependencies(
       | { git: string; rev: string; subdir?: string }
       | undefined);
 
+  const mod = await loadWasm(input.wasm);
   const resolved = await resolveMoveToml(
     moveToml,
     { ...input.files, "Move.toml": moveToml },
@@ -371,7 +352,15 @@ export async function resolveDependencies(
           rev: inferredRootGit.rev,
           subdir: inferredRootGit.subdir,
         }
-      : undefined
+      : undefined,
+    {
+      fetchPlan: mod.lockfile_v4_fetch_plan,
+      resolvePackageGroups: mod.lockfile_v4_resolve_package_groups,
+      manifestPackagePlan: mod.manifest_package_plan,
+      manifestResolvePackageGroups: mod.manifest_resolve_package_groups,
+      manifestGraphResolvePackageGroups:
+        mod.manifest_graph_resolve_package_groups,
+    }
   );
 
   return {
@@ -401,7 +390,7 @@ export async function buildMovePackage(
     for (const [path, content] of Object.entries(input.files)) {
       if (
         path.endsWith(".move") ||
-        path.endsWith("Move.toml") ||
+        isMoveManifestPath(path) ||
         path.endsWith("Move.lock") ||
         path.endsWith("Published.toml")
       ) {
@@ -413,19 +402,11 @@ export async function buildMovePackage(
 
     // ORIGINAL CLI SOURCE:
     // - external-crates/move/crates/move-package-alt/src/package/root_package.rs:249-267
-    //   save_lockfile_to_disk() migrates legacy lockfile pubs to modern pubfile BEFORE overwriting
+    //   save_lockfile_to_disk() migrates legacy lockfile publication records to Published.toml
     // - external-crates/move/crates/move-package-alt/src/compatibility/legacy_lockfile.rs
     //   load_legacy_lockfile() extracts publish info from V3 [env] sections
     //
-    // CLI migration flow:
-    // 1. Reads legacy Move.lock (V3 format with [env] sections containing publish info)
-    // 2. Extracts publish info and writes to Published.toml
-    // 3. Updates Move.lock to V4 format (removes publish info, keeps only dependency resolution)
-    //
-    // This WASM implementation:
-    // - Extracts Published.toml content and applies it BEFORE resolve/build
-    // - This ensures packages with legacy lockfiles use correct addresses during compilation
-    // - Note: Move.lock V4 generation happens separately in lockfileGenerator.ts
+    // Legacy V3 publication records are applied before resolve/build.
     let migratedPublishedToml: string | undefined;
     const legacyLock = input.files["Move.lock"];
     if (legacyLock) {
@@ -437,24 +418,17 @@ export async function buildMovePackage(
       );
       migratedPublishedToml = migrationResult ?? undefined;
       if (migratedPublishedToml) {
-        // Apply migration: update files to use migrated Published.toml and V4 lockfile
-        // This ensures resolve/build uses the same state as CLI after migration
         if (!input.files["Published.toml"]) {
           input.files["Published.toml"] = migratedPublishedToml;
         }
 
-        // CRITICAL: Also convert Move.lock to V4 format (strip [env] sections)
-        // CLI does this during migration, and the lockfile content affects the build digest
-        // Without this, first build produces different digest than CLI
+        // Strip legacy [env] sections before V4 lockfile generation.
         const strippedLock = stripEnvSectionsFromV3Lockfile(legacyLock);
         if (strippedLock) {
           input.files["Move.lock"] = strippedLock;
         }
       } else {
-        // V3 lockfile without [env] sections (unpublished package)
-        // CLI compat: V3 lockfile's [[move.package]] array is not used
-        // CLI's pins_for_env() returns None → re-resolve from manifest (builder.rs:109-111)
-        // Instead of converting V3 to V4, use buildDependencyGraph fallback in resolver.ts
+        // V3 lockfiles without environment pins fall back to manifest resolution.
       }
     }
 
@@ -480,133 +454,21 @@ export async function buildMovePackage(
     // Log dependency addresses passed to compiler (best-effort)
     logDependencyAddresses(resolved.dependencies);
 
-    // Build map of ID -> Name for sorting output AND filtering unpublished deps
-    const idToName = new Map<string, string>();
     let rootPackageName = "Package";
     try {
-      // Structure matches PackageGroupedFormat in compilationDependencies.ts
-      const deps = JSON.parse(resolved.dependencies) as Array<{
-        name: string;
-        publishedIdForOutput?: string;
-        files: Record<string, string>;
-        manifest: {
-          publishedAt?: string;
-          originalId?: string;
-          latestPublishedId?: string;
-        };
-      }>;
-
-      // Extract root package name and direct dependencies from Move.toml
       const moveToml = input.files["Move.toml"];
-      let rootManifestDeps: string[] = [];
       if (moveToml) {
         const parsed = parseToml(moveToml);
         if (parsed.package?.name) {
           rootPackageName = parsed.package.name;
         }
-        // Get direct dependencies from [dependencies] section
-        if (parsed.dependencies) {
-          rootManifestDeps = Object.keys(
-            parsed.dependencies as Record<string, unknown>
-          );
-        }
-      }
-
-      for (const dep of deps) {
-        if (!dep.publishedIdForOutput) continue;
-
-        // Strict Published Check Logic (matching CLI)
-        // Exclude 0x0 address (Zero Address) from output dependencies
-        if (
-          dep.publishedIdForOutput ===
-          "0x0000000000000000000000000000000000000000000000000000000000000000"
-        ) {
-          continue;
-        }
-
-        // Exclude system package addresses that CLI doesn't include in output
-        // These are implicit framework dependencies without explicit published-at in manifest
-        //
-        // ORIGINAL SOURCE REFERENCE: sui-types/src/lib.rs:127-133 (built_in_pkgs! macro)
-        //   MOVE_STDLIB_ADDRESS = 0x1
-        //   SUI_FRAMEWORK_ADDRESS = 0x2
-        //   SUI_SYSTEM_ADDRESS = 0x3
-        //   BRIDGE_ADDRESS = 0xb
-        //   DEEPBOOK_ADDRESS = 0xdee9
-        //
-        // Note: We only filter out SuiSystem (0x3) and Bridge (0xb) because they are
-        // implicitly added by the CLI when not explicitly declared in the manifest.
-        // Sui (0x2) and Std (0x1) are handled separately as default implicit deps.
-        const systemAddresses = [
-          "0x0000000000000000000000000000000000000000000000000000000000000003", // SUI_SYSTEM_ADDRESS
-          "0x000000000000000000000000000000000000000000000000000000000000000b", // BRIDGE_ADDRESS
-        ];
-        if (
-          systemAddresses.includes(dep.publishedIdForOutput) &&
-          !rootManifestDeps.includes(dep.name)
-        ) {
-          continue;
-        }
-
-        idToName.set(dep.publishedIdForOutput, dep.name);
       }
     } catch {
-      // Ignore parsing errors, sorting/filtering will degrade
+      // Ignore parse errors; lockfile generation will fall back to the default package name.
     }
 
     // Emit compile_start event
     input.onProgress?.({ type: "compile_start" });
-
-    // Convert dependencies to DependencyGraph format for WASM lockfile generation
-    // ORIGINAL SOURCE: builder.rs:232-265 (create_ids), to_lockfile.rs
-    const depsArray = JSON.parse(resolved.dependencies) as Array<{
-      name: string;
-      source?: {
-        type: string;
-        git?: string;
-        rev?: string;
-        subdir?: string;
-        local?: string;
-      };
-      deps?: Record<string, string>;
-      manifestDigest?: string;
-      depAliasToPackageName?: Record<string, string>;
-    }>;
-
-    // Build PackagePin array with unique IDs (suffix for same-name packages)
-    const nameToSuffix = new Map<string, number>();
-    const packages = depsArray.map((dep) => {
-      const suffix = nameToSuffix.get(dep.name) ?? 0;
-      const id = suffix === 0 ? dep.name : `${dep.name}_${suffix}`;
-      nameToSuffix.set(dep.name, suffix + 1);
-      return {
-        id,
-        name: dep.name,
-        source: dep.source ?? { root: true },
-        deps: dep.deps ?? {},
-        manifestDigest: dep.manifestDigest ?? "",
-        is_root: false,
-      };
-    });
-
-    // Add root package
-    packages.unshift({
-      id: rootPackageName,
-      name: rootPackageName,
-      source: { root: true },
-      deps: {}, // TODO: add root deps
-      manifestDigest: "", // TODO: compute
-      is_root: true,
-    });
-
-    // Sort by ID for consistent output
-    packages.sort((a, b) => a.id.localeCompare(b.id));
-
-    const dependencyGraph = {
-      environment,
-      root: rootPackageName,
-      packages,
-    };
 
     const raw = (mod as any).compile(
       resolved.files,
@@ -617,8 +479,7 @@ export async function buildMovePackage(
         lintFlag: input.lintFlag,
         stripMetadata: input.stripMetadata,
         ansiColor: input.ansiColor,
-      }),
-      JSON.stringify(dependencyGraph) // 4th param: graph for lockfile generation
+      })
     );
 
     const result = ensureCompileResult(raw);
@@ -635,25 +496,7 @@ export async function buildMovePackage(
     // Emit lockfile_generate event
     input.onProgress?.({ type: "lockfile_generate" });
 
-    // Get rootManifestDeps from Move.toml if not already extracted
-    let rootManifestDeps: string[] = [];
-    let rootManifestDepsInfo: Record<string, any> | undefined;
     let rootDepAliasToPackageName: Record<string, string> | undefined;
-
-    try {
-      const moveToml = input.files["Move.toml"];
-      if (moveToml) {
-        const parsed = parseToml(moveToml);
-        if (parsed.dependencies) {
-          rootManifestDeps = Object.keys(
-            parsed.dependencies as Record<string, unknown>
-          );
-          rootManifestDepsInfo = parsed.dependencies as Record<string, any>;
-        }
-      }
-    } catch {
-      // Ignore
-    }
 
     // Extract rootDepAliasToPackageName from resolved dependencies
     // First entry in dependencies array is root package (or find by name match)
@@ -680,19 +523,13 @@ export async function buildMovePackage(
       resolved.lockfileDependencies,
       rootPackageName,
       environment,
-      rootManifestDeps,
-      mod.compute_manifest_digest,
-      rootManifestDepsInfo,
       rootDepAliasToPackageName,
-      existingLockfile // Preserve other environments from existing lockfile
+      existingLockfile, // Preserve other environments from existing lockfile
+      mod.lockfile_v4_generate,
+      input.files
     );
 
-    const buildResult = parseCompileResult(
-      output,
-      idToName,
-      moveLock,
-      environment
-    );
+    const buildResult = parseCompileResult(output, moveLock, environment);
 
     if (!("error" in buildResult)) {
       // Attempt migration if Legacy Lockfile exists
@@ -812,4 +649,5 @@ export async function compileRaw(
 export type BuildResult = BuildSuccess | BuildFailure;
 
 // Package fetching utility
+export { Fetcher, GitHubFetcher, type FetchLocalContext } from "./fetcher.js";
 export { fetchPackageFromGitHub } from "./packageFetcher.js";

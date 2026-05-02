@@ -2,19 +2,6 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use wasm_bindgen::prelude::*;
-
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = console)]
-    fn log(s: &str);
-}
-
-fn debug_print(s: &str) {
-    log(s);
-}
-
-
 use crate::{
     extensions, format_module_id,
     test_reporter::{
@@ -40,7 +27,7 @@ use move_core_types::{
     effects::ChangeSet,
     identifier::IdentStr,
     language_storage::{ModuleId, TypeTag},
-    runtime_value::{MoveValue, serialize_values},
+    runtime_value::{serialize_values, MoveValue},
     u256::U256,
     vm_status::StatusCode,
 };
@@ -49,10 +36,10 @@ use move_core_types::{
 
 use move_vm_runtime::{move_vm::MoveVM, native_functions::NativeFunctionTable};
 use move_vm_test_utils::{
+    gas_schedule::{unit_cost_schedule, CostTable, Gas, GasStatus},
     InMemoryStorage,
-    gas_schedule::{CostTable, Gas, GasStatus, unit_cost_schedule},
 };
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use rayon::prelude::*;
 use regex::Regex;
 use std::{collections::BTreeMap, io::Write, marker::Send, sync::Mutex};
@@ -61,8 +48,12 @@ use std::{collections::BTreeMap, io::Write, marker::Send, sync::Mutex};
 #[derive(Clone, Copy)]
 struct Instant;
 impl Instant {
-    fn now() -> Self { Self }
-    fn elapsed(&self) -> std::time::Duration { std::time::Duration::from_secs(0) }
+    fn now() -> Self {
+        Self
+    }
+    fn elapsed(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(0)
+    }
 }
 
 use move_vm_runtime::native_extensions::NativeContextExtensions;
@@ -190,7 +181,6 @@ impl TestRunner {
     }
 
     pub fn run<W: Write + Send>(self, writer: &Mutex<W>) -> Result<TestResults> {
-        debug_print("DEBUG: TestRunner::run start");
         rayon::ThreadPoolBuilder::new()
             .num_threads(self.num_threads)
             .build()
@@ -201,7 +191,6 @@ impl TestRunner {
                     .module_tests
                     .par_iter()
                     .map(|(_, test_plan)| {
-                        debug_print(&format!("DEBUG: executing module tests for {}", test_plan.module_id));
                         self.testing_config.exec_module_tests(
                             test_plan,
                             &self.tests.module_info,
@@ -300,27 +289,21 @@ impl SharedTestingConfig {
         let natives = self.native_function_table.clone();
         let move_vm = MoveVM::new_with_config(natives, vm_config).unwrap();
         let extensions = extensions::new_extensions();
-        debug_print("DEBUG: MoveVM created");
 
         // PATCHED: Removed MoveTraceBuilder usage
-        debug_print("DEBUG: MoveTraceBuilder DISABLED for Wasm to avoid panic");
         // let mut move_tracer = MoveTraceBuilder::new();
         let tracer = None; // Always None for now
-        /*
-        if self.trace_location.is_some() {
-            Some(&mut move_tracer)
-        } else {
-            None
-        };
-        */
+                           /*
+                           if self.trace_location.is_some() {
+                               Some(&mut move_tracer)
+                           } else {
+                               None
+                           };
+                           */
 
-        debug_print("DEBUG: Creating session");
         let mut session =
             move_vm.new_session_with_extensions(&self.starting_storage_state, extensions);
-        debug_print("DEBUG: Creating gas meter");
         let mut gas_meter = GasStatus::new(&self.cost_table, Gas::new(self.execution_bound));
-
-        debug_print(&format!("DEBUG: session created, executing {}", function_name));
 
         // TODO: collect VM logs if the verbose flag (i.e, `self.verbose`) is set
         let now = Instant::now();
@@ -332,13 +315,12 @@ impl SharedTestingConfig {
             &mut gas_meter,
             tracer,
         );
-        debug_print(&format!("DEBUG: executed function, result: {:?}", serialized_return_values_result.is_ok()));
         let mut return_result = serialized_return_values_result.map(|res| {
             res.return_values
                 .into_iter()
                 .map(|(bytes, _layout)| bytes)
                 .collect()
-            });
+        });
         if !self.report_stacktrace_on_abort
             && let Err(err) = &mut return_result
         {
@@ -376,7 +358,6 @@ impl SharedTestingConfig {
         global_test_context: &BTreeMap<ModuleId, NamedCompiledModule>,
         output: &TestOutput<impl Write>,
     ) -> TestStatistics {
-        debug_print("DEBUG: exec_module_tests_with_move_vm start");
         let mut stats = TestStatistics::new();
 
         for (function_name, test_info) in &test_plan.tests {

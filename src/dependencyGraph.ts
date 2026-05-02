@@ -1,7 +1,5 @@
 /**
- * DependencyGraph Layer (Layer 1)
- *
- * Builds a directed acyclic graph (DAG) of all packages and their relationships.
+ * Host-side dependency graph used for manifest traversal and order extraction.
  *
  * ORIGINAL SOURCE REFERENCES:
  * - move-package-alt/src/graph/mod.rs - PackageGraph struct and operations
@@ -24,6 +22,7 @@ export interface DependencySource {
   subdir?: string;
   local?: string;
   address?: string;
+  isImplicit?: boolean;
 }
 
 export type SubstOrRename =
@@ -43,7 +42,6 @@ export interface Package {
   manifest: PackageManifest;
   dependencies: Map<string, Dependency>;
   devDependencies: Map<string, Dependency>;
-  resolvedTable?: Record<string, string>; // Will be filled in ResolvedGraph
   /** Maps Move.toml deps key (alias) → resolved package name */
   depAliasToPackageName?: Record<string, string>;
   /** Maps Move.toml deps key (alias) → dependency source info (for lockfile generation) */
@@ -96,6 +94,7 @@ export interface LockfilePackage {
 
 export interface LockfilePin {
   source: LockfileDependencyInfo;
+  manifest_digest?: string;
   "manifest-digest"?: string;
   deps?: Record<string, string>; // dep name -> package ID
 }
@@ -297,7 +296,7 @@ export class DependencyGraph {
    * Input: Dependency graph rooted at this.root
    * Output: Array of package names in topological order (root excluded)
    *
-   * CRITICAL: This MUST match Sui CLI's compilation order.
+   * This order is parity-sensitive with Sui CLI compilation order.
    */
   topologicalOrder(): string[] {
     const visited = new Set<string>();
@@ -390,8 +389,7 @@ export class DependencyGraph {
   }
 
   /**
-   * Get compiler input order with both unique IDs and indices
-   * For CompilationDependencies to properly handle diamond deps
+   * Get compiler input order with both unique IDs and indices.
    *
    * ORIGINAL: linkage.rs:58-82 - linkage() creates linked PackageGraph
    * ORIGINAL: linkage.rs:169-228 - linkage_ignoring_overrides() with depth tracking
@@ -409,7 +407,7 @@ export class DependencyGraph {
 
     // Recursive DFS with explicit depth parameter
     // ORIGINAL: linkage.rs:188 - pkg.linkage_ignoring_overrides(&local_overrides, depth + 1)
-    // NOTE: CLI doesn't use visited set - it compares depth to decide if update needed
+    // CLI compares depth to decide whether a linkage entry should update.
     const visitWithDepth = (index: number, depth: number) => {
       const pkg = this.packages[index];
       if (!pkg) return;

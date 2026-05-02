@@ -1,6 +1,6 @@
 # Agents Guide
 
-This file describes how agents should work on this repository, especially when preparing a new pinned Sui version for the WASM builder.
+This file gives operating instructions for agents that update the pinned Sui version, port WASM compatibility patches, or refactor parity-sensitive code in this repository.
 
 ## Project Purpose
 
@@ -10,27 +10,116 @@ The main goal is browser-compatible Move package building. The lite artifact is 
 
 The upstream Sui source must stay pristine. All generated or patched state belongs under `.sui-build/work` or `.sui-build/generated`.
 
+## Core Invariants
+
+- Keep the upstream Sui source pristine. Do not edit `.sui-build/source` directly.
+- Treat `prepare:wasm` as the only step that may fetch, update, patch, or prepare upstream/template state.
+- Treat TypeScript as host/API/snapshot glue, not as the owner of Sui package-manager semantics.
+- Treat Rust/WASM as the source of truth for graph, linkage, digest, lockfile, compiler setup, output dependencies, and test ownership.
+- Treat CLI parity as stage-level behavioral parity with the pinned Sui flow, not fixture-shaped output matching.
+- Do not commit generated build state unless explicitly allowed.
+
+## Preflight
+
+Before changing a pinned Sui version, compatibility template, or parity-sensitive implementation, verify the working context:
+
+- Before planning or editing, do not rely on task descriptions alone; verify the current repository structure and script behavior first.
+- Read `AGENTS.md`, `sui-version.json`, `package.json` scripts, `CLI_PIPELINE.md`, `scripts/templates/v<templateVersion>/manifest.json`, and the task-relevant Rust/TypeScript files.
+- Identify the target Sui `version`, `tag`, `commit`, and `templateVersion`. Decide whether the change updates `sui-version.json` or uses an explicit script/env override.
+- Confirm that `scripts/templates/v<templateVersion>/manifest.json` exists before running prepare. Missing manifests are porting blockers.
+- Check the local `sui` CLI version before parity tests. If it differs from `sui-version.json`, record the mismatch as parity risk in the final report.
+- Check the git worktree. Preserve unrelated user changes and do not revert files outside the task scope.
+- Use `AGENTS.md` as the single agent guide. Do not add another competing instruction document.
+- Treat `prepare:wasm` as the only step that may fetch/update upstream source or prepare template patches. Prepared build scripts consume existing prepared state only.
+
 ## Work Process
 
 Use the two-phase WASM build flow:
 
 ```bash
 npm run prepare:wasm
-npm run build:wasm:prepared -- --profile lite
-npm run build:wasm:prepared -- --profile full
+npm run build:wasm:prepared:lite
+npm run build:wasm:prepared:full
 ```
 
 `prepare:wasm` may download/update source, recreate the disposable worktree, generate stubs/vendor patches, install the matching local `wasm-bindgen`, and write `.sui-build/patch-state.json`.
 
-`build:wasm:prepared` must treat the prepared workspace as input. It validates `patch-state.json` against `sui-version.json`, then builds the requested profile. Use `SUI_WASM_STRICT_OFFLINE=1` only when intentionally checking that Cargo does not reach the network.
+Prepared build scripts must treat the prepared workspace as input. `build:wasm:prepared:lite`, `build:wasm:prepared:full`, and `build:wasm:prepared:all` validate `patch-state.json` against `sui-version.json`, then build the requested profile. `build:wasm:prepared` is an alias for the all-profile script. If calling the low-level script directly, use `node scripts/build-prepared-wasm.mjs --profile lite`, `--profile full`, or `--profile all`; do not pass profile overrides through the npm alias. Use `SUI_WASM_STRICT_OFFLINE=1` only when intentionally checking that Cargo does not reach the network.
 
-For code or documentation changes, keep claims tied to verified behavior. Do not describe full Sui CLI parity unless the relevant parity tests pass.
+For code or documentation changes, keep claims tied to verified behavior. Do not describe full Sui CLI parity unless the relevant stage-level behavior is covered by parity tests.
+
+## Parity and Hardcoding Rules
+
+CLI parity is not just a passing test result. Treat it as a stage-by-stage match with the pinned Sui flow: `RootPackage` -> `PackageGraph` -> `BuildPlan` -> compiler/test runner -> output, digest, and lockfile.
+
+When preparing a new Sui version or changing parity-sensitive code, do not add:
+
+- Silent empty-stub fallback for a missing compatibility template.
+- New skipped dependency digest checks.
+- Address or package-name filters that only match the current fixture output.
+- Patch success checks based on debug print text.
+- Output corrections using `0x1`, `0x2`, `0x3`, `0xb`, or similar constants without a pinned upstream Sui source reference.
+- Auto-completed package metadata, generated dependency snapshots, or fallback package groups that exist only to make tests pass.
+
+Unavoidable WASM differences are allowed, but they must be explicit. Record the reason, upstream reference, and test coverage in the template manifest, `CLI_PIPELINE.md`, or both. If a new heuristic is needed, first identify the matching Sui CLI stage and add a parity fixture that would fail without the change.
+Fallback behavior is acceptable only when the pinned Sui CLI would make the same stage-level decision. Missing package files, missing `Move.toml`, unsupported dependency sources, digest mismatches, and dependency cycles must resolve to the same CLI-equivalent fallback or a clear error, not to synthetic data.
+
+Porting checkpoints:
+
+- Keep V4 `Move.lock` fetch-plan, graph validation, and generation in Rust/WASM. TypeScript may fetch snapshots and adapt wire data, but it must not add package-manager semantics when Rust or an upstream Sui crate can own them.
+- Keep output dependency filtering in Rust/WASM. If package graph/linkage metadata is needed, prefer moving the source of truth toward Rust/upstream Sui types rather than adding TypeScript post-processing.
+- Keep compiler setup aligned with the pinned `BuildPlan` behavior. The WASM path may construct `PackagePaths` directly, but any divergence from upstream source discovery, edition/flavor, lint, or test-mode behavior needs a source reference and fixture.
+- Keep full test execution tied to root package ownership. Dependency package tests must not be run as root tests unless pinned CLI behavior changes.
+- Treat prepare-time Cargo patch failures as porting blockers. Empty stubs are allowed only when declared in the versioned template manifest.
+
+### Rust and TypeScript Boundary
+
+The desired target is not just "same output as `sui move`"; supported paths should make the same stage-level decisions as pinned `sui move build` and `sui move test`: `RootPackage` -> `PackageGraph` -> linkage -> `BuildPlan` -> compiler/test runner -> output dependencies, package digest, and `Move.lock`.
+
+TypeScript should be treated as the browser/Node adapter layer. Its responsibilities are:
+
+- Browser/Node public API shape.
+- GitHub, local, and custom fetcher integration. Local filesystem access must be host-provided through snapshots or `fetchLocal`; browser builds must not assume direct filesystem access.
+- In-memory package file snapshots.
+- Progress callbacks and option normalization.
+- WASM initialization and result wrapping.
+
+TypeScript may improve host snapshot loading, fetcher contracts, API wrapping, progress reporting, WASM initialization, and result formatting. It must not add dependency graph, linkage, lockfile, digest, output dependency, or test ownership semantics when Rust/WASM or an upstream Sui crate can own that behavior.
+
+Rust/WASM should be the source of truth for Sui package semantics. Its responsibilities are:
+
+- `Move.toml` and `Move.lock` meaning.
+- Package graph construction and linkage.
+- Manifest digest validation.
+- Compiler input and source discovery.
+- `BuildPlan`-equivalent compiler invocation.
+- Output dependency IDs, package digest, and `Move.lock` generation.
+- `sui move test` package ownership and filtering behavior.
+
+Do not independently reimplement Sui package-manager semantics in TypeScript when Rust or an upstream Sui crate can own the behavior. If TypeScript must mirror Rust/Sui behavior, the code or documentation must identify the corresponding upstream Rust file/function, avoid a divergent fallback, and add a targeted parity fixture for that behavior.
+
+Move source and TOML version behavior must follow the pinned CLI semantics as well. Treat `Move.toml`, network-specific `Move.<env>.toml`, `Move.lock` v0/v3/v4, `Published.toml`, package `edition`, dependency source forms, and lockfile migration rules as versioned inputs with CLI-defined behavior. Do not normalize, migrate, or ignore these files differently from the pinned Sui implementation unless the difference is documented as a WASM limitation and covered by a parity fixture.
+
+Package loading is part of the TS host boundary. TS may collect files from GitHub, local workspaces, browser uploads, File System Access API, server endpoints, or custom caches, but it should hand Rust/WASM a complete package snapshot. Missing local dependency loaders, empty fetched packages, and dependency packages without `Move.toml` should fail explicitly rather than silently changing the dependency graph.
+
+Prefer upstream Rust/Sui type and function reuse when porting to a new CLI version. If direct reuse is blocked by WASM host constraints, keep the compatibility layer narrow, document the unsupported host behavior, and add a fixture that protects the chosen behavior.
 
 ## Versioned Template Manifests
 
-Each `scripts/templates/v<version>/` directory must include a `manifest.json` file. The manifest records the crate-to-template map, the crates that are stubbed or stripped during prepare, and the version-specific upstream files that are overwritten.
+Each `scripts/templates/v<version>/` directory must include a `manifest.json` file. The manifest records the crate-to-template map, explicit empty-stub crates, the crates that are stubbed or stripped during prepare, and the version-specific upstream files that are overwritten.
 
 When adding, deleting, or renaming a template file, update the manifest in the same change. A new Sui version should get its own template directory and manifest unless it has been intentionally configured to reuse an older `templateVersion`.
+
+## Documentation and Comments
+
+Keep documentation and comments focused on current instructions and verified behavior:
+
+- `AGENTS.md` is for future agent instructions only.
+- `README.md` is for current user-facing behavior, setup, usage, and limitations.
+- `CLI_PIPELINE.md` is for current implementation boundaries and verified coverage.
+- Code comments should explain current behavior, upstream source references, or non-obvious WASM limitations.
+- Do not add work logs, decision history, retrospective notes, or "why this was changed" narratives to docs or comments.
+- If an unavoidable WASM difference is documented, include the reason, upstream reference, and fixture or test coverage.
 
 ## Required Outputs
 
@@ -42,9 +131,34 @@ For a normal refactor or version-up task, produce these outputs:
 - Updated README/CLI_PIPELINE content only for facts confirmed by code or tests.
 - A final report listing changed files, commands run, failures, and remaining risks.
 
-Generated directories such as `.sui-build/` and `dist/` are build state and should not be committed unless the project policy changes.
+If a check cannot run, record the exact reason. Do not describe skipped or blocked checks as passed. Distinguish sandbox, permission, network, missing local tool, and real code/test failures.
+
+Use this failure report shape when a command or validation step fails:
+
+```text
+Failure:
+- Command:
+- Result:
+- Category: sandbox | permission | network | missing local tool | real code/test failure | upstream API drift | native dependency issue | Cargo feature issue | template/patch issue
+- Evidence:
+- Next required action:
+```
+
+If a default check fails for reasons unrelated to `AGENTS.md`, record it as an existing or unrelated failure instead of expanding a documentation-only task scope.
+
+### Do Not Commit
+
+Unless explicitly allowed, do not commit:
+
+- `.sui-build/`
+- `dist/`
+- generated wasm-bindgen output
+
+Any exception must be required by explicit project policy or by an explicit task request that specifically names the generated state to be committed.
 
 ## Sui WASM Version-Up Agent Prompt
+
+The prompt below is a task launcher summary. If it conflicts with the rules above, the rules above win.
 
 Use this prompt when preparing a new Sui version for this repository.
 
@@ -57,42 +171,81 @@ Prepare a new Sui version for WASM build without polluting the pristine upstream
 Inputs:
 - Target Sui version/tag/commit
 - Existing repo with scripts/templates/v<old-version>
-- Current build flow: prepare:wasm -> build:wasm:prepared -> tests
+- Build flow: prepare:wasm -> build:wasm:prepared:lite/full -> tests
 
 Rules:
 - Do not edit .sui-build/source directly.
 - Use a disposable worktree under .sui-build/work.
 - Keep generated artifacts under .sui-build/generated.
-- Create or update scripts/templates/v<target-version> only when a compatibility template is actually required.
+- Use AGENTS.md as the single instruction source; do not create another duplicate guide.
+- Create or update `scripts/templates/v<target-version>` only when a compatibility template is actually required. If the target version is compatible with an existing template, set `templateVersion`/`SUI_TEMPLATE_VERSION` intentionally and document the reuse.
 - Do not claim CLI parity unless parity tests pass.
 - Do not delete old templates unless explicitly requested.
+- Do not add fixture-only hardcoding, silent empty-stub fallbacks, or skipped digest checks.
+- Do not add TypeScript package-manager heuristics for graph, linkage, lockfile, digest, output dependency, or test ownership behavior.
+- Before adding a heuristic, identify the upstream Sui CLI stage and source file it is trying to match.
+- Add or update a parity fixture for every new package-manager, lockfile, output dependency, or test-runner behavior.
+- Treat missing expected patch targets as porting failures unless there is a documented upstream removal.
+- Keep the Rust/TypeScript boundary clear: TypeScript should adapt files/fetchers/options, while Rust/WASM should own Sui package-manager, compiler, digest, lockfile, and test-plan semantics.
+- Prefer upstream Rust/Sui type and function reuse before writing compatibility code.
+- If TypeScript must mirror Rust behavior, record the upstream Rust source reference and add a targeted parity fixture.
+- Treat behavior that differs from `sui move build` or `sui move test` as a documented limitation or explicit compatibility patch, not as a hidden fallback.
+- Preserve pinned CLI behavior for `Move.toml`, `Move.<env>.toml`, `Move.lock` schema versions, `Published.toml`, package `edition`, and lockfile migration. Do not silently reinterpret versioned TOML formats.
+- Treat package file loading as a host snapshot responsibility. Do not add hidden filesystem assumptions; use explicit fetcher/snapshot contracts and fail clearly when local dependencies cannot be loaded.
+- If a check cannot run, record the exact reason and do not present it as passed.
+- Keep README/CLI_PIPELINE and code comments limited to current verified behavior, implementation boundaries, upstream references, and WASM limitations. Do not add work logs or retrospective notes.
 
 Tasks:
-1. Update sui-version.json for the target Sui version.
-2. Run the prepare pipeline and record failures.
-3. For each failure, identify whether it is:
+1. Run preflight:
+   - identify target version/tag/commit/templateVersion
+   - check whether `sui-version.json` or env/script overrides will select the target
+   - verify `scripts/templates/v<templateVersion>/manifest.json`
+   - check local `sui` CLI version when parity tests will run
+   - inspect dirty worktree state and preserve unrelated changes
+2. Update sui-version.json for the target Sui version when the task requires a pinned version change.
+3. Run the prepare pipeline and record failures.
+4. For each failure, identify whether it is:
    - missing WASM-compatible stub
    - Cargo feature issue
    - native dependency issue
    - upstream API drift
    - test runner/full-build issue
-4. Add the minimal version-specific template or patch needed.
-5. Re-run prepare until patch-state.json is produced.
-6. Run prepared lite build.
-7. Run prepared full build.
-8. Run:
+5. Add the minimal version-specific template or patch needed.
+6. Re-run prepare until patch-state.json is produced.
+7. Run prepared lite build:
+   - npm run build:wasm:prepared:lite
+8. Run prepared full build:
+   - npm run build:wasm:prepared:full
+9. Run JS build:
+   - npm run build:js
+10. Run targeted and parity checks:
    - npm run typecheck
    - npm run lint
    - npm run format:check
-   - npm run test:runtime
-   - npm run test:full
-   - npm run test:lite
-9. Update README/CLI_PIPELINE only for facts confirmed by code/tests.
-10. Produce a final report:
+   - npm run test:dist-load
+   - npm run test:template-manifest
+   - npm run test:package-loading
+   - npm run test:manifest-digest
+   - npm run test:manifest-fallback
+   - npm run test:lockfile-graph
+   - npm run test:lockfile-generation
+   - npm run test:source-discovery
+   - npm run test:compiler-lint
+   - npm run test:output-deps
+   - npm run test:unit-test-ownership
+   - npm run test:parity:full
+   - npm run test:parity:lite
+11. Run browser and release checks when the environment supports them:
+   - npm run test:browser
+   - npm run release:check
+12. Update README/CLI_PIPELINE only for facts confirmed by code/tests.
+13. Produce a final report:
    - target Sui version and commit
+   - template version used
    - files changed
    - templates added/changed
    - build/test commands run
+   - skipped checks with reasons
    - failures or remaining risks
 
 Output:

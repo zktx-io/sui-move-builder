@@ -33,6 +33,10 @@ const network = process.env.SUI_PARITY_NETWORK || "mainnet";
 const suiCli = resolveSuiCli(process.env.SUI_CLI || "sui");
 const maxPackages = Number(process.env.SUI_PARITY_LIMIT || 5);
 const minMoveFiles = Number(process.env.SUI_PARITY_MIN_MOVE_FILES || 2);
+const defaultFrameworkPackageSubdirs = [
+  "crates/sui-framework/packages/deepbook",
+  "crates/sui-framework/packages/sui-system",
+];
 
 const suiBuildConfig = getSuiBuildConfig(repoRoot, suiVersion);
 const parityWorkDir =
@@ -212,24 +216,54 @@ async function discoverMovePackages(examplesDir) {
   return packages.slice(0, maxPackages).map((pkg) => pkg.dir);
 }
 
-async function resolvePackageArgs(examplesDir) {
+function uniquePackageDirs(packages) {
+  const seen = new Set();
+  return packages.filter((packageDir) => {
+    const key = path.resolve(packageDir);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+async function resolveDefaultPackages(examplesDir, workDir) {
+  const discovered = await discoverMovePackages(examplesDir);
+  const frameworkPackages = [];
+
+  for (const subdir of defaultFrameworkPackageSubdirs) {
+    const packageDir = path.join(workDir, subdir);
+    if (!(await pathExists(packageDir))) {
+      throw new Error(`Default parity package does not exist: ${subdir}`);
+    }
+    frameworkPackages.push(packageDir);
+  }
+
+  return uniquePackageDirs([...discovered, ...frameworkPackages]);
+}
+
+async function resolvePackageArgs(examplesDir, workDir) {
   if (packageArgs.length === 0) {
-    return discoverMovePackages(examplesDir);
+    return resolveDefaultPackages(examplesDir, workDir);
   }
 
   const resolved = [];
   for (const arg of packageArgs) {
     const direct = path.resolve(repoRoot, arg);
     const underExamples = path.resolve(examplesDir, arg);
+    const underWorkDir = path.resolve(workDir, arg);
     if (await pathExists(direct)) {
       resolved.push(direct);
     } else if (await pathExists(underExamples)) {
       resolved.push(underExamples);
+    } else if (await pathExists(underWorkDir)) {
+      resolved.push(underWorkDir);
     } else {
       throw new Error(`Move package path does not exist: ${arg}`);
     }
   }
-  return resolved;
+  return uniquePackageDirs(resolved);
 }
 
 function runSuiCliBuild(packageDir) {
@@ -365,8 +399,13 @@ function isInsideDir(child, parent) {
   );
 }
 
-function toDisplayPackageName(packageDir, examplesDir) {
-  const baseDir = isInsideDir(packageDir, examplesDir) ? examplesDir : repoRoot;
+function toDisplayPackageName(packageDir, examplesDir, workDir) {
+  let baseDir = repoRoot;
+  if (isInsideDir(packageDir, examplesDir)) {
+    baseDir = examplesDir;
+  } else if (isInsideDir(packageDir, workDir)) {
+    baseDir = workDir;
+  }
   return (
     path.relative(baseDir, packageDir).replace(/\\/g, "/") ||
     path.basename(packageDir)
@@ -408,7 +447,7 @@ async function main() {
   });
 
   const examplesDir = path.join(workDir, "examples", "move");
-  const packages = await resolvePackageArgs(examplesDir);
+  const packages = await resolvePackageArgs(examplesDir, workDir);
   if (packages.length === 0) {
     throw new Error(`No Move packages found under ${examplesDir}`);
   }
@@ -425,7 +464,7 @@ async function main() {
 
   let failed = false;
   for (const packageDir of packages) {
-    const packageName = toDisplayPackageName(packageDir, examplesDir);
+    const packageName = toDisplayPackageName(packageDir, examplesDir, workDir);
     const artifactPackageName = toArtifactPackageName(packageName);
     const packageSubdir = isInsideDir(packageDir, workDir)
       ? path.relative(workDir, packageDir).replace(/\\/g, "/")

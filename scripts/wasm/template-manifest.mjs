@@ -78,6 +78,12 @@ export async function loadTemplateManifest(templatesDir) {
     Array.isArray(manifest.offendingCrates),
     "offendingCrates must be an array"
   );
+  if (manifest.emptyStubCrates !== undefined) {
+    assertManifest(
+      Array.isArray(manifest.emptyStubCrates),
+      "emptyStubCrates must be an array when present"
+    );
+  }
   assertManifest(
     isPlainObject(manifest.filePatches),
     "filePatches must be an object"
@@ -94,8 +100,19 @@ export async function loadTemplateManifest(templatesDir) {
     );
   }
 
+  const emptyStubCrates = manifest.emptyStubCrates || [];
+  const emptyStubSet = new Set(emptyStubCrates);
+
+  for (const [index, crateName] of emptyStubCrates.entries()) {
+    assertSimpleName(crateName, `emptyStubCrates[${index}]`);
+  }
+
   for (const [index, crateName] of manifest.offendingCrates.entries()) {
     assertSimpleName(crateName, `offendingCrates[${index}]`);
+    assertManifest(
+      manifest.stubTemplates[crateName] || emptyStubSet.has(crateName),
+      `offendingCrates[${index}] (${crateName}) must have a stubTemplates entry or an explicit emptyStubCrates entry`
+    );
   }
 
   for (const key of REQUIRED_FILE_PATCHES) {
@@ -110,6 +127,7 @@ export async function loadTemplateManifest(templatesDir) {
     schemaVersion: manifest.schemaVersion,
     stubTemplates: manifest.stubTemplates,
     offendingCrates: manifest.offendingCrates,
+    emptyStubCrates,
     filePatches: manifest.filePatches,
     manifestPath,
   };

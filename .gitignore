@@ -16,7 +16,6 @@ sui-work
 .pre-commit*
 Cargo.lock
 .DS_Store
-.github_token
 
 # Generated stubs
 scripts/stubs/

@@ -1,5 +1,30 @@
+export interface FetchLocalContext {
+  dependencyName: string;
+  parentPackageName: string;
+  parentSource?: {
+    type: string;
+    git?: string;
+    rev?: string;
+    subdir?: string;
+    local?: string;
+  };
+  network: "mainnet" | "testnet" | "devnet";
+}
+
 /** Abstract interface for fetching package content. */
 export class Fetcher {
+  /**
+   * Optional host-provided local package loader.
+   *
+   * Browser callers should implement this with a supplied snapshot,
+   * File System Access API, or a server endpoint. The library does not read the
+   * host filesystem directly.
+   */
+  fetchLocal?: (
+    localPath: string,
+    context: FetchLocalContext
+  ) => Promise<Record<string, string>>;
+
   /** Fetch a package. Return map of path -> content. */
   async fetch(
     _gitUrl: string,
@@ -144,13 +169,13 @@ export class GitHubFetcher extends Fetcher {
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
           if (attempt === maxRetries) {
-            return {};
+            throw lastError;
           }
         }
       }
 
       if (lastError) {
-        return {};
+        throw lastError;
       }
     }
 
@@ -164,8 +189,8 @@ export class GitHubFetcher extends Fetcher {
 
       let relativePath: string = item.path;
       if (subdir) {
-        // Check for exact subdir match with trailing slash to avoid prefix collisions
-        // e.g., "packages/deepbook" should not match "packages/deepbook_v2"
+        // Check for exact subdir match with trailing slash to avoid prefix collisions.
+        // For example, "packages/a" should not match "packages/a_v2".
         const subdirWithSlash = subdir.endsWith("/") ? subdir : subdir + "/";
         if (!item.path.startsWith(subdirWithSlash)) {
           continue;
@@ -177,6 +202,7 @@ export class GitHubFetcher extends Fetcher {
         !relativePath.endsWith(".move") &&
         relativePath !== "Move.toml" &&
         relativePath !== "Move.lock" &&
+        relativePath !== "Published.toml" &&
         !relativePath.match(/^Move\.(mainnet|testnet|devnet)\.toml$/)
       ) {
         continue;
@@ -188,10 +214,8 @@ export class GitHubFetcher extends Fetcher {
       }
 
       const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${rev}/${item.path}`;
-      const p = this.fetchContent(rawUrl).then((content) => {
-        if (content) {
-          files[relativePath] = content;
-        }
+      const p = this.fetchRequiredContent(rawUrl).then((content) => {
+        files[relativePath] = content;
       });
       fetchPromises.push(p);
     }
@@ -211,13 +235,8 @@ export class GitHubFetcher extends Fetcher {
         ? `${subdir}/${targetFile}`.replace(/\/+/g, "/")
         : targetFile;
       const targetUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${rev}/${targetPath}`;
-      const actualContent = await this.fetchContent(targetUrl);
-      if (actualContent) {
-        files["Move.toml"] = actualContent;
-        // files[targetFile] = actualContent; // Do not expose duplicate dirty TOML
-      } else {
-        // Warning: Failed to resolve symlink
-      }
+      files["Move.toml"] = await this.fetchRequiredContent(targetUrl);
+      // files[targetFile] = actualContent; // Do not expose duplicate dirty TOML
     }
 
     return files;
@@ -256,6 +275,14 @@ export class GitHubFetcher extends Fetcher {
     } catch {
       return null;
     }
+  }
+
+  private async fetchRequiredContent(url: string): Promise<string> {
+    const content = await this.fetchContent(url);
+    if (content === null) {
+      throw new Error(`Failed to fetch file: ${url}`);
+    }
+    return content;
   }
 
   private parseGitUrl(url: string): {

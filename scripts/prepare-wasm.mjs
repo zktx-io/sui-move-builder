@@ -103,6 +103,7 @@ async function main() {
     const templateManifest = await loadTemplateManifest(templatesDir);
     const stubTemplates = templateManifest.stubTemplates;
     const offendingCrates = templateManifest.offendingCrates;
+    const emptyStubCrates = new Set(templateManifest.emptyStubCrates || []);
     const filePatches = templateManifest.filePatches;
 
     // 1. Keep a pristine Sui checkout, then create a disposable patched worktree.
@@ -314,7 +315,7 @@ async function main() {
 
       workspaceContent += `\n${patchHeader}\n${patches.join("\n")}\n`;
 
-      // 5. Self-heal/Create Patched Stubs (Ensures missing stubs from previous runs are fixed/recreated)
+      // 5. Create required patched stubs.
       const stubBase = path.join(generatedStubsDir);
       await fs.mkdir(stubBase, { recursive: true });
 
@@ -861,11 +862,6 @@ panic = "abort"
       await fs.writeFile(moveTraceFormatLib, content);
     }
 
-    // Patch move-stdlib/src/lib.rs to remove build_doc and imports
-    // const moveStdlibLib ... (removed unused)
-    // Patching move-stdlib was abandoned in favor of stubs
-    // if (await fs.stat(moveStdlibLib).catch(() => false)) { ... }
-
     // Patch format.rs to wrap data in BufReader
     if (await fs.stat(moveTraceFormatFormat).catch(() => false)) {
       let content = await fs.readFile(moveTraceFormatFormat, "utf-8");
@@ -905,22 +901,20 @@ panic = "abort"
       `  Target exists: ${!!targetExists}, Source exists: ${!!sourceExists}`
     );
 
-    if (targetExists && sourceExists) {
-      console.log(
-        "Forcibly overwriting move-unit-test/src/test_runner.rs with patched version..."
-      );
-      await fs.copyFile(patchedRunnerStub, moveUnitTestRunner);
-      const content = await fs.readFile(moveUnitTestRunner, "utf-8");
-      if (content.includes("DEBUG: TestRunner::run start")) {
-        console.log("CONFIRMED: test_runner.rs contains debug prints.");
-      } else {
-        console.log("WARNING: test_runner.rs does NOT contain debug prints!");
-      }
-    } else {
-      console.log(
-        "WARNING: Could not patch test_runner.rs (File not found or stub missing)"
+    if (!targetExists) {
+      throw new Error(
+        `Missing expected move-unit-test runner target: ${moveUnitTestRunner}`
       );
     }
+    if (!sourceExists) {
+      throw new Error(
+        `Missing move-unit-test runner patch template: ${patchedRunnerStub}`
+      );
+    }
+    console.log(
+      "Forcibly overwriting move-unit-test/src/test_runner.rs with patched version..."
+    );
+    await fs.copyFile(patchedRunnerStub, moveUnitTestRunner);
 
     // 5. Aggressively patch ALL Cargo.toml files for compatibility
     console.log("Patching all Cargo.toml files for Wasm compatibility...");
@@ -1014,27 +1008,24 @@ panic = "abort"
                 `[package]\nname = "${item}"\nversion = "0.1.0"\nedition = "2021"\n${extraConfig}`
               );
 
-              // Refactored Stub Generation: Copy from template if available
-              let templateName = stubTemplates[item];
-              // Handle special cases not in map
-              if (!templateName) {
-                if (item.startsWith("neptune")) templateName = "neptune_lib";
-              }
-
+              // Refactored Stub Generation: copy declared templates or explicit empty stubs only.
+              const templateName = stubTemplates[item];
               const destPath = path.join(namedStubDir, "src", "lib.rs");
               if (templateName) {
                 const srcPath = path.join(templatesDir, `${templateName}.rs`);
                 try {
                   await fs.copyFile(srcPath, destPath);
-                } catch (_e) {
-                  console.warn(
-                    `Warning: Failed to copy template ${templateName} for ${item}, falling back to empty stub.`,
-                    _e
+                } catch (error) {
+                  throw new Error(
+                    `Failed to copy declared template ${templateName} for ${item} from ${srcPath}: ${error.message}`
                   );
-                  await fs.writeFile(destPath, `pub fn stub() {}`);
                 }
-              } else {
+              } else if (emptyStubCrates.has(item)) {
                 await fs.writeFile(destPath, `pub fn stub() {}`);
+              } else {
+                throw new Error(
+                  `No stub template or explicit empty stub declaration for ${item} in ${templateManifest.manifestPath}`
+                );
               }
             }
 
