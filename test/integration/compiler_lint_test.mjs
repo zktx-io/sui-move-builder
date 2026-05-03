@@ -1,8 +1,8 @@
-const { initMoveCompiler, buildMovePackage } = await import(
+const { initMovePackageBuilder, dumpMovePackage } = await import(
   new URL("../../dist/full/index.js", import.meta.url)
 );
 
-await initMoveCompiler();
+await initMovePackageBuilder();
 
 const files = {
   "Move.toml": `
@@ -82,7 +82,7 @@ sui = "0x2"
 }
 
 async function buildWithLintFlag(lintFlag) {
-  return buildMovePackage({
+  return dumpMovePackage({
     files,
     network: "mainnet",
     lintFlag,

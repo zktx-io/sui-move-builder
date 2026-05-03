@@ -1,11 +1,11 @@
-import { Fetcher, GitHubFetcher } from "./fetcher.js";
+import { MovePackageFetcher, GitHubMovePackageFetcher } from "./fetcher.js";
 import { resolve as resolveMoveToml } from "./resolver.js";
 import { parseToml } from "./tomlParser.js";
 import { generateMoveLockV4FromJson } from "./lockfileGenerator.js";
 import { structuredErrorCode } from "./structuredError.js";
 
 /** Build progress event types for tracking build status */
-export type BuildProgressEvent =
+export type MovePackageProgressEvent =
   | { type: "resolve_start" }
   | {
       type: "resolve_dep";
@@ -20,9 +20,11 @@ export type BuildProgressEvent =
   | { type: "lockfile_generate" };
 
 /** Callback function for receiving build progress events */
-export type OnProgressCallback = (event: BuildProgressEvent) => void;
+export type MovePackageProgressCallback = (
+  event: MovePackageProgressEvent
+) => void;
 
-export interface ResolvedDependencies {
+export interface MovePackageResolvedDependencies {
   /** JSON string of resolved files for the root package */
   files: string;
   /** JSON string of resolved dependencies (linkage applied, for compilation) */
@@ -31,7 +33,9 @@ export interface ResolvedDependencies {
   lockfileDependencies: string;
 }
 
-export interface BuildInput {
+export type MovePackageIntent = "dump" | "publish" | "upgrade";
+
+export interface MovePackageInput {
   /** Virtual file system contents. Keys are paths (e.g. "Move.toml", "sources/Module.move"). */
   files: Record<string, string>;
   /** Optional custom URL for the wasm binary. Defaults to bundled wasm next to this module. */
@@ -40,27 +44,36 @@ export interface BuildInput {
   rootGit?: { git: string; rev: string; subdir?: string };
   /** Optional GitHub token to raise API limits when resolving dependencies. */
   githubToken?: string;
-  /** Optional dependency fetcher. Defaults to GitHubFetcher. */
-  fetcher?: Fetcher;
+  /** Optional dependency fetcher. Defaults to GitHubMovePackageFetcher. */
+  fetcher?: MovePackageFetcher;
   /** Emit ANSI color codes in diagnostics when available. */
   ansiColor?: boolean;
   /** Network environment (mainnet, testnet, devnet). Defaults to mainnet. */
   network?: "mainnet" | "testnet" | "devnet";
   /** Optional pre-resolved dependencies. If provided, dependency resolution will be skipped. */
-  resolvedDependencies?: ResolvedDependencies;
+  resolvedDependencies?: MovePackageResolvedDependencies;
   /** Use this option to silence warnings. */
   silenceWarnings?: boolean;
   /** Use this option to enable test mode (includes #[test_only] modules). */
   testMode?: boolean;
+  /** Compile with unpublished dependencies using the CLI BuildConfig behavior. */
+  withUnpublishedDependencies?: boolean;
+  /** Arbitrary Move compiler modes, equivalent to CLI --mode values. */
+  modes?: string[];
   /** Move compiler lint level. Accepted values: "none", "default", "all". */
   lintFlag?: "none" | "default" | "all";
   /** Reserved for metadata stripping; not applied by the current WASM compiler path. */
   stripMetadata?: boolean;
   /** Optional progress callback for build events */
-  onProgress?: OnProgressCallback;
+  onProgress?: MovePackageProgressCallback;
 }
 
-export interface BuildSuccess {
+export interface MovePackageUpgradeInput extends MovePackageInput {
+  /** Published package ID to upgrade. Defaults to the selected environment publication metadata. */
+  packageId?: string;
+}
+
+export interface MovePackageSuccess {
   /** Base64-encoded bytecode modules. */
   modules: string[];
   /** Hex-encoded dependency IDs. */
@@ -77,19 +90,33 @@ export interface BuildSuccess {
   warnings?: string;
 }
 
-export type BuildFailureCategory =
+export interface MovePackageDumpSuccess extends MovePackageSuccess {
+  intent: "dump";
+}
+
+export interface MovePackagePublishSuccess extends MovePackageSuccess {
+  intent: "publish";
+}
+
+export interface MovePackageUpgradeSuccess extends MovePackageSuccess {
+  intent: "upgrade";
+  packageId: string;
+}
+
+export type MovePackageFailureCategory =
   | "dependency_resolution"
   | "compile"
   | "compiler_output"
+  | "input_validation"
   | "lockfile_generation"
   | "test_runner"
   | "wasm_init"
   | "unknown";
 
-export interface BuildFailure {
+export interface MovePackageFailure {
   error: string;
   /** Broad failing stage. Intended for reporting; the error string remains the detailed diagnostic. */
-  category?: BuildFailureCategory;
+  category?: MovePackageFailureCategory;
   /** Optional structured failure code produced by Rust/WASM helpers. */
   code?: string;
 }
@@ -113,6 +140,28 @@ const CHAIN_IDS: Record<string, string> = {
 function isMoveManifestPath(path: string): boolean {
   const fileName = path.split(/[\\/]/).pop() || path;
   return fileName === "Move.toml" || /^Move\.[^.\\/]+\.toml$/.test(fileName);
+}
+
+function normalizeSuiAddress(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const clean = value.trim().replace(/^0x/i, "");
+  if (!/^[0-9a-fA-F]+$/.test(clean) || clean.length > 64) {
+    return undefined;
+  }
+  return `0x${clean.padStart(64, "0").toLowerCase()}`;
+}
+
+function isNonZeroAddress(value: string | undefined): boolean {
+  const normalized = normalizeSuiAddress(value);
+  return Boolean(normalized && !/^0x0+$/.test(normalized));
+}
+
+interface RootPublicationMetadata {
+  packageName: string;
+  publishedAt?: string;
+  originalId?: string;
 }
 
 type WasmModule = typeof import("./sui_move_wasm.js");
@@ -204,7 +253,7 @@ async function loadWasm(
         if (customWasm) {
           await (mod.default as any)({ module_or_path: customWasm });
         } else {
-          await mod.default();
+          await mod.default({});
         }
       });
       return mod;
@@ -215,8 +264,8 @@ async function loadWasm(
 
 function asFailure(
   err: unknown,
-  category: BuildFailureCategory = "unknown"
-): BuildFailure {
+  category: MovePackageFailureCategory = "unknown"
+): MovePackageFailure {
   const msg =
     err instanceof Error
       ? err.message
@@ -260,7 +309,7 @@ function parseCompileResult(
   output: string,
   moveLock?: string,
   environment?: string
-): BuildSuccess | BuildFailure {
+): MovePackageSuccess | MovePackageFailure {
   const hexToBytes = (hex: string): number[] => {
     const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
     const padded = clean.length % 2 === 0 ? clean : `0${clean}`;
@@ -334,8 +383,113 @@ function logDependencyAddresses(depsJson: string): void {
   }
 }
 
+function parseRootPublicationMetadata(output: string): RootPublicationMetadata {
+  const parsed = JSON.parse(output) as {
+    status?: string;
+    error?: string;
+    packageName?: string;
+    publishedAt?: string | null;
+    originalId?: string | null;
+  };
+  if (parsed.status !== "ok" || !parsed.packageName) {
+    throw new Error(parsed.error || "Unable to read root publication metadata");
+  }
+  return {
+    packageName: parsed.packageName,
+    publishedAt: parsed.publishedAt || undefined,
+    originalId: parsed.originalId || undefined,
+  };
+}
+
+function rootPublicationMetadata(
+  mod: WasmModule,
+  files: Record<string, string>,
+  environment: string
+): RootPublicationMetadata {
+  return parseRootPublicationMetadata(
+    mod.root_publication_metadata(
+      JSON.stringify({
+        files,
+        environment,
+      })
+    )
+  );
+}
+
+function compilerModes(input: Pick<MovePackageInput, "modes">): string[] {
+  return input.modes ?? [];
+}
+
+function packageSelectionModes(
+  input: Pick<MovePackageInput, "modes" | "testMode">
+): string[] {
+  const modes = [...compilerModes(input)];
+  if (input.testMode && !modes.includes("test")) {
+    modes.push("test");
+  }
+  return modes;
+}
+
+function validatePackageIntent(
+  intent: MovePackageIntent,
+  input: MovePackageInput | MovePackageUpgradeInput,
+  mod: WasmModule,
+  files: Record<string, string>,
+  environment: string
+): { packageId?: string } | MovePackageFailure {
+  if ((intent === "publish" || intent === "upgrade") && input.testMode) {
+    return {
+      error: `${intent} preparation does not support testMode`,
+      category: "input_validation",
+    };
+  }
+
+  if (intent === "dump") {
+    return {};
+  }
+
+  let metadata: RootPublicationMetadata;
+  try {
+    metadata = rootPublicationMetadata(mod, files, environment);
+  } catch (error) {
+    return asFailure(error, "input_validation");
+  }
+
+  const publishedAt = normalizeSuiAddress(metadata.publishedAt);
+  const originalId = normalizeSuiAddress(metadata.originalId);
+
+  if (intent === "publish") {
+    if (isNonZeroAddress(publishedAt) || isNonZeroAddress(originalId)) {
+      return {
+        error: `Package '${metadata.packageName}' is already published for ${environment}`,
+        category: "input_validation",
+      };
+    }
+    return {};
+  }
+
+  const inputPackageId = normalizeSuiAddress(
+    (input as MovePackageUpgradeInput).packageId
+  );
+  const packageId = inputPackageId || publishedAt;
+  if (!packageId || !isNonZeroAddress(packageId)) {
+    return {
+      error: `Package '${metadata.packageName}' has no published package id for ${environment}`,
+      category: "input_validation",
+    };
+  }
+  if (inputPackageId && publishedAt && inputPackageId !== publishedAt) {
+    return {
+      error: `Input packageId ${inputPackageId} does not match published package id ${publishedAt}`,
+      category: "input_validation",
+    };
+  }
+
+  return { packageId };
+}
+
 /** Initialize the wasm module (idempotent). Provide a custom wasm URL if hosting separately. */
-export async function initMoveCompiler(options?: {
+export async function initMovePackageBuilder(options?: {
   wasm?: string | URL | BufferSource;
 }): Promise<void> {
   await loadWasm(options?.wasm);
@@ -345,9 +499,9 @@ export async function initMoveCompiler(options?: {
  * Resolve dependencies for a Move package without compiling.
  * This function can be used to resolve dependencies once and reuse them across multiple builds.
  */
-export async function resolveDependencies(
-  input: Omit<BuildInput, "resolvedDependencies">
-): Promise<ResolvedDependencies> {
+export async function resolveMovePackageDependencies(
+  input: Omit<MovePackageInput, "resolvedDependencies">
+): Promise<MovePackageResolvedDependencies> {
   const moveToml = input.files["Move.toml"] || "";
   // CLI does not mutate Move.toml; use as-is.
 
@@ -361,7 +515,7 @@ export async function resolveDependencies(
   const resolved = await resolveMoveToml(
     moveToml,
     { ...input.files, "Move.toml": moveToml },
-    input.fetcher ?? new GitHubFetcher(input.githubToken),
+    input.fetcher ?? new GitHubMovePackageFetcher(input.githubToken),
     input.network,
     inferredRootGit
       ? {
@@ -376,7 +530,8 @@ export async function resolveDependencies(
       resolvePackageGroups: mod.lockfile_v4_resolve_package_groups,
       manifestGraphResolvePackageGroups:
         mod.manifest_graph_resolve_package_groups,
-    }
+    },
+    packageSelectionModes(input)
   );
 
   return {
@@ -386,10 +541,15 @@ export async function resolveDependencies(
   };
 }
 
-/** Compile a Move package in memory using the bundled Move compiler wasm. */
-export async function buildMovePackage(
-  input: BuildInput
-): Promise<BuildSuccess | BuildFailure> {
+async function compileMovePackage(
+  input: MovePackageInput | MovePackageUpgradeInput,
+  intent: MovePackageIntent
+): Promise<
+  | MovePackageDumpSuccess
+  | MovePackagePublishSuccess
+  | MovePackageUpgradeSuccess
+  | MovePackageFailure
+> {
   const environment = input.network || "mainnet";
 
   try {
@@ -448,15 +608,33 @@ export async function buildMovePackage(
       }
     }
 
+    let mod: WasmModule;
+    try {
+      mod = await loadWasm(input.wasm);
+    } catch (error) {
+      return asFailure(error, "wasm_init");
+    }
+
+    const intentValidation = validatePackageIntent(
+      intent,
+      input,
+      mod,
+      input.files,
+      environment
+    );
+    if ("error" in intentValidation) {
+      return intentValidation;
+    }
+
     // Emit resolve_start event
     input.onProgress?.({ type: "resolve_start" });
 
     // Use pre-resolved dependencies if provided, otherwise resolve them
-    let resolved: ResolvedDependencies;
+    let resolved: MovePackageResolvedDependencies;
     try {
       resolved = input.resolvedDependencies
         ? input.resolvedDependencies
-        : await resolveDependencies(input);
+        : await resolveMovePackageDependencies(input);
     } catch (error) {
       return asFailure(error, "dependency_resolution");
     }
@@ -471,12 +649,6 @@ export async function buildMovePackage(
     }
     input.onProgress?.({ type: "resolve_complete", count: depCount });
 
-    let mod: WasmModule;
-    try {
-      mod = await loadWasm(input.wasm);
-    } catch (error) {
-      return asFailure(error, "wasm_init");
-    }
     // Log dependency addresses passed to compiler (best-effort)
     logDependencyAddresses(resolved.dependencies);
 
@@ -507,6 +679,9 @@ export async function buildMovePackage(
           lintFlag: input.lintFlag,
           stripMetadata: input.stripMetadata,
           ansiColor: input.ansiColor,
+          compileIntent: intent,
+          withUnpublishedDependencies: input.withUnpublishedDependencies,
+          modes: compilerModes(input),
         })
       );
       result = ensureCompileResult(raw);
@@ -558,7 +733,8 @@ export async function buildMovePackage(
         rootDepAliasToPackageName,
         existingLockfile, // Preserve other environments from existing lockfile
         mod.lockfile_v4_generate,
-        input.files
+        input.files,
+        packageSelectionModes(input)
       );
     } catch (error) {
       return asFailure(error, "lockfile_generation");
@@ -567,6 +743,14 @@ export async function buildMovePackage(
     const buildResult = parseCompileResult(output, moveLock, environment);
 
     if (!("error" in buildResult)) {
+      (
+        buildResult as MovePackageSuccess & { intent: MovePackageIntent }
+      ).intent = intent;
+      if (intent === "upgrade") {
+        (buildResult as MovePackageUpgradeSuccess).packageId =
+          intentValidation.packageId as string;
+      }
+
       // Attempt V3 publication migration when Move.lock contains supported records.
       const inputLockfile = input.files["Move.lock"];
       if (inputLockfile) {
@@ -583,13 +767,44 @@ export async function buildMovePackage(
       }
     }
 
-    return buildResult;
+    return buildResult as
+      | MovePackageDumpSuccess
+      | MovePackagePublishSuccess
+      | MovePackageUpgradeSuccess
+      | MovePackageFailure;
   } catch (error) {
     return asFailure(error);
   }
 }
 
-export interface TestSuccess {
+/** Prepare CLI dump-style bytecode output for a Move package. */
+export async function dumpMovePackage(
+  input: MovePackageInput
+): Promise<MovePackageDumpSuccess | MovePackageFailure> {
+  return compileMovePackage(input, "dump") as Promise<
+    MovePackageDumpSuccess | MovePackageFailure
+  >;
+}
+
+/** Prepare modules, dependencies, and digest for a publish transaction payload. */
+export async function prepareMovePackagePublish(
+  input: MovePackageInput
+): Promise<MovePackagePublishSuccess | MovePackageFailure> {
+  return compileMovePackage(input, "publish") as Promise<
+    MovePackagePublishSuccess | MovePackageFailure
+  >;
+}
+
+/** Prepare modules, dependencies, digest, and package ID for an upgrade transaction payload. */
+export async function prepareMovePackageUpgrade(
+  input: MovePackageUpgradeInput
+): Promise<MovePackageUpgradeSuccess | MovePackageFailure> {
+  return compileMovePackage(input, "upgrade") as Promise<
+    MovePackageUpgradeSuccess | MovePackageFailure
+  >;
+}
+
+export interface MovePackageTestSuccess {
   /** Whether all tests passed. */
   passed: boolean;
   /** Output from the test runner (stdout). */
@@ -598,15 +813,16 @@ export interface TestSuccess {
 
 /** Compile and run tests for a Move package in memory. */
 export async function testMovePackage(
-  input: BuildInput
-): Promise<TestSuccess | BuildFailure> {
+  input: MovePackageInput
+): Promise<MovePackageTestSuccess | MovePackageFailure> {
   try {
+    const testInput = { ...input, testMode: true };
     // Use pre-resolved dependencies if provided, otherwise resolve them
-    let resolved: ResolvedDependencies;
+    let resolved: MovePackageResolvedDependencies;
     try {
       resolved = input.resolvedDependencies
         ? input.resolvedDependencies
-        : await resolveDependencies(input);
+        : await resolveMovePackageDependencies(testInput);
     } catch (error) {
       return asFailure(error, "dependency_resolution");
     }
@@ -620,14 +836,18 @@ export async function testMovePackage(
     // Log dependency addresses passed to compiler (best-effort)
     logDependencyAddresses(resolved.dependencies);
 
+    const testOptions = JSON.stringify({
+      ansiColor: input.ansiColor ?? true,
+      modes: compilerModes(input),
+    });
     const raw =
-      input.ansiColor && typeof (mod as any).test_with_color === "function"
-        ? (mod as any).test_with_color(
+      typeof (mod as any).test_with_options === "function"
+        ? (mod as any).test_with_options(
             resolved.files,
             resolved.dependencies,
-            true
+            testOptions
           )
-        : (mod as any).test(resolved.files, resolved.dependencies); // Compatibility path for wasm modules without test_with_color.
+        : (mod as any).test(resolved.files, resolved.dependencies); // Compatibility path for wasm modules without test options.
 
     // Check if raw result matches expected shape
     if (typeof raw.passed === "boolean" && typeof raw.output === "string") {
@@ -648,7 +868,7 @@ export async function testMovePackage(
 }
 
 /** Sui Move version baked into the wasm (e.g. from Cargo.lock). */
-export async function getSuiMoveVersion(options?: {
+export async function getPinnedSuiMoveVersion(options?: {
   wasm?: string | URL;
 }): Promise<string> {
   const mod = await loadWasm(options?.wasm);
@@ -656,44 +876,23 @@ export async function getSuiMoveVersion(options?: {
 }
 
 /** Sui repo version baked into the wasm (e.g. from Cargo.lock). */
-export async function getSuiVersion(options?: {
+export async function getPinnedSuiVersion(options?: {
   wasm?: string | URL;
 }): Promise<string> {
   const mod = await loadWasm(options?.wasm);
   return mod.sui_version();
 }
 
-/** Get the raw wasm bindings (low-level interface). */
-export async function getWasmBindings(options?: {
-  wasm?: string | URL;
-}): Promise<WasmModule> {
-  return loadWasm(options?.wasm);
-}
-
-/** Low-level helper to call wasm compile directly with JSON strings. */
-export async function compileRaw(
-  filesJson: string,
-  depsJson: string,
-  options?: { wasm?: string | URL; ansiColor?: boolean }
-) {
-  const mod = await loadWasm(options?.wasm);
-  const raw =
-    options?.ansiColor && typeof (mod as any).compile_with_color === "function"
-      ? (mod as any).compile_with_color(filesJson, depsJson, true)
-      : mod.compile(
-          filesJson,
-          depsJson,
-          JSON.stringify({ silenceWarnings: false })
-        );
-  const result = ensureCompileResult(raw);
-  return {
-    success: result.success(),
-    output: result.output(),
-  };
-}
-
-export type BuildResult = BuildSuccess | BuildFailure;
+export type MovePackageResult =
+  | MovePackageDumpSuccess
+  | MovePackagePublishSuccess
+  | MovePackageUpgradeSuccess
+  | MovePackageFailure;
 
 // Package fetching utility
-export { Fetcher, GitHubFetcher, type FetchLocalContext } from "./fetcher.js";
-export { fetchPackageFromGitHub } from "./packageFetcher.js";
+export {
+  MovePackageFetcher,
+  GitHubMovePackageFetcher,
+  type MovePackageFetchLocalContext,
+} from "./fetcher.js";
+export { fetchMovePackageFromGitHub } from "./packageFetcher.js";

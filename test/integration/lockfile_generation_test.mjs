@@ -1,9 +1,11 @@
-const { initMoveCompiler, buildMovePackage, getWasmBindings } = await import(
+import { loadWasmBindings } from "./wasm_helpers.mjs";
+
+const { initMovePackageBuilder, dumpMovePackage } = await import(
   new URL("../../dist/full/index.js", import.meta.url)
 );
 
-await initMoveCompiler();
-const wasm = await getWasmBindings();
+await initMovePackageBuilder();
+const wasm = await loadWasmBindings("full");
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -116,7 +118,7 @@ function frameworkDeps() {
 }
 
 async function buildWith(files, deps, network = "mainnet") {
-  return buildMovePackage({
+  return dumpMovePackage({
     files,
     network,
     resolvedDependencies: {
@@ -283,6 +285,37 @@ if (
 }
 
 console.log("[OK] V4 lockfile generation preserves same-name package ids");
+
+const inactiveModeResult = assertOk(
+  await buildWith(
+    rootFiles({
+      dependencies: `
+[dependencies]
+ModeDep = { local = "../mode-dep", modes = ["custom"] }
+`,
+    }),
+    [
+      packageGroup({
+        id: "ModeDep",
+        manifestName: "ModeDep",
+        addressName: "mode_dep",
+        source: { type: "local", local: "../mode-dep" },
+      }),
+      ...frameworkDeps(),
+    ],
+    "mainnet"
+  ),
+  "inactive mode dependency generation"
+);
+const inactiveModeRootSection = section(
+  inactiveModeResult.moveLock,
+  "pinned.mainnet.Root"
+);
+if (!inactiveModeRootSection.includes('ModeDep = "ModeDep"')) {
+  throw new Error("Expected inactive mode dependency to remain in Move.lock");
+}
+
+console.log("[OK] V4 lockfile generation records inactive mode deps");
 
 const missingImplicitResult = await buildWith(rootFiles(), [], "mainnet");
 assertError(

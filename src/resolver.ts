@@ -6,7 +6,10 @@
  */
 
 import { parseToml } from "./tomlParser.js";
-import type { Fetcher, FetchLocalContext } from "./fetcher.js";
+import type {
+  MovePackageFetcher,
+  MovePackageFetchLocalContext,
+} from "./fetcher.js";
 import { StructuredBuildError } from "./structuredError.js";
 
 // Load from shared config (synchronized with scripts/build-wasm.mjs)
@@ -99,21 +102,24 @@ interface ManifestGraphFetchedPackage {
 }
 
 export class Resolver {
-  private fetcher: Fetcher;
+  private fetcher: MovePackageFetcher;
   private network: "mainnet" | "testnet" | "devnet";
   private rootSource: DependencySource | null;
   private lockfileV4Helpers: LockfileV4Helpers | undefined;
+  private modes: string[];
 
   constructor(
-    fetcher: Fetcher,
+    fetcher: MovePackageFetcher,
     network: "mainnet" | "testnet" | "devnet" = "mainnet",
     rootSource: DependencySource | null = null,
-    lockfileV4Helpers?: LockfileV4Helpers
+    lockfileV4Helpers?: LockfileV4Helpers,
+    modes: string[] = []
   ) {
     this.fetcher = fetcher;
     this.network = network;
     this.rootSource = rootSource;
     this.lockfileV4Helpers = lockfileV4Helpers;
+    this.modes = modes;
   }
 
   /**
@@ -255,6 +261,7 @@ export class Resolver {
               files: rootFiles,
             },
             packages,
+            modes: this.modes,
           })
         )
       );
@@ -443,7 +450,7 @@ export class Resolver {
       );
     }
 
-    const context: FetchLocalContext = {
+    const context: MovePackageFetchLocalContext = {
       dependencyName,
       parentPackageName,
       parentSource,
@@ -590,6 +597,7 @@ export class Resolver {
       environment: this.network,
       rootPackageName,
       rootMoveToml: rootFiles["Move.toml"] || "",
+      modes: this.modes,
       packages: packagesWithFiles,
     };
     const resolved =
@@ -669,10 +677,11 @@ export class Resolver {
 export async function resolve(
   rootMoveTomlContent: string,
   rootSourceFiles: Record<string, string>,
-  fetcher: Fetcher,
+  fetcher: MovePackageFetcher,
   network: "mainnet" | "testnet" | "devnet" = "mainnet",
   rootSource?: DependencySource,
-  lockfileV4Helpers?: LockfileV4Helpers
+  lockfileV4Helpers?: LockfileV4Helpers,
+  modes: string[] = []
 ): Promise<{
   files: string;
   dependencies: string;
@@ -682,7 +691,8 @@ export async function resolve(
     fetcher,
     network,
     rootSource || null,
-    lockfileV4Helpers
+    lockfileV4Helpers,
+    modes
   );
   return resolver.resolve(rootMoveTomlContent, rootSourceFiles);
 }

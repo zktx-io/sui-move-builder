@@ -3,12 +3,9 @@
 
 use std::fmt::{Debug, Display};
 
-/// An edge in the graph contains a set of these simple regular expressions. For now, this is
-/// just a (potentially empty) list of labels, and a flag indicating if the last label is a dot
-/// star. This is overly constrained to the current limitations in Move. When we add support for
-/// recursive types, we will need a more general regular expression. Particularly, we will need to
-/// be able to have regular expressions after the dot star. And we will need to star regular
-/// expressions other than dot.
+/// An edge in the graph contains a simple regular expression: a potentially empty list of labels
+/// and a flag indicating whether the last label is a dot star. This shape matches the current Move
+/// borrow-graph constraints; recursive-type regular expressions are unsupported here.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Regex<Lbl> {
     pub(crate) labels: Vec<Lbl>,

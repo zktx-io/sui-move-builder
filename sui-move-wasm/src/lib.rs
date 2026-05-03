@@ -4,11 +4,14 @@ use move_compiler::compiled_unit::AnnotatedCompiledModule;
 use move_compiler::{linters::LintLevel, Compiler, Flags};
 use move_core_types::{account_address::AccountAddress, language_storage::ModuleId};
 #[cfg(feature = "testing")]
-use move_unit_test::{extensions::set_extension_hook, UnitTestingConfig};
+use move_unit_test::{vm_test_setup::VMTestSetup, UnitTestingConfig};
 #[cfg(feature = "testing")]
-use move_vm_runtime::native_extensions::NativeContextExtensions;
+use move_vm_config::runtime::VMConfig;
 #[cfg(feature = "testing")]
-use once_cell::sync::Lazy;
+use move_vm_runtime::{
+    dev_utils::gas_schedule::{unit_cost_schedule, Gas, GasStatus},
+    natives::{extensions::NativeContextExtensions, functions::NativeFunctionTable},
+};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "testing")]
 use std::cell::RefCell;
@@ -24,7 +27,6 @@ use sui_types::move_package::{FnInfo, FnInfoKey, FnInfoMap};
 use sui_types::{
     base_types::{SuiAddress, TxContext},
     digests::TransactionDigest,
-    gas_model::tables::initial_cost_schedule_for_unit_tests,
     in_memory_storage::InMemoryStorage,
     metrics::LimitsMetrics,
 };
@@ -33,13 +35,13 @@ use vfs::{impls::memory::MemoryFS, VfsPath};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
-pub struct MoveCompilerResult {
+pub struct WasmCompileResult {
     success: bool,
     output: String, // JSON string of compiled units or errors
 }
 
 #[wasm_bindgen]
-impl MoveCompilerResult {
+impl WasmCompileResult {
     #[wasm_bindgen(getter)]
     pub fn success(&self) -> bool {
         self.success
@@ -56,7 +58,7 @@ impl MoveCompilerResult {
 /// ORIGINAL SOURCE REFERENCES:
 /// - sui/crates/sui-move-build/src/lib.rs - CompiledPackage struct
 #[derive(Serialize)]
-pub struct CompilationOutput {
+pub struct WasmCompilationOutput {
     modules: Vec<String>,      // Base64 encoded bytecode
     dependencies: Vec<String>, // Hex encoded dependency IDs
     digest: Vec<u8>,           // Blake2b-256 package digest
@@ -66,7 +68,6 @@ pub struct CompilationOutput {
 
 mod manifest;
 mod package_model;
-#[cfg(feature = "testing")]
 use move_symbol_pool::Symbol;
 use package_model::{
     build_compiler_input, dependency_name_is_implicit, is_system_package_name,
@@ -171,14 +172,14 @@ fn verify_bytecode(
 
 #[cfg(feature = "testing")]
 #[wasm_bindgen]
-pub struct MoveTestResult {
+pub struct WasmTestResult {
     passed: bool,
     output: String,
 }
 
 #[cfg(feature = "testing")]
 #[wasm_bindgen]
-impl MoveTestResult {
+impl WasmTestResult {
     #[wasm_bindgen(getter)]
     pub fn passed(&self) -> bool {
         self.passed
@@ -190,55 +191,95 @@ impl MoveTestResult {
     }
 }
 
-// Create a separate test store per-thread (though Wasm is usually single-threaded).
 #[cfg(feature = "testing")]
-thread_local! {
-    static TEST_STORE_INNER: RefCell<InMemoryStorage> = RefCell::new(InMemoryStorage::default());
+struct SuiWasmVMTestSetup {
+    protocol_config: ProtocolConfig,
+    native_function_table: NativeFunctionTable,
+    cost_table: move_vm_runtime::dev_utils::gas_schedule::CostTable,
 }
 
 #[cfg(feature = "testing")]
-static TEST_STORE: Lazy<sui_move_natives::test_scenario::InMemoryTestStore> =
-    Lazy::new(|| sui_move_natives::test_scenario::InMemoryTestStore(&TEST_STORE_INNER));
+impl SuiWasmVMTestSetup {
+    fn new() -> Self {
+        let protocol_config = ProtocolConfig::get_for_max_version_UNSAFE();
+        let native_function_table = sui_move_natives::all_natives(false, &protocol_config);
+        Self {
+            protocol_config,
+            native_function_table,
+            cost_table: unit_cost_schedule(),
+        }
+    }
+}
 
 #[cfg(feature = "testing")]
-static SET_EXTENSION_HOOK: Lazy<()> =
-    Lazy::new(|| set_extension_hook(Box::new(new_testing_object_and_natives_cost_runtime)));
+impl VMTestSetup for SuiWasmVMTestSetup {
+    type Meter<'a> = GasStatus<'a>;
+    type ExtensionsBuilder<'a> = sui_move_natives::test_scenario::InMemoryTestStore;
 
-#[cfg(feature = "testing")]
-fn new_testing_object_and_natives_cost_runtime(ext: &mut NativeContextExtensions) {
-    let registry = prometheus::Registry::new();
-    let metrics = Arc::new(LimitsMetrics::new(&registry));
-    let store = Lazy::force(&TEST_STORE);
-    let protocol_config = ProtocolConfig::get_for_max_version_UNSAFE();
+    fn new_meter<'a>(&'a self, execution_bound: Option<u64>) -> Self::Meter<'a> {
+        match execution_bound {
+            Some(bound) => GasStatus::new(&self.cost_table, Gas::new(bound)),
+            None => GasStatus::new_unmetered(),
+        }
+    }
 
-    ext.add(sui_move_natives::object_runtime::ObjectRuntime::new(
-        store,
-        BTreeMap::new(),
-        false,
-        Box::leak(Box::new(ProtocolConfig::get_for_max_version_UNSAFE())),
-        metrics,
-        0,
-    ));
-    ext.add(sui_move_natives::NativesCostTable::from_protocol_config(
-        &protocol_config,
-    ));
-    let tx_context = TxContext::new_from_components(
-        &SuiAddress::ZERO,
-        &TransactionDigest::default(),
-        &0,
-        0,
-        0,
-        0,
-        0,
-        None,
-        &protocol_config,
-    );
-    ext.add(
-        sui_move_natives::transaction_context::TransactionContext::new_for_testing(Rc::new(
-            RefCell::new(tx_context),
-        )),
-    );
-    ext.add(store);
+    fn used_gas<'a>(&'a self, execution_bound: u64, meter: Self::Meter<'a>) -> u64 {
+        Gas::new(execution_bound)
+            .checked_sub(meter.remaining_gas())
+            .unwrap()
+            .into()
+    }
+
+    fn vm_config(&self) -> VMConfig {
+        VMConfig::default()
+    }
+
+    fn native_function_table(&self) -> NativeFunctionTable {
+        self.native_function_table.clone()
+    }
+
+    fn new_extensions_builder(&self) -> Self::ExtensionsBuilder<'_> {
+        sui_move_natives::test_scenario::InMemoryTestStore(RefCell::new(InMemoryStorage::default()))
+    }
+
+    fn new_native_context_extensions<'ext>(
+        &self,
+        store: &'ext Self::ExtensionsBuilder<'_>,
+    ) -> NativeContextExtensions<'ext> {
+        let mut ext = NativeContextExtensions::default();
+        let registry = prometheus::Registry::new();
+        let metrics = Arc::new(LimitsMetrics::new(&registry));
+
+        ext.add(sui_move_natives::object_runtime::ObjectRuntime::new(
+            store,
+            BTreeMap::new(),
+            false,
+            Box::leak(Box::new(ProtocolConfig::get_for_max_version_UNSAFE())),
+            metrics,
+            0,
+        ));
+        ext.add(sui_move_natives::NativesCostTable::from_protocol_config(
+            &self.protocol_config,
+        ));
+        let tx_context = TxContext::new_from_components(
+            &SuiAddress::ZERO,
+            &TransactionDigest::default(),
+            &0,
+            0,
+            0,
+            0,
+            0,
+            None,
+            &self.protocol_config,
+        );
+        ext.add(
+            sui_move_natives::transaction_context::TransactionContext::new_for_testing(Rc::new(
+                RefCell::new(tx_context),
+            )),
+        );
+        ext.add(store);
+        ext
+    }
 }
 
 fn setup_vfs(
@@ -320,13 +361,21 @@ fn compile_impl(
     files_json: &str,
     dependencies_json: &str,
     options_json: Option<String>,
-) -> MoveCompilerResult {
-    #[cfg(debug_assertions)]
+) -> WasmCompileResult {
     console_error_panic_hook::set_once();
 
-    let options: CompileOptions = options_json
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default();
+    let options: WasmCompileOptions = match options_json {
+        Some(json) => match serde_json::from_str(&json) {
+            Ok(options) => options,
+            Err(error) => {
+                return WasmCompileResult {
+                    success: false,
+                    output: format!("Invalid compile options: {}", error),
+                }
+            }
+        },
+        None => WasmCompileOptions::default(),
+    };
 
     let ansi_color = options.ansi_color;
     if ansi_color {
@@ -338,7 +387,7 @@ fn compile_impl(
     let lint_level = match parse_lint_level(options.lint_flag.as_deref()) {
         Ok(level) => level,
         Err(error) => {
-            return MoveCompilerResult {
+            return WasmCompileResult {
                 success: false,
                 output: error,
             }
@@ -348,20 +397,30 @@ fn compile_impl(
     let (root, files, dep_packages) = match setup_vfs(files_json, dependencies_json) {
         Ok(res) => res,
         Err(e) => {
-            return MoveCompilerResult {
+            return WasmCompileResult {
                 success: false,
                 output: e,
             }
         }
     };
 
-    let compiler_input = build_compiler_input(
+    let compiler_input = match build_compiler_input(
         &files,
         &dep_packages,
         CompilerInputMode::Build {
             test_mode: options.test_mode,
+            root_as_zero: options.compile_intent.root_as_zero(),
+            set_unpublished_deps_to_zero: options.with_unpublished_dependencies,
         },
-    );
+    ) {
+        Ok(input) => input,
+        Err(error) => {
+            return WasmCompileResult {
+                success: false,
+                output: error,
+            }
+        }
+    };
     let CompilerInput {
         root_package_name,
         package_paths,
@@ -371,21 +430,25 @@ fn compile_impl(
     let mut compiler = match Compiler::from_package_paths(Some(root), package_paths, Vec::new()) {
         Ok(c) => c,
         Err(e) => {
-            return MoveCompilerResult {
+            return WasmCompileResult {
                 success: false,
                 output: format!("Failed to create compiler: {}", e),
             }
         }
     };
 
-    let build_config =
-        compiler_build_config(options.test_mode, options.silence_warnings, lint_level);
+    let build_config = compiler_build_config(
+        options.test_mode,
+        options.silence_warnings,
+        lint_level,
+        options.modes,
+    );
     compiler = configure_compiler_for_sui(compiler, &build_config);
 
     let (compiler_files, res) = match compiler.build() {
         Ok(res) => res,
         Err(e) => {
-            return MoveCompilerResult {
+            return WasmCompileResult {
                 success: false,
                 output: format!("Compiler initialization error: {}", e),
             }
@@ -396,7 +459,7 @@ fn compile_impl(
         Ok((units, warning_diags)) => {
             let fn_info = fn_info(&units);
             if let Err(e) = verify_bytecode(&units, &fn_info, options.test_mode) {
-                return MoveCompilerResult {
+                return WasmCompileResult {
                     success: false,
                     output: format!("Bytecode Verification Failed: {}", e),
                 };
@@ -443,7 +506,7 @@ fn compile_impl(
             let ordered_ids: Vec<ModuleId> = match module_set.compute_topological_order() {
                 Ok(iter) => iter.map(|m| m.self_id()).collect(),
                 Err(e) => {
-                    return MoveCompilerResult {
+                    return WasmCompileResult {
                         success: false,
                         output: format!("Failed to compute module ordering: {}", e),
                     }
@@ -489,7 +552,7 @@ fn compile_impl(
                     true, // hash_modules matches default behavior usually
                 );
 
-            let output_data = CompilationOutput {
+            let output_data = WasmCompilationOutput {
                 modules,
                 dependencies: dependency_ids_vec
                     .iter()
@@ -511,7 +574,7 @@ fn compile_impl(
                 },
             };
 
-            MoveCompilerResult {
+            WasmCompileResult {
                 success: true,
                 output: serde_json::to_string(&output_data).unwrap_or_default(),
             }
@@ -522,7 +585,7 @@ fn compile_impl(
                 diags,
                 ansi_color,
             );
-            MoveCompilerResult {
+            WasmCompileResult {
                 success: false,
                 output: String::from_utf8_lossy(&error_buffer).to_string(),
             }
@@ -535,29 +598,79 @@ pub fn compile(
     files_json: &str,
     dependencies_json: &str,
     options_json: Option<String>,
-) -> MoveCompilerResult {
+) -> WasmCompileResult {
     compile_impl(files_json, dependencies_json, options_json)
 }
 
 #[cfg(feature = "testing")]
-fn test_impl(files_json: &str, dependencies_json: &str) -> MoveTestResult {
-    #[cfg(debug_assertions)]
+fn default_test_ansi_color() -> bool {
+    true
+}
+
+#[cfg(feature = "testing")]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WasmTestOptions {
+    #[serde(default = "default_test_ansi_color")]
+    ansi_color: bool,
+    #[serde(default)]
+    modes: Vec<String>,
+}
+
+#[cfg(feature = "testing")]
+impl Default for WasmTestOptions {
+    fn default() -> Self {
+        Self {
+            ansi_color: true,
+            modes: Vec::new(),
+        }
+    }
+}
+
+#[cfg(feature = "testing")]
+fn test_impl(
+    files_json: &str,
+    dependencies_json: &str,
+    options_json: Option<String>,
+) -> WasmTestResult {
     console_error_panic_hook::set_once();
 
-    colored::control::set_override(true);
-    let ansi_color = true;
+    let options: WasmTestOptions = match options_json {
+        Some(json) => match serde_json::from_str(&json) {
+            Ok(options) => options,
+            Err(error) => {
+                return WasmTestResult {
+                    passed: false,
+                    output: format!("Invalid test options: {}", error),
+                }
+            }
+        },
+        None => WasmTestOptions::default(),
+    };
+
+    colored::control::set_override(options.ansi_color);
+    let ansi_color = options.ansi_color;
 
     let (root, files, dep_packages) = match setup_vfs(files_json, dependencies_json) {
         Ok(res) => res,
         Err(e) => {
-            return MoveTestResult {
+            return WasmTestResult {
                 passed: false,
                 output: e,
             };
         }
     };
 
-    let compiler_input = build_compiler_input(&files, &dep_packages, CompilerInputMode::TestRunner);
+    let compiler_input =
+        match build_compiler_input(&files, &dep_packages, CompilerInputMode::TestRunner) {
+            Ok(input) => input,
+            Err(error) => {
+                return WasmTestResult {
+                    passed: false,
+                    output: error,
+                }
+            }
+        };
     let CompilerInput {
         root_package_name,
         package_paths,
@@ -567,20 +680,20 @@ fn test_impl(files_json: &str, dependencies_json: &str) -> MoveTestResult {
     let compiler = match Compiler::from_package_paths(Some(root), package_paths, Vec::new()) {
         Ok(c) => c,
         Err(e) => {
-            return MoveTestResult {
+            return WasmTestResult {
                 passed: false,
                 output: format!("Failed to create compiler: {}", e),
             }
         }
     };
 
-    let build_config = compiler_build_config(true, false, LintLevel::None);
+    let build_config = compiler_build_config(true, false, LintLevel::None, options.modes);
     let compiler = configure_compiler_for_sui(compiler, &build_config);
     let (files_info, comments_and_compiler_res) =
         match compiler.run::<{ move_compiler::PASS_CFGIR }>() {
             Ok(res) => res,
             Err(e) => {
-                return MoveTestResult {
+                return WasmTestResult {
                     passed: false,
                     output: format!("Compiler error: {}", e),
                 }
@@ -595,7 +708,7 @@ fn test_impl(files_json: &str, dependencies_json: &str) -> MoveTestResult {
                 diags,
                 ansi_color,
             );
-            return MoveTestResult {
+            return WasmTestResult {
                 passed: false,
                 output: String::from_utf8_lossy(&buffer).to_string(),
             };
@@ -621,7 +734,7 @@ fn test_impl(files_json: &str, dependencies_json: &str) -> MoveTestResult {
                 diags,
                 ansi_color,
             );
-            return MoveTestResult {
+            return WasmTestResult {
                 passed: false,
                 output: String::from_utf8_lossy(&buffer).to_string(),
             };
@@ -633,45 +746,36 @@ fn test_impl(files_json: &str, dependencies_json: &str) -> MoveTestResult {
     let test_plan = match test_tests {
         Some(tests) => move_compiler::unit_test::TestPlan::new(tests, mapped_files, units, vec![]),
         None => {
-            return MoveTestResult {
+            return WasmTestResult {
                 passed: true,
                 output: "No tests found".to_string(),
             }
         }
     };
 
-    // 4. Run tests and capture output
-    Lazy::force(&SET_EXTENSION_HOOK);
-
     let config = UnitTestingConfig {
-        num_threads: 1, // Crucial for Wasm
+        num_threads: 1,
         gas_limit: Some(1_000_000),
         report_stacktrace_on_abort: true,
         ..UnitTestingConfig::default_with_bound(None)
     };
 
-    let natives =
-        sui_move_natives::all_natives(false, &ProtocolConfig::get_for_max_version_UNSAFE());
-
     let output_buffer = std::io::Cursor::new(Vec::new());
-    let (output_buffer, passed) = match config.run_and_report_unit_tests(
-        test_plan,
-        Some(natives),
-        Some(initial_cost_schedule_for_unit_tests()),
-        output_buffer,
-    ) {
-        Ok(res) => res,
-        Err(e) => {
-            return MoveTestResult {
-                passed: false,
-                output: format!("Test runner error: {}", e),
+    let (output_buffer, passed) =
+        match config.run_and_report_unit_tests(test_plan, SuiWasmVMTestSetup::new(), output_buffer)
+        {
+            Ok(res) => res,
+            Err(e) => {
+                return WasmTestResult {
+                    passed: false,
+                    output: format!("Test runner error: {}", e),
+                }
             }
-        }
-    };
+        };
 
     let output_str = String::from_utf8_lossy(output_buffer.get_ref()).to_string();
 
-    MoveTestResult {
+    WasmTestResult {
         passed,
         output: output_str,
     }
@@ -679,8 +783,18 @@ fn test_impl(files_json: &str, dependencies_json: &str) -> MoveTestResult {
 
 #[cfg(feature = "testing")]
 #[wasm_bindgen]
-pub fn test(files_json: &str, dependencies_json: &str) -> MoveTestResult {
-    test_impl(files_json, dependencies_json)
+pub fn test(files_json: &str, dependencies_json: &str) -> WasmTestResult {
+    test_impl(files_json, dependencies_json, None)
+}
+
+#[cfg(feature = "testing")]
+#[wasm_bindgen]
+pub fn test_with_options(
+    files_json: &str,
+    dependencies_json: &str,
+    options_json: String,
+) -> WasmTestResult {
+    test_impl(files_json, dependencies_json, Some(options_json))
 }
 
 #[derive(Deserialize)]
@@ -1003,6 +1117,8 @@ struct LockfileV4ValidateInput {
     environment: String,
     root_package_name: String,
     root_move_toml: String,
+    #[serde(default)]
+    modes: Vec<String>,
     packages: Vec<LockfileV4ValidatePackage>,
 }
 
@@ -1065,6 +1181,8 @@ struct LockfileV4ValidatedPackage {
     manifest: LockfileV4PackageManifest,
     #[serde(default)]
     dep_alias_to_package_name: BTreeMap<String, String>,
+    #[serde(default)]
+    active_dep_alias_to_package_name: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -1086,12 +1204,14 @@ struct LockfileV4PackageManifest {
     dev_dependencies: Option<serde_json::Value>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LockfileV4ValidatedEdge {
     from: String,
     to: String,
     alias: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    modes: Vec<String>,
 }
 
 enum LockfileV4ValidationResult {
@@ -1141,6 +1261,8 @@ struct LockfileV4PackageGroupManifest {
 struct ManifestPackagePlanDependency {
     name: String,
     source: ManifestPackagePlanSource,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    modes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     subst: Option<BTreeMap<String, ManifestPackagePlanSubst>>,
 }
@@ -1174,6 +1296,8 @@ struct ManifestGraphInput {
     environment: String,
     #[serde(default)]
     framework_rev: Option<String>,
+    #[serde(default)]
+    modes: Vec<String>,
     root: ManifestGraphPackageSnapshot,
     #[serde(default)]
     packages: Vec<ManifestGraphPackageSnapshot>,
@@ -1449,7 +1573,68 @@ fn lockfile_v4_find_move_toml<'a>(
         .map(|value| value.as_str())
 }
 
-fn lockfile_v4_dependency_aliases(move_toml: &str) -> BTreeSet<String> {
+fn dependency_value_matches_modes(dep_value: &toml::Value, modes: &[String]) -> bool {
+    let Some(dep_table) = dep_value.as_table() else {
+        return true;
+    };
+    let Some(dep_modes) = dep_table.get("modes").and_then(|value| value.as_array()) else {
+        return true;
+    };
+    dep_modes.iter().any(|mode| match mode.as_str() {
+        Some(dep_mode) => modes.iter().any(|active| active == dep_mode),
+        None => false,
+    })
+}
+
+fn dependency_value_mode_names(dep_value: &toml::Value) -> Vec<String> {
+    dep_value
+        .as_table()
+        .and_then(|table| table.get("modes"))
+        .and_then(|value| value.as_array())
+        .map(|modes| {
+            modes
+                .iter()
+                .filter_map(|mode| mode.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn lockfile_v4_dependency_values_for_filter(
+    move_toml: &str,
+    modes: Option<&[String]>,
+) -> Result<BTreeMap<String, toml::Value>, String> {
+    let parsed = move_toml
+        .parse::<toml::Value>()
+        .map_err(|error| format!("Failed to parse Move.toml dependencies: {}", error))?;
+    Ok(parsed
+        .get("dependencies")
+        .and_then(|deps| deps.as_table())
+        .map(|deps| {
+            deps.iter()
+                .filter(|(_, value)| {
+                    modes
+                        .map(|modes| dependency_value_matches_modes(value, modes))
+                        .unwrap_or(true)
+                })
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+fn lockfile_v4_add_present_implicit_aliases(
+    package_deps: &BTreeMap<String, String>,
+    aliases: &mut BTreeSet<String>,
+) {
+    for alias in package_deps.keys() {
+        if dependency_name_is_implicit(alias) {
+            aliases.insert(alias.clone());
+        }
+    }
+}
+
+fn lockfile_v4_dependency_aliases_for_lockfile(move_toml: &str) -> BTreeSet<String> {
     let Ok(value) = move_toml.parse::<toml::Value>() else {
         return BTreeSet::new();
     };
@@ -1457,8 +1642,29 @@ fn lockfile_v4_dependency_aliases(move_toml: &str) -> BTreeSet<String> {
     value
         .get("dependencies")
         .and_then(|deps| deps.as_table())
-        .map(|deps| deps.keys().cloned().collect())
+        .map(|deps| {
+            deps.iter()
+                .map(|(name, _)| name.clone())
+                .collect()
+        })
         .unwrap_or_default()
+}
+
+fn lockfile_v4_dependency_aliases_for_modes(move_toml: &str, modes: &[String]) -> BTreeSet<String> {
+    let Ok(values) = lockfile_v4_dependency_values_for_filter(move_toml, Some(modes)) else {
+        return BTreeSet::new();
+    };
+    values.keys().cloned().collect::<BTreeSet<_>>()
+}
+
+fn lockfile_v4_dependency_modes_by_alias(move_toml: &str) -> BTreeMap<String, Vec<String>> {
+    let Ok(values) = lockfile_v4_dependency_values_for_filter(move_toml, None) else {
+        return BTreeMap::new();
+    };
+    values
+        .iter()
+        .map(|(alias, value)| (alias.clone(), dependency_value_mode_names(value)))
+        .collect()
 }
 
 fn normalize_hex_address_string(value: &str) -> Option<String> {
@@ -1662,6 +1868,42 @@ fn lockfile_v4_manifest_from_files(
     ))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RootPublicationMetadataInput {
+    environment: String,
+    files: BTreeMap<String, String>,
+}
+
+#[wasm_bindgen]
+pub fn root_publication_metadata(input_json: &str) -> String {
+    let input: RootPublicationMetadataInput = match serde_json::from_str(input_json) {
+        Ok(input) => input,
+        Err(error) => {
+            return serde_json::json!({
+                "status": "error",
+                "error": format!("Invalid root publication metadata input: {}", error),
+            })
+            .to_string()
+        }
+    };
+
+    match lockfile_v4_manifest_from_files("root", &input.files, &input.environment) {
+        Ok((manifest, _)) => serde_json::json!({
+            "status": "ok",
+            "packageName": manifest.name,
+            "publishedAt": manifest.published_at,
+            "originalId": manifest.original_id,
+        })
+        .to_string(),
+        Err(error) => serde_json::json!({
+            "status": "error",
+            "error": error,
+        })
+        .to_string(),
+    }
+}
+
 fn lockfile_v4_toml_string(value: &str) -> String {
     let escaped = value
         .replace('\\', "\\\\")
@@ -1696,19 +1938,10 @@ fn lockfile_v4_format_source(
     }
 }
 
-fn lockfile_v4_dependency_values(move_toml: &str) -> Result<BTreeMap<String, toml::Value>, String> {
-    let parsed = move_toml
-        .parse::<toml::Value>()
-        .map_err(|error| format!("Failed to parse Move.toml dependencies: {}", error))?;
-    Ok(parsed
-        .get("dependencies")
-        .and_then(|deps| deps.as_table())
-        .map(|deps| {
-            deps.iter()
-                .map(|(name, value)| (name.clone(), value.clone()))
-                .collect()
-        })
-        .unwrap_or_default())
+fn lockfile_v4_dependency_values_for_lockfile(
+    move_toml: &str,
+) -> Result<BTreeMap<String, toml::Value>, String> {
+    lockfile_v4_dependency_values_for_filter(move_toml, None)
 }
 
 fn lockfile_v4_source_matches_dependency(
@@ -1869,7 +2102,7 @@ fn lockfile_v4_generated_deps(
     package_ids: &BTreeSet<String>,
     manifest_name_to_ids: &BTreeMap<String, Vec<String>>,
 ) -> Result<BTreeMap<String, String>, String> {
-    let dependency_values = lockfile_v4_dependency_values(&package.move_toml)?;
+    let dependency_values = lockfile_v4_dependency_values_for_lockfile(&package.move_toml)?;
     let has_implicit = dependency_values
         .keys()
         .any(|name| dependency_name_is_implicit(name));
@@ -2077,8 +2310,12 @@ fn lockfile_v4_generate_impl(input: LockfileV4GenerateInput) -> Result<String, H
             "manifest_digest = {}",
             lockfile_v4_toml_string(&digest)
         ));
-        let deps =
-            lockfile_v4_generated_deps(package, &packages, &package_ids, &manifest_name_to_ids)?;
+        let deps = lockfile_v4_generated_deps(
+            package,
+            &packages,
+            &package_ids,
+            &manifest_name_to_ids,
+        )?;
         lines.push(lockfile_v4_format_deps(&deps));
         lines.push(String::new());
     }
@@ -2180,9 +2417,10 @@ fn lockfile_v4_validate_graph_impl(input: &LockfileV4ValidateInput) -> LockfileV
             return LockfileV4ValidationResult::OutOfDate(package.id.clone());
         }
 
-        let explicit_deps = lockfile_v4_dependency_aliases(&move_toml);
-        for alias in explicit_deps {
-            if !package.deps.contains_key(&alias) {
+        let mut lockfile_deps = lockfile_v4_dependency_aliases_for_lockfile(&move_toml);
+        lockfile_v4_add_present_implicit_aliases(&package.deps, &mut lockfile_deps);
+        for alias in &lockfile_deps {
+            if !package.deps.contains_key(alias) {
                 return LockfileV4ValidationResult::Error(format!(
                     "Move.lock V4 pinned.{}.{} is missing dependency '{}'",
                     input.environment, package.id, alias
@@ -2190,25 +2428,44 @@ fn lockfile_v4_validate_graph_impl(input: &LockfileV4ValidateInput) -> LockfileV
             }
         }
 
-        for (alias, target_id) in &package.deps {
+        let dep_modes_by_alias = lockfile_v4_dependency_modes_by_alias(&move_toml);
+        let mut active_aliases = lockfile_v4_dependency_aliases_for_modes(&move_toml, &input.modes);
+        lockfile_v4_add_present_implicit_aliases(&package.deps, &mut active_aliases);
+        let lockfile_dep_map = package
+            .deps
+            .iter()
+            .filter(|(alias, _)| lockfile_deps.contains(*alias))
+            .map(|(alias, target_id)| (alias.clone(), target_id.clone()))
+            .collect::<BTreeMap<_, _>>();
+
+        for (alias, target_id) in &lockfile_dep_map {
             if !package_ids.contains(target_id) {
                 return LockfileV4ValidationResult::Error(format!(
                     "Move.lock V4 pinned.{}.{} references undefined dependency '{}'",
                     input.environment, package.id, target_id
                 ));
             }
-            edges.push(LockfileV4ValidatedEdge {
-                from: package.id.clone(),
-                to: target_id.clone(),
-                alias: alias.clone(),
-            });
+            if active_aliases.contains(alias) {
+                edges.push(LockfileV4ValidatedEdge {
+                    from: package.id.clone(),
+                    to: target_id.clone(),
+                    alias: alias.clone(),
+                    modes: dep_modes_by_alias.get(alias).cloned().unwrap_or_default(),
+                });
+            }
         }
+        let active_dep_map = lockfile_dep_map
+            .iter()
+            .filter(|(alias, _)| active_aliases.contains(*alias))
+            .map(|(alias, target_id)| (alias.clone(), target_id.clone()))
+            .collect::<BTreeMap<_, _>>();
 
         validated_packages.push(LockfileV4ValidatedPackage {
             id: package.id.clone(),
             source: package.source.clone(),
             manifest,
-            dep_alias_to_package_name: package.deps.clone(),
+            dep_alias_to_package_name: lockfile_dep_map,
+            active_dep_alias_to_package_name: active_dep_map,
         });
     }
 
@@ -2409,6 +2666,7 @@ fn lockfile_v4_package_groups_from_validated_with_orders(
 
     let reachable = lockfile_v4_reachable_ids(&graph);
     let mut groups_by_id = BTreeMap::new();
+    let mut active_groups_by_id = BTreeMap::new();
 
     for package_id in graph
         .lockfile_order
@@ -2451,13 +2709,16 @@ fn lockfile_v4_package_groups_from_validated_with_orders(
                 .cloned()
                 .unwrap_or_default(),
         };
+        let mut active_group = group.clone();
+        active_group.dep_alias_to_package_name = package.active_dep_alias_to_package_name.clone();
+        active_groups_by_id.insert(package.id.clone(), active_group);
         groups_by_id.insert(package.id.clone(), group);
     }
 
     let dependencies = dependency_order
         .iter()
         .filter(|package_id| *package_id != &graph.root_id && reachable.contains(*package_id))
-        .filter_map(|package_id| groups_by_id.get(package_id).cloned())
+        .filter_map(|package_id| active_groups_by_id.get(package_id).cloned())
         .collect::<Vec<_>>();
     let lockfile_dependencies = lockfile_order
         .iter()
@@ -2664,11 +2925,46 @@ fn manifest_plan_dependencies_from_move_toml(
                 dep_table,
                 parent_source,
             )?,
+            modes: manifest_plan_dependency_modes(package_name, dep_name, dep_table)?,
             subst: manifest_plan_dependency_subst(dep_table),
         });
     }
 
     Ok(dependencies)
+}
+
+fn manifest_plan_dependency_modes(
+    package_name: &str,
+    dep_name: &str,
+    dep_table: &toml::value::Table,
+) -> Result<Vec<String>, HelperError> {
+    let Some(modes_value) = dep_table.get("modes") else {
+        return Ok(vec![]);
+    };
+    let modes_array = modes_value.as_array().ok_or_else(|| {
+        HelperError::with_code(
+            "invalid_dependency_modes",
+            format!(
+                "Dependency '{}.{}' modes must be an array of strings",
+                package_name, dep_name
+            ),
+        )
+    })?;
+
+    let mut modes = Vec::new();
+    for mode in modes_array {
+        let mode = mode.as_str().ok_or_else(|| {
+            HelperError::with_code(
+                "invalid_dependency_modes",
+                format!(
+                    "Dependency '{}.{}' modes must be an array of strings",
+                    package_name, dep_name
+                ),
+            )
+        })?;
+        modes.push(mode.to_string());
+    }
+    Ok(modes)
 }
 
 fn manifest_plan_add_implicit_dependencies(
@@ -2698,6 +2994,7 @@ fn manifest_plan_add_implicit_dependencies(
             subdir: Some("crates/sui-framework/packages/sui-framework".to_string()),
             is_implicit: true,
         },
+        modes: vec![],
         subst: None,
     });
     Ok(())
@@ -2753,6 +3050,25 @@ fn manifest_graph_sort_dependencies(dependencies: &mut [ManifestPackagePlanDepen
             .cmp(&left_implicit)
             .then_with(|| left.name.cmp(&right.name))
     });
+}
+
+fn lockfile_v4_edge_matches_modes(edge: &LockfileV4ValidatedEdge, modes: &[String]) -> bool {
+    edge.modes.is_empty()
+        || edge
+            .modes
+            .iter()
+            .any(|dep_mode| modes.iter().any(|mode| mode == dep_mode))
+}
+
+fn lockfile_v4_active_edges(
+    edges: &[LockfileV4ValidatedEdge],
+    modes: &[String],
+) -> Vec<LockfileV4ValidatedEdge> {
+    edges
+        .iter()
+        .filter(|edge| lockfile_v4_edge_matches_modes(edge, modes))
+        .cloned()
+        .collect()
 }
 
 fn manifest_graph_plan_snapshot(
@@ -2895,11 +3211,11 @@ fn manifest_graph_add_package(
         };
 
         if let Some(target_id) = target_id {
-            resolved_edges.push((dependency.name, target_id));
+            resolved_edges.push((dependency.name, target_id, dependency.modes));
         }
     }
 
-    for (alias, target_id) in resolved_edges {
+    for (alias, target_id, modes) in resolved_edges {
         nodes[node_index]
             .dep_alias_to_package_name
             .insert(alias.clone(), target_id.clone());
@@ -2907,6 +3223,7 @@ fn manifest_graph_add_package(
             from: package_id.clone(),
             to: target_id,
             alias,
+            modes,
         });
     }
 
@@ -3139,7 +3456,17 @@ fn manifest_graph_resolve_package_groups_impl(
     }
 
     let lockfile_order = manifest_graph_lockfile_order(&root_id, &edges);
-    let compiler_order = manifest_graph_compiler_order(&root_id, &nodes, &edges);
+    let active_edges = lockfile_v4_active_edges(&edges, &input.modes);
+    let compiler_order = manifest_graph_compiler_order(&root_id, &nodes, &active_edges);
+    let active_aliases_by_from = active_edges.iter().fold(
+        BTreeMap::<String, BTreeSet<String>>::new(),
+        |mut acc, edge| {
+            acc.entry(edge.from.clone())
+                .or_default()
+                .insert(edge.alias.clone());
+            acc
+        },
+    );
     let node_by_id = nodes
         .iter()
         .map(|node| (node.id.clone(), node))
@@ -3166,6 +3493,17 @@ fn manifest_graph_resolve_package_groups_impl(
             source: node.source.clone(),
             manifest: node.manifest.clone(),
             dep_alias_to_package_name: node.dep_alias_to_package_name.clone(),
+            active_dep_alias_to_package_name: node
+                .dep_alias_to_package_name
+                .iter()
+                .filter(|(alias, _)| {
+                    active_aliases_by_from
+                        .get(&node.id)
+                        .map(|aliases| aliases.contains(*alias))
+                        .unwrap_or(false)
+                })
+                .map(|(alias, target_id)| (alias.clone(), target_id.clone()))
+                .collect(),
         });
     }
 
@@ -3176,13 +3514,14 @@ fn manifest_graph_resolve_package_groups_impl(
         environment: input.environment,
         root_package_name: root_id.clone(),
         root_move_toml,
+        modes: input.modes,
         packages: validate_packages,
     };
     let graph = LockfileV4ValidatedGraph {
         root_id,
         lockfile_order: lockfile_order.clone(),
         packages: validated_packages,
-        edges,
+        edges: active_edges,
     };
     let groups = lockfile_v4_package_groups_from_validated_with_orders(
         &validate_input,
@@ -3276,16 +3615,42 @@ pub fn lockfile_v4_resolve_package_groups(input_json: &str) -> String {
     }
 }
 
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum CompileIntent {
+    Dump,
+    Publish,
+    Upgrade,
+}
+
+impl Default for CompileIntent {
+    fn default() -> Self {
+        Self::Dump
+    }
+}
+
+impl CompileIntent {
+    fn root_as_zero(self) -> bool {
+        matches!(self, Self::Dump | Self::Upgrade)
+    }
+}
+
 #[derive(Deserialize, Default)]
-struct CompileOptions {
+struct WasmCompileOptions {
     #[serde(default, rename = "silenceWarnings")]
     silence_warnings: bool,
     #[serde(default, rename = "testMode")]
     test_mode: bool,
+    #[serde(default, rename = "withUnpublishedDependencies")]
+    with_unpublished_dependencies: bool,
+    #[serde(default)]
+    modes: Vec<String>,
     #[serde(default, rename = "lintFlag")]
     lint_flag: Option<String>,
     #[serde(default, rename = "ansiColor")]
     ansi_color: bool,
+    #[serde(default, rename = "compileIntent")]
+    compile_intent: CompileIntent,
 }
 
 fn parse_lint_level(lint_flag: Option<&str>) -> Result<LintLevel, String> {
@@ -3304,22 +3669,33 @@ struct CompilerBuildConfig {
     test_mode: bool,
     silence_warnings: bool,
     lint_level: LintLevel,
+    modes: Vec<Symbol>,
 }
 
 fn compiler_build_config(
     test_mode: bool,
     silence_warnings: bool,
     lint_level: LintLevel,
+    modes: Vec<String>,
 ) -> CompilerBuildConfig {
     CompilerBuildConfig {
         test_mode,
         silence_warnings,
         lint_level,
+        modes: modes
+            .into_iter()
+            .map(|mode| Symbol::from(mode.as_str()))
+            .collect(),
     }
 }
 
 fn compiler_flags_for_build_config(build_config: &CompilerBuildConfig) -> Flags {
-    let flags = if build_config.test_mode {
+    let flags = if build_config.test_mode
+        || build_config
+            .modes
+            .iter()
+            .any(|mode| mode.as_str() == "test")
+    {
         Flags::testing()
     } else {
         Flags::empty()
@@ -3329,7 +3705,7 @@ fn compiler_flags_for_build_config(build_config: &CompilerBuildConfig) -> Flags 
         .set_warnings_are_errors(false)
         .set_json_errors(false)
         .set_silence_warnings(build_config.silence_warnings)
-        .set_modes(Vec::new())
+        .set_modes(build_config.modes.clone())
 }
 
 fn configure_compiler_for_sui(compiler: Compiler, build_config: &CompilerBuildConfig) -> Compiler {

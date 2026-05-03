@@ -9,7 +9,7 @@ build = "build.rs"
 
 [features]
 default = []
-testing = ["dep:move-unit-test", "dep:sui-move-natives", "dep:move-vm-runtime"]
+testing = ["dep:move-unit-test", "dep:sui-move-natives", "dep:move-vm-config", "dep:move-vm-runtime"]
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
@@ -215,6 +215,7 @@ move-symbol-pool = { path = "vendor/move/crates/move-symbol-pool" }
 move-bytecode-utils = { path = "vendor/move/crates/move-bytecode-utils" }
 move-bytecode-verifier = { path = "vendor/move/crates/move-bytecode-verifier" }
 move-unit-test = { path = "vendor/move/crates/move-unit-test", optional = true }
+move-vm-config = { path = "vendor/move/crates/move-vm-config", optional = true }
 move-vm-runtime = { path = "vendor/move/crates/move-vm-runtime", optional = true }
 move-package-alt-compilation = { path = "vendor/move/crates/move-package-alt-compilation" }
 sui-move-natives = { path = "sui-execution/latest/sui-move-natives", package = "sui-move-natives-latest", optional = true }
@@ -236,8 +237,7 @@ errno = "=0.3.99"
 getrandom_02 = { package = "getrandom", version = "0.2.15", features = ["js"] }
 getrandom_03 = { package = "getrandom", version = "0.3.4", features = ["wasm_js"] }
 colored = "2.0.0"
-# We need to ensure we don't pull in things that break WASM
-# For now, we rely on workspace dependencies but might need to pin specific WASM-compatible versions if issues arise.
+# Workspace dependencies supply the pinned WASM-compatible dependency set.
 
 
 [dev-dependencies]

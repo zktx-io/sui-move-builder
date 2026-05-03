@@ -8,7 +8,7 @@ import init, {
 const wasmBytes = await readFile(
   new URL("../../dist/full/sui_move_wasm_bg.wasm", import.meta.url)
 );
-await init(wasmBytes);
+await init({ module_or_path: wasmBytes });
 
 function digestFromJson(deps) {
   return compute_manifest_digest(JSON.stringify({ deps }));

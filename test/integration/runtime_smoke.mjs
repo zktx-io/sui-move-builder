@@ -21,18 +21,53 @@ const variants = [
   },
 ];
 
+const supportedApi = new Set([
+  "MovePackageFetcher",
+  "GitHubMovePackageFetcher",
+  "dumpMovePackage",
+  "fetchMovePackageFromGitHub",
+  "getPinnedSuiMoveVersion",
+  "getPinnedSuiVersion",
+  "initMovePackageBuilder",
+  "prepareMovePackagePublish",
+  "prepareMovePackageUpgrade",
+  "resolveMovePackageDependencies",
+  "testMovePackage",
+]);
+
 for (const variant of variants) {
   const mod = await variant.load();
 
-  if (typeof mod.initMoveCompiler !== "function") {
-    throw new Error(`${variant.name}: missing initMoveCompiler export`);
-  }
-  if (typeof mod.getSuiVersion !== "function") {
-    throw new Error(`${variant.name}: missing getSuiVersion export`);
+  for (const exportedName of Object.keys(mod)) {
+    if (!supportedApi.has(exportedName)) {
+      throw new Error(
+        `${variant.name}: unexpected public export ${exportedName}`
+      );
+    }
   }
 
-  await mod.initMoveCompiler();
-  const version = await mod.getSuiVersion();
+  if (typeof mod.initMovePackageBuilder !== "function") {
+    throw new Error(`${variant.name}: missing initMovePackageBuilder export`);
+  }
+  if (typeof mod.getPinnedSuiVersion !== "function") {
+    throw new Error(`${variant.name}: missing getPinnedSuiVersion export`);
+  }
+  if (typeof mod.dumpMovePackage !== "function") {
+    throw new Error(`${variant.name}: missing dumpMovePackage export`);
+  }
+  if (typeof mod.prepareMovePackagePublish !== "function") {
+    throw new Error(
+      `${variant.name}: missing prepareMovePackagePublish export`
+    );
+  }
+  if (typeof mod.prepareMovePackageUpgrade !== "function") {
+    throw new Error(
+      `${variant.name}: missing prepareMovePackageUpgrade export`
+    );
+  }
+
+  await mod.initMovePackageBuilder();
+  const version = await mod.getPinnedSuiVersion();
   if (!/^\d+\.\d+\.\d+/.test(version)) {
     throw new Error(`${variant.name}: unexpected Sui version '${version}'`);
   }

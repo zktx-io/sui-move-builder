@@ -1,7 +1,7 @@
 /**
  * Move.lock V4 Generator
  *
- * Wraps the Rust/WASM V4 lockfile generator used by buildMovePackage.
+ * Wraps the Rust/WASM V4 lockfile generator used by dumpMovePackage.
  *
  * ORIGINAL SOURCE REFERENCES:
  * - move-package-alt/src/graph/to_lockfile.rs - PackageGraph::to_pins() generates lockfile pins
@@ -60,7 +60,8 @@ export function generateMoveLockV4FromJson(
   rootDepAliasToPackageName?: Record<string, string>,
   existingLockfile?: string, // ORIGINAL: root_package.rs:269-283 - CLI reads existing lockfile and preserves other environments
   rustGenerateFn?: LockfileV4GenerateFn,
-  rootFiles?: Record<string, string>
+  rootFiles?: Record<string, string>,
+  modes: string[] = []
 ): string {
   if (!rustGenerateFn) {
     throw new Error("Rust lockfile_v4_generate helper is required");
@@ -89,6 +90,7 @@ export function generateMoveLockV4FromJson(
     const input = {
       environment,
       existingLockfile,
+      modes,
       root: {
         id: rootPackageName,
         source: { type: "root" },

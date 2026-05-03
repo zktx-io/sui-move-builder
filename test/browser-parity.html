@@ -548,12 +548,12 @@
 
           log(`Importing dist/${mode}/index.js`);
           const mod = await import(`/dist/${mode}/index.js`);
-          await mod.initMoveCompiler();
-          const version = await mod.getSuiVersion();
+          await mod.initMovePackageBuilder();
+          const version = await mod.getPinnedSuiVersion();
           log(`WASM compiler version: ${version}`);
 
           log("Building in browser");
-          const wasmResult = await mod.buildMovePackage({
+          const wasmResult = await mod.dumpMovePackage({
             files: loaded.files,
             rootGit: loaded.rootGit,
             network,

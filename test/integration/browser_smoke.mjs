@@ -103,9 +103,9 @@ function html() {
     <pre id="out">running</pre>
     <script type="module">
       import {
-        initMoveCompiler,
-        getSuiVersion,
-        buildMovePackage,
+        initMovePackageBuilder,
+        getPinnedSuiVersion,
+        dumpMovePackage,
       } from "/dist/${mode}/index.js";
 
       const out = document.getElementById("out");
@@ -146,10 +146,10 @@ function html() {
       };
 
       try {
-        await initMoveCompiler();
-        const version = await getSuiVersion();
+        await initMovePackageBuilder();
+        const version = await getPinnedSuiVersion();
         const files = await readPackage(packageSubdir);
-        const result = await buildMovePackage({
+        const result = await dumpMovePackage({
           files,
           fetcher,
           rootGit: {

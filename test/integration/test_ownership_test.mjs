@@ -1,8 +1,8 @@
-const { initMoveCompiler, testMovePackage } = await import(
+const { initMovePackageBuilder, testMovePackage } = await import(
   new URL("../../dist/full/index.js", import.meta.url)
 );
 
-await initMoveCompiler();
+await initMovePackageBuilder();
 
 const DEP_ID =
   "0x000000000000000000000000000000000000000000000000000000000000cafe";

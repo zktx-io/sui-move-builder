@@ -41,6 +41,8 @@ pub struct PackageInfo {
     pub flavor: Option<Flavor>,
     #[serde(rename = "published-at")]
     pub published_at: Option<String>,
+    #[serde(rename = "original-id")]
+    pub original_id: Option<String>,
     #[serde(default)]
     pub custom_properties: BTreeMap<Symbol, String>,
 }

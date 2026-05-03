@@ -9,7 +9,7 @@ import {
   run,
   runCapture,
 } from "./sui-workspace.mjs";
-import { loadTemplateManifest } from "./wasm/template-manifest.mjs";
+import { loadCompatManifest } from "./wasm/compat-manifest.mjs";
 import {
   createWasmBuildContext,
   deletePatchState,
@@ -23,7 +23,7 @@ const {
   suiBuildConfig,
   suiWorkDir,
   localSourceDir,
-  templatesDir,
+  compatDir,
   generatedStubsDir,
   generatedVendorDir,
   localBinDir,
@@ -99,18 +99,18 @@ async function main() {
       throw new Error(`Unknown build arguments: ${restArgs.join(" ")}`);
     }
 
-    if (!(await dirExists(templatesDir))) {
+    if (!(await dirExists(compatDir))) {
       throw new Error(
-        `Missing WASM compatibility templates: ${templatesDir}. ` +
-          `Port scripts/templates for ${suiBuildConfig.displayRef} or set templateVersion in sui-version.json intentionally.`
+        `Missing WASM compatibility overlay: ${compatDir}. ` +
+          `Refresh scripts/compat for ${suiBuildConfig.displayRef} before running prepare.`
       );
     }
 
-    const templateManifest = await loadTemplateManifest(templatesDir);
-    const stubTemplates = templateManifest.stubTemplates;
-    const offendingCrates = templateManifest.offendingCrates;
-    const emptyStubCrates = new Set(templateManifest.emptyStubCrates || []);
-    const filePatches = templateManifest.filePatches;
+    const compatManifest = await loadCompatManifest(compatDir);
+    const stubTemplates = compatManifest.stubTemplates;
+    const offendingCrates = compatManifest.offendingCrates;
+    const emptyStubCrates = new Set(compatManifest.emptyStubCrates || []);
+    const filePatches = compatManifest.filePatches;
 
     // 1. Keep a pristine Sui checkout, then create a disposable patched worktree.
     await ensureSuiSourceCheckout(suiBuildConfig);
@@ -339,7 +339,7 @@ async function main() {
       ).concat(["0.1.16", "0.3.4"]);
       const zstdVers = ["0.11.2+zstd.1.5.2", "0.12.3", "0.13.3"];
 
-      // Templates loaded above
+      // Compat sources loaded above.
 
       const allStubConfigs = [
         {
@@ -353,25 +353,25 @@ async function main() {
           vers: rustixVers,
           features:
             "std = []\nstdio = []\nfs = []\nnet = []\nprocess = []\nparam = []\ntermios = []\ntime = []\nrand = []",
-          template: "rustix",
+          compatSource: "rustix",
         },
         {
           name: "errno",
           vers: errnoVers,
           features: "std = []",
-          template: "errno",
+          compatSource: "errno",
         },
         {
           name: "getrandom",
           vers: getrandomVers,
           features: "wasm_js = []\njs = []\nstd = []",
-          template: "getrandom",
+          compatSource: "getrandom",
         },
         {
           name: "zstd",
           vers: zstdVers,
           features: "no_asm = []\nstd = []",
-          template: "zstd",
+          compatSource: "zstd",
         },
       ];
 
@@ -387,10 +387,10 @@ async function main() {
           await fs.writeFile(path.join(sDir, "Cargo.toml"), cargo);
 
           const libPath = path.join(sDir, "src", "lib.rs");
-          // Always refresh core stub sources from the selected templates.
-          if (cfg.template) {
+          // Always refresh core stub sources from the compat overlay.
+          if (cfg.compatSource) {
             await fs.copyFile(
-              path.join(templatesDir, `${cfg.template}.rs`),
+              path.join(compatDir, `${cfg.compatSource}.rs`),
               libPath
             );
           } else {
@@ -400,21 +400,21 @@ async function main() {
       }
 
       // 5.2 Explicitly generate hollow stubs for non-vendor workspace dependencies
-      const workspaceStubs = [{ name: "stacker", template: "stacker" }];
-      // Generate blst, secp256k1, and rayon stubs from selected templates.
+      const workspaceStubs = [{ name: "stacker", compatSource: "stacker" }];
+      // Generate blst, secp256k1, and rayon stubs from compat overlay.
       const cryptoStubs = [
         {
           name: "blst-wasm-stub",
           pkgName: "blst",
           version: buildConfig.versions.blst,
-          template: "blst_lib",
+          compatSource: "blst_lib",
           features: "std = []\nalloc = []",
         },
         {
           name: "secp256k1-hollow-stub",
           pkgName: "secp256k1",
           version: buildConfig.versions.secp256k1_hollow,
-          template: "secp256k1_lib",
+          compatSource: "secp256k1_lib",
           features:
             'rand = ["dep:rand"]\nstd = []\nalloc = []\nrecovery = []\nglobal-context = []\nserde = ["dep:serde", "k256/serde"]\nbitcoin_hashes = []\nrand-std = ["rand", "rand/std"]\n\n[dependencies]\nserde = { version = "1.0", optional = true, features = ["derive"] }\nrand = { version = "0.8", optional = true, default-features = false }\nk256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic", "schnorr", "sha256", "serde", "pkcs8"] }',
         },
@@ -422,7 +422,7 @@ async function main() {
           name: "rayon-stub",
           pkgName: "rayon",
           version: buildConfig.versions.rayon,
-          template: "rayon_lib",
+          compatSource: "rayon_lib",
           features: "",
         },
       ];
@@ -439,7 +439,7 @@ async function main() {
           `[package]\nname = "${st.pkgName}"\nversion = "${st.version}"\nedition = "2021"\n[lib]\npath = "src/lib.rs"\n[features]\n${feats}`
         );
         await fs.copyFile(
-          path.join(templatesDir, `${st.template}.rs`),
+          path.join(compatDir, `${st.compatSource}.rs`),
           path.join(sDir, "src", "lib.rs")
         );
       }
@@ -454,7 +454,7 @@ async function main() {
             `[package]\nname = "${st.name}"\nversion = "0.0.0"\nedition = "2021"\n[lib]\npath = "src/lib.rs"`
           );
           await fs.copyFile(
-            path.join(templatesDir, `${st.template}.rs`),
+            path.join(compatDir, `${st.compatSource}.rs`),
             path.join(sDir, "src", "lib.rs")
           );
         }
@@ -511,13 +511,30 @@ async function main() {
       );
       if (await fs.stat(fcSecp256r1).catch(() => false)) {
         console.log(
-          "Patching fastcrypto secp256r1/mod.rs with selected template..."
+          "Patching fastcrypto secp256r1/mod.rs with compat source..."
         );
-        const templatePath = path.join(
-          templatesDir,
+        const compatPath = path.join(
+          compatDir,
           filePatches.fastcryptoSecp256r1Mod
         );
-        await fs.copyFile(templatePath, fcSecp256r1);
+        await fs.copyFile(compatPath, fcSecp256r1);
+      }
+      const fcRistretto255 = path.join(
+        fcDir,
+        "fastcrypto",
+        "src",
+        "groups",
+        "ristretto255.rs"
+      );
+      if (await fs.stat(fcRistretto255).catch(() => false)) {
+        console.log(
+          "Patching fastcrypto groups/ristretto255.rs with compat source..."
+        );
+        const compatPath = path.join(
+          compatDir,
+          filePatches.fastcryptoRistretto255Mod
+        );
+        await fs.copyFile(compatPath, fcRistretto255);
       }
 
       // Apply vendored manifest redirects on each prepare run.
@@ -582,7 +599,7 @@ fastcrypto-vdf = { path = "${path.join(fcDir, "fastcrypto-vdf")}" }
           );
       }
 
-      // Inject release profile for Wasm optimization (Task 6)
+      // Inject the release profile used for WASM optimization.
       if (workspaceToml === path.join(suiWorkDir, "Cargo.toml")) {
         const profileRelease = `
 [profile.release]
@@ -730,7 +747,7 @@ panic = "abort"
       );
       await fs.writeFile(suiTypesLib, content);
 
-      // Remove RPC dependencies from Cargo.toml to prevent feature resolution issues
+      // Remove native RPC transport dependencies from Cargo.toml.
       const suiTypesCargo = path.join(
         suiWorkDir,
         "crates/sui-types/Cargo.toml"
@@ -745,10 +762,6 @@ panic = "abort"
         cargoContent = cargoContent.replace(
           /^prost\.workspace = true/gm,
           "# prost.workspace = true"
-        );
-        cargoContent = cargoContent.replace(
-          /^sui-rpc\.workspace = true/gm,
-          "# sui-rpc.workspace = true"
         );
         await fs.writeFile(suiTypesCargo, cargoContent);
       }
@@ -791,9 +804,9 @@ panic = "abort"
         );
         if (await dirExists(nativesSrc)) {
           console.log(`  Stubbing nitro_attestation in ${v}...`);
-          // Apply the nitro_attestation compatibility template.
+          // Apply the nitro_attestation compatibility overlay.
           await fs.copyFile(
-            path.join(templatesDir, filePatches.nitroAttestation),
+            path.join(compatDir, filePatches.nitroAttestation),
             path.join(nativesSrc, "crypto/nitro_attestation.rs")
           );
 
@@ -883,7 +896,7 @@ panic = "abort"
       }
     }
 
-    // 4.3 Patch move-unit-test to DISABLE THREADING (Wasm crash fix)
+    // Apply the move-unit-test runner replacement declared in the compat manifest.
     const moveUnitTestRunner = path.join(
       suiWorkDir,
       "external-crates",
@@ -894,7 +907,7 @@ panic = "abort"
       "test_runner.rs"
     );
     const patchedRunnerStub = path.join(
-      templatesDir,
+      compatDir,
       filePatches.moveUnitTestRunner
     );
 
@@ -914,13 +927,87 @@ panic = "abort"
     }
     if (!sourceExists) {
       throw new Error(
-        `Missing move-unit-test runner patch template: ${patchedRunnerStub}`
+        `Missing move-unit-test runner patch compatSource: ${patchedRunnerStub}`
       );
     }
-    console.log(
-      "Forcibly overwriting move-unit-test/src/test_runner.rs with patched version..."
-    );
+    console.log("Applying move-unit-test/src/test_runner.rs compat source...");
     await fs.copyFile(patchedRunnerStub, moveUnitTestRunner);
+
+    const moveVmRuntimeSrc = path.join(
+      suiWorkDir,
+      "external-crates",
+      "move",
+      "crates",
+      "move-vm-runtime",
+      "src"
+    );
+    const moveVmRuntimeLib = path.join(moveVmRuntimeSrc, "lib.rs");
+    if (await fs.stat(moveVmRuntimeLib).catch(() => false)) {
+      let content = await fs.readFile(moveVmRuntimeLib, "utf8");
+      content = content.replace(
+        '#[cfg(not(target_pointer_width = "64"))]\ncompile_error!("This code requires a 64-bit target");',
+        '#[cfg(all(not(target_arch = "wasm32"), not(target_pointer_width = "64")))]\ncompile_error!("This code requires a 64-bit target");'
+      );
+      await fs.writeFile(moveVmRuntimeLib, content);
+    }
+    const moveVmRuntimeConstants = path.join(
+      moveVmRuntimeSrc,
+      "shared",
+      "constants.rs"
+    );
+    if (await fs.stat(moveVmRuntimeConstants).catch(() => false)) {
+      let content = await fs.readFile(moveVmRuntimeConstants, "utf8");
+      content = content.replace(
+        "pub const IDENTIFIER_INTERNER_SIZE_LIMIT: usize = 10_000_000_000;",
+        [
+          '#[cfg(target_pointer_width = "64")]',
+          "pub const IDENTIFIER_INTERNER_SIZE_LIMIT: usize = 10_000_000_000;",
+          '#[cfg(not(target_pointer_width = "64"))]',
+          "pub const IDENTIFIER_INTERNER_SIZE_LIMIT: usize = usize::MAX;",
+        ].join("\n")
+      );
+      await fs.writeFile(moveVmRuntimeConstants, content);
+    }
+    const moveVmRuntimeTelemetry = path.join(
+      moveVmRuntimeSrc,
+      "runtime",
+      "telemetry.rs"
+    );
+    if (await fs.stat(moveVmRuntimeTelemetry).catch(() => false)) {
+      let content = await fs.readFile(moveVmRuntimeTelemetry, "utf8");
+      content = content
+        .replace(
+          "use crate::cache::move_cache::MoveCache;\n",
+          [
+            "use crate::cache::move_cache::MoveCache;",
+            "",
+            '#[cfg(target_arch = "wasm32")]',
+            "#[derive(Clone, Copy)]",
+            "struct RuntimeInstant;",
+            "",
+            '#[cfg(target_arch = "wasm32")]',
+            "impl RuntimeInstant {",
+            "    fn now() -> Self {",
+            "        Self",
+            "    }",
+            "",
+            "    fn elapsed(&self) -> Duration {",
+            "        Duration::new(0, 0)",
+            "    }",
+            "}",
+            "",
+            '#[cfg(not(target_arch = "wasm32"))]',
+            "type RuntimeInstant = std::time::Instant;",
+            "",
+          ].join("\n")
+        )
+        .replace(
+          "start_time: std::time::Instant,",
+          "start_time: RuntimeInstant,"
+        )
+        .replaceAll("std::time::Instant::now()", "RuntimeInstant::now()");
+      await fs.writeFile(moveVmRuntimeTelemetry, content);
+    }
 
     // Patch Cargo.toml files for WASM compatibility.
     console.log("Patching all Cargo.toml files for Wasm compatibility...");
@@ -978,7 +1065,7 @@ panic = "abort"
               generatedStubsDir,
               `${item}-hollow-stub`
             );
-            // Generate named stub from the selected template.
+            // Generate named stub from the compat source.
             await fs.mkdir(namedStubDir, { recursive: true });
             await fs.mkdir(path.join(namedStubDir, "src"), { recursive: true });
 
@@ -1014,23 +1101,23 @@ panic = "abort"
                 `[package]\nname = "${item}"\nversion = "0.1.0"\nedition = "2021"\n${extraConfig}`
               );
 
-              // Copy declared templates or explicit empty stubs only.
-              const templateName = stubTemplates[item];
+              // Copy declared compat sources or explicit empty stubs only.
+              const compatName = stubTemplates[item];
               const destPath = path.join(namedStubDir, "src", "lib.rs");
-              if (templateName) {
-                const srcPath = path.join(templatesDir, `${templateName}.rs`);
+              if (compatName) {
+                const srcPath = path.join(compatDir, `${compatName}.rs`);
                 try {
                   await fs.copyFile(srcPath, destPath);
                 } catch (error) {
                   throw new Error(
-                    `Failed to copy declared template ${templateName} for ${item} from ${srcPath}: ${error.message}`
+                    `Failed to copy declared compat source ${compatName} for ${item} from ${srcPath}: ${error.message}`
                   );
                 }
               } else if (emptyStubCrates.has(item)) {
                 await fs.writeFile(destPath, `pub fn stub() {}`);
               } else {
                 throw new Error(
-                  `No stub template or explicit empty stub declaration for ${item} in ${templateManifest.manifestPath}`
+                  `No compat source or explicit empty stub declaration for ${item} in ${compatManifest.manifestPath}`
                 );
               }
             }
@@ -1206,7 +1293,7 @@ panic = "abort"
             if (regex.test(content)) {
               content = content.replace(regex, (match) => {
                 const isOptional = match.includes("optional = true");
-                return `reqwest = { version = "0.12.9", default-features = false, features = ["json", "blocking"]${isOptional ? ", optional = true" : ""} }`;
+                return `reqwest = { version = "=0.12.9", default-features = false, features = ["json", "blocking"]${isOptional ? ", optional = true" : ""} }`;
               });
               changed = true;
             }

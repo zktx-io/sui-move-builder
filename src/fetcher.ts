@@ -1,4 +1,4 @@
-export interface FetchLocalContext {
+export interface MovePackageFetchLocalContext {
   dependencyName: string;
   parentPackageName: string;
   parentSource?: {
@@ -12,7 +12,7 @@ export interface FetchLocalContext {
 }
 
 /** Abstract interface for fetching package content. */
-export class Fetcher {
+export class MovePackageFetcher {
   /**
    * Optional host-provided local package loader.
    *
@@ -22,7 +22,7 @@ export class Fetcher {
    */
   fetchLocal?: (
     localPath: string,
-    context: FetchLocalContext
+    context: MovePackageFetchLocalContext
   ) => Promise<Record<string, string>>;
 
   /** Fetch a package. Return map of path -> content. */
@@ -49,8 +49,8 @@ export class Fetcher {
   }
 }
 
-/** Fetcher that retrieves files from public GitHub repositories via fetch(). */
-export class GitHubFetcher extends Fetcher {
+/** MovePackageFetcher that retrieves files from public GitHub repositories via fetch(). */
+export class GitHubMovePackageFetcher extends MovePackageFetcher {
   private cache: Map<string, string>;
   private treeCache: Map<string, any>; // Cache tree API responses
   private resolvedShaCache: Map<string, string>; // Cache resolved commit SHAs

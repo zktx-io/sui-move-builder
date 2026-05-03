@@ -1,12 +1,12 @@
 use move_binary_format::errors::PartialVMResult;
-use move_vm_runtime::native_functions::NativeContext;
-use move_vm_types::{
-    loaded_data::runtime_types::Type,
-    natives::function::NativeResult,
-    values::Value,
-};
 use move_core_types::gas_algebra::InternalGas;
+use move_vm_runtime::{
+    execution::{Type, values::Value},
+    natives::functions::{NativeContext, NativeResult},
+};
 use std::collections::VecDeque;
+
+pub const NOT_SUPPORTED_ERROR: u64 = 0;
 
 #[derive(Clone)]
 pub struct NitroAttestationCostParams {
@@ -21,9 +21,7 @@ pub fn load_nitro_attestation_internal(
     _ty_args: Vec<Type>,
     mut args: VecDeque<Value>,
 ) -> PartialVMResult<NativeResult> {
-    // Pop args
-    let _ = args.pop_back(); 
     let _ = args.pop_back();
-    // Return ENotSupportedError (0)
-    Ok(NativeResult::err(context.gas_used(), 0))
+    let _ = args.pop_back();
+    Ok(NativeResult::err(context.gas_used(), NOT_SUPPORTED_ERROR))
 }

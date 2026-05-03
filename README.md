@@ -38,8 +38,10 @@ The package is published with two generated variants:
 
 ```ts
 import {
-  initMoveCompiler,
-  buildMovePackage,
+  initMovePackageBuilder,
+  dumpMovePackage,
+  prepareMovePackagePublish,
+  prepareMovePackageUpgrade,
   testMovePackage,
 } from "@zktx.io/sui-move-builder";
 ```
@@ -48,18 +50,23 @@ import {
 
 ```ts
 import {
-  initMoveCompiler,
-  buildMovePackage,
+  initMovePackageBuilder,
+  dumpMovePackage,
+  prepareMovePackagePublish,
+  prepareMovePackageUpgrade,
 } from "@zktx.io/sui-move-builder/lite";
 ```
 
 ## Quick start (Node.js or browser)
 
 ```ts
-import { initMoveCompiler, buildMovePackage } from "@zktx.io/sui-move-builder";
+import {
+  initMovePackageBuilder,
+  dumpMovePackage,
+} from "@zktx.io/sui-move-builder";
 
 // 1) Load the WASM once
-await initMoveCompiler();
+await initMovePackageBuilder();
 
 // 2) Prepare files as an in-memory folder (Move.toml + sources/*)
 const files = {
@@ -78,8 +85,8 @@ module hello_world::hello_world {
 `,
 };
 
-// 3) Compile
-const result = await buildMovePackage({
+// 3) Prepare CLI dump-style bytecode output
+const result = await dumpMovePackage({
   files,
   // optional: silence warnings from Move compiler (default: false)
   silenceWarnings: false,
@@ -119,21 +126,33 @@ The same package is intended for browser use. The lite build is usually the bett
 
 ```ts
 import {
-  initMoveCompiler,
-  buildMovePackage,
+  initMovePackageBuilder,
+  dumpMovePackage,
 } from "@zktx.io/sui-move-builder/lite";
 
-await initMoveCompiler();
-const result = await buildMovePackage({ files });
+await initMovePackageBuilder();
+const result = await dumpMovePackage({ files });
 ```
 
 Modern bundlers normally serve the bundled `sui_move_wasm_bg.wasm` next to the generated JS. If you host the WASM file yourself, pass its URL explicitly:
 
 ```ts
-await initMoveCompiler({
+await initMovePackageBuilder({
   wasm: new URL("/assets/sui_move_wasm_bg.wasm", window.location.origin),
 });
 ```
+
+## Package preparation APIs
+
+The package exposes intent-specific preparation APIs:
+
+| API                         | Purpose                                                                |
+| --------------------------- | ---------------------------------------------------------------------- |
+| `dumpMovePackage`           | Prepare CLI dump-style `{ modules, dependencies, digest }` output      |
+| `prepareMovePackagePublish` | Prepare modules, dependency IDs, and digest for a publish payload      |
+| `prepareMovePackageUpgrade` | Prepare modules, dependency IDs, digest, and package ID for an upgrade |
+
+These APIs do not sign transactions, choose gas/payment, build a complete PTB, dry-run, execute, or update on-chain publication records. Publish and upgrade preparation reject `testMode`.
 
 ## Running Tests
 
@@ -157,48 +176,52 @@ if ("error" in result) {
 }
 ```
 
-### Build Options (`BuildInput`)
+### Build Options (`MovePackageInput`)
 
-| Option            | Type                                 | Description                                                                                         |
-| :---------------- | :----------------------------------- | :-------------------------------------------------------------------------------------------------- |
-| `files`           | `Record<string, string>`             | **Required**. Virtual file system with `Move.toml` and sources                                      |
-| `network`         | `"mainnet" \| "testnet" \| "devnet"` | Network environment (default: `"mainnet"`)                                                          |
-| `githubToken`     | `string`                             | GitHub API token to increase rate limits                                                            |
-| `fetcher`         | `Fetcher`                            | Optional host loader for git and local dependency package snapshots                                 |
-| `silenceWarnings` | `boolean`                            | Suppress compiler warnings (default: `false`)                                                       |
-| `testMode`        | `boolean`                            | Compile in test mode (include `#[test_only]` modules)                                               |
-| `lintFlag`        | `"none" \| "default" \| "all"`       | Move compiler lint level. Defaults to `"none"`                                                      |
-| `ansiColor`       | `boolean`                            | Enable ANSI color codes in output                                                                   |
-| `stripMetadata`   | `boolean`                            | Reserved for metadata stripping; currently passed through but not applied by the WASM compiler path |
-| `onProgress`      | `(event) => void`                    | Callback for build progress events                                                                  |
+| Option                        | Type                                 | Description                                                                                         |
+| :---------------------------- | :----------------------------------- | :-------------------------------------------------------------------------------------------------- |
+| `files`                       | `Record<string, string>`             | **Required**. Virtual file system with `Move.toml` and sources                                      |
+| `network`                     | `"mainnet" \| "testnet" \| "devnet"` | Network environment (default: `"mainnet"`)                                                          |
+| `githubToken`                 | `string`                             | GitHub API token to increase rate limits                                                            |
+| `fetcher`                     | `MovePackageFetcher`                 | Optional host loader for git and local dependency package snapshots                                 |
+| `silenceWarnings`             | `boolean`                            | Suppress compiler warnings (default: `false`)                                                       |
+| `testMode`                    | `boolean`                            | Compile in test mode (include `#[test_only]` modules)                                               |
+| `withUnpublishedDependencies` | `boolean`                            | Compile unpublished dependencies as `0x0` package IDs                                               |
+| `modes`                       | `string[]`                           | Move compiler modes, equivalent to CLI `--mode` values                                              |
+| `lintFlag`                    | `"none" \| "default" \| "all"`       | Move compiler lint level. Defaults to `"none"`                                                      |
+| `ansiColor`                   | `boolean`                            | Enable ANSI color codes in output                                                                   |
+| `stripMetadata`               | `boolean`                            | Reserved for metadata stripping; currently passed through but not applied by the WASM compiler path |
+| `onProgress`                  | `(event) => void`                    | Callback for build progress events                                                                  |
 
 ### Build Output Reference
 
-| Field           | Type       | Description                                       |
-| --------------- | ---------- | ------------------------------------------------- |
-| `modules`       | `string[]` | Base64-encoded compiled bytecode modules          |
-| `dependencies`  | `string[]` | Hex-encoded package IDs for linking               |
-| `digest`        | `number[]` | Package digest bytes (32 bytes)                   |
-| `moveLock`      | `string`   | Generated Move.lock V4 content                    |
-| `environment`   | `string`   | Build environment (e.g., "mainnet", "testnet")    |
-| `publishedToml` | `string?`  | Migrated Published.toml from supported V3 records |
-| `warnings`      | `string?`  | Compiler warnings (if `silenceWarnings: false`)   |
+| Field           | Type       | Description                                                |
+| --------------- | ---------- | ---------------------------------------------------------- |
+| `modules`       | `string[]` | Base64-encoded compiled bytecode modules                   |
+| `dependencies`  | `string[]` | Hex-encoded package IDs for linking                        |
+| `digest`        | `number[]` | Package digest bytes (32 bytes)                            |
+| `moveLock`      | `string`   | Generated Move.lock V4 content                             |
+| `environment`   | `string`   | Build environment (e.g., "mainnet", "testnet")             |
+| `intent`        | `string`   | Preparation intent: `dump`, `publish`, or `upgrade`        |
+| `packageId`     | `string?`  | Upgrade package ID returned by `prepareMovePackageUpgrade` |
+| `publishedToml` | `string?`  | Migrated Published.toml from supported V3 records          |
+| `warnings`      | `string?`  | Compiler warnings (if `silenceWarnings: false`)            |
 
-Build and test failures return `{ error, category, code? }`. The `category` value is a broad stage label such as `dependency_resolution`, `compile`, `compiler_output`, `lockfile_generation`, `test_runner`, `wasm_init`, or `unknown`; the `error` string remains the detailed diagnostic. `code` is present only when a Rust/WASM helper produced a structured failure code.
+Build and test failures return `{ error, category, code? }`. The `category` value is a broad stage label such as `dependency_resolution`, `input_validation`, `compile`, `compiler_output`, `lockfile_generation`, `test_runner`, `wasm_init`, or `unknown`; the `error` string remains the detailed diagnostic. `code` is present only when a Rust/WASM helper produced a structured failure code.
 
 ## Fetching packages from GitHub
 
 ```ts
 import {
-  fetchPackageFromGitHub,
-  buildMovePackage,
-  initMoveCompiler,
+  fetchMovePackageFromGitHub,
+  dumpMovePackage,
+  initMovePackageBuilder,
 } from "@zktx.io/sui-move-builder";
 
-await initMoveCompiler();
+await initMovePackageBuilder();
 
 // Fetch a package from GitHub URL
-const files = await fetchPackageFromGitHub(
+const files = await fetchMovePackageFromGitHub(
   "https://github.com/MystenLabs/sui/tree/framework/mainnet/crates/sui-framework/packages/sui-framework",
   {
     githubToken: process.env.GITHUB_TOKEN, // optional
@@ -206,7 +229,7 @@ const files = await fetchPackageFromGitHub(
 );
 
 // Compile directly
-const result = await buildMovePackage({
+const result = await dumpMovePackage({
   files,
   githubToken: process.env.GITHUB_TOKEN, // optional
 });
@@ -224,9 +247,12 @@ Dependencies are resolved from the package inputs and, where possible, follow th
 6. **Generates lockfile metadata**: V4 output includes computed manifest digests, and V4 pin loading checks manifest digests through the Rust/WASM helper before trusting a lockfile.
 
 ```ts
-import { initMoveCompiler, buildMovePackage } from "@zktx.io/sui-move-builder";
+import {
+  initMovePackageBuilder,
+  dumpMovePackage,
+} from "@zktx.io/sui-move-builder";
 
-await initMoveCompiler();
+await initMovePackageBuilder();
 
 const files = {
   "Move.toml": `
@@ -240,7 +266,7 @@ dep_name = { git = "https://github.com/org/repo.git", subdir = "packages/dep_nam
   "sources/main.move": "...",
 };
 
-const result = await buildMovePackage({ files });
+const result = await dumpMovePackage({ files });
 
 if ("error" in result) {
   console.error("Build failed:", result.error);
@@ -259,9 +285,8 @@ The WASM build is split into a preparation step and a prepared build step:
 npm run prepare:wasm
 npm run build:wasm:prepared:lite # builds dist/lite from prepared state
 npm run build:wasm:prepared:full # builds dist/full from prepared state
-npm run build:wasm:prepared:all  # builds both variants from prepared state
-npm run build:wasm:prepared      # alias for build:wasm:prepared:all
-npm run build:wasm          # compatibility script: prepare + prepared build
+npm run build:wasm:prepared      # builds both variants from prepared state
+npm run build:wasm          # prepare + prepared build
 npm run build               # WASM build + JS package build
 npm run release:check       # typecheck + lint + format check + tests
 ```
@@ -278,9 +303,9 @@ The build keeps the upstream Sui checkout separate from generated and patched st
 - `.sui-build/patch-state.json`: successful prepare marker checked by `build:wasm:prepared`
 - `dist/full` and `dist/lite`: generated npm artifacts
 
-Only edit tracked project sources such as `src/`, `sui-move-wasm/`, and `scripts/templates/`. The `.sui-build/` directory is ignored build/cache state and can be removed with `npm run clean` together with `dist/`. Set `SUI_SOURCE_DIR` or `SUI_WORK_DIR` only when you intentionally want those directories somewhere else.
+Only edit tracked project sources such as `src/`, `sui-move-wasm/`, and `scripts/compat/`. The `.sui-build/` directory is ignored build/cache state and can be removed with `npm run clean` together with `dist/`. Set `SUI_SOURCE_DIR` or `SUI_WORK_DIR` only when you intentionally want those directories somewhere else.
 
-Each Sui version needs a matching `scripts/templates/v<version>/` WASM compatibility template set with a `manifest.json` checked by `prepare:wasm`. `npm run build:wasm` fails before modifying the worktree if the selected version has not been ported yet.
+The active `scripts/compat/` directory is the WASM compatibility overlay for the pinned Sui version. Its `manifest.json` is checked by `prepare:wasm`. `npm run build:wasm` fails before modifying the worktree if the active overlay is missing required compat files.
 
 The default patched baseline is the version in `sui-version.json`. For an intentional port to another Sui release, override it explicitly:
 
@@ -290,7 +315,7 @@ SUI_VERSION=1.x.y SUI_TAG=mainnet-v1.x.y npm run build:wasm
 node scripts/build-wasm.mjs --sui-version 1.x.y --sui-tag mainnet-v1.x.y
 ```
 
-For repeated version updates, use the process and prompt in [AGENTS.md](./AGENTS.md). The intended flow is to generate and test the new patch/template set during `prepare:wasm`, then reuse the prepared worktree for lite/full builds and release checks.
+For repeated version updates, use the process and prompt in [AGENTS.md](./AGENTS.md). The intended flow is to refresh and test the active compat overlay during `prepare:wasm`, then reuse the prepared worktree for lite/full builds and release checks.
 
 ## Package Management Logic
 
@@ -311,12 +336,12 @@ For faster builds when compiling multiple times with the same dependencies, you 
 
 ```ts
 import {
-  initMoveCompiler,
-  resolveDependencies,
-  buildMovePackage,
+  initMovePackageBuilder,
+  resolveMovePackageDependencies,
+  dumpMovePackage,
 } from "@zktx.io/sui-move-builder";
 
-await initMoveCompiler();
+await initMovePackageBuilder();
 
 const files = {
   "Move.toml": `...`,
@@ -324,10 +349,13 @@ const files = {
 };
 
 // 1. Resolve dependencies once
-const deps = await resolveDependencies({ files, network: "mainnet" });
+const deps = await resolveMovePackageDependencies({
+  files,
+  network: "mainnet",
+});
 
 // 2. Build multiple times without re-resolving dependencies
-const result1 = await buildMovePackage({
+const result1 = await dumpMovePackage({
   files,
   network: "mainnet",
   githubToken: process.env.GITHUB_TOKEN, // optional
@@ -338,7 +366,7 @@ const result1 = await buildMovePackage({
 files["sources/main.move"] = "// updated code...";
 
 // 3. Build again with cached dependencies
-const result2 = await buildMovePackage({
+const result2 = await dumpMovePackage({
   files,
   network: "mainnet",
   githubToken: process.env.GITHUB_TOKEN, // optional
@@ -356,13 +384,14 @@ const result2 = await buildMovePackage({
 
 - Dependencies are always compiled from source. Bytecode-only deps (.mv fallback used by the Sui CLI when sources are missing) are not supported in the wasm path.
 - V0/V1/V2/V3 `Move.lock` graph sections are not used as pinned graph sources. Supported packages fall back to manifest resolution; V3 publication migration is supported where covered by tests.
+- Publish and upgrade APIs prepare bytecode payload data only. Transaction signing, gas selection, PTB construction, dry-run, execution, and post-execution publication record updates are outside the WASM package boundary.
 - CLI parity is verified for selected fixtures, not for every Sui package-manager path. Some compiler and test-runner behavior is still implemented through local compatibility glue.
 
 ## Best Practices
 
 ### Input Sanitization
 
-When preparing the `files` object for `buildMovePackage`, **exclude build artifacts** (e.g., the `build/` directory) and version control folders (`.git/`). Including these can cause:
+When preparing the `files` object for `dumpMovePackage`, **exclude build artifacts** (e.g., the `build/` directory) and version control folders (`.git/`). Including these can cause:
 
 - **Compilation Errors**: Duplicate modules or incorrect edition parsing (e.g., dependency files treated as root sources).
 - **Performance Issues**: Unnecessary processing of large binary files.
@@ -375,27 +404,17 @@ if (entry.name === "build" || entry.name === ".git") continue;
 
 ## CLI-vs-WASM Parity Tests
 
-This package compares the same local Move package through the official Sui CLI and the WASM builder. The default package set includes auto-discovered examples from `.sui-build/parity-work/examples/move` plus fixed framework fixtures at `crates/sui-framework/packages/deepbook` and `crates/sui-framework/packages/sui-system`; pass explicit package paths when you want to test a specific fixture.
+This package compares the same local Move package through the official Sui CLI and the WASM builder. The default dump parity package set includes auto-discovered examples from `.sui-build/parity-work/examples/move` plus the fixed framework fixture at `crates/sui-framework/packages/deepbook`; pass explicit package paths when you want to test a specific fixture.
 
 ```bash
 npm run build       # required once; produces dist/full and dist/lite WASM artifacts
-npm run test:dist-load # validate dist full/lite ESM/CJS loading
-npm run test:template-manifest # validate versioned template manifest coverage
-npm run test:package-loading # validate git/local package snapshot loading boundaries
-npm run test:manifest-digest # validate Rust Move.toml manifest digest helper
-npm run test:manifest-fallback # validate Rust-owned manifest fallback package groups
-npm run test:lockfile-graph # validate lockfile digest and malformed graph handling
-npm run test:lockfile-generation # validate Rust-owned V4 lockfile generation
-npm run test:source-discovery # validate normal build source filtering
-npm run test:compiler-lint # validate compiler lintFlag handling
-npm run test:output-deps # validate explicit system dependency output filtering
-npm run test:unit-test-ownership # validate full test runner root package ownership
-npm run test:parity:full # compare Sui CLI vs full WASM
-npm run test:parity:lite # compare Sui CLI vs lite WASM
+npm test            # runtime + semantic fixtures + full/lite CLI parity
 npm run test:parity # compare Sui CLI vs both full and lite WASM
+npm run test:audit  # compare CLI build/upgrade artifacts with WASM outputs
 npm run test:browser # optional local browser smoke test for full and lite
 npm run dev:browser-parity # interactive browser build + CLI comparison page
-npm test            # runtime + semantic fixtures + full/lite CLI parity
+node test/integration/run.mjs semantic # runtime + semantic fixtures without CLI parity
+node test/integration/run.mjs output-deps # run a single integration case
 ```
 
 `dist/` artifacts are generated output and are not checked into this repository. Runtime, parity, and browser tests expect `npm run build` to have produced `dist/full` and `dist/lite` first.
@@ -407,7 +426,13 @@ Useful options:
 - `SUI_PARITY_LIMIT=10` changes the number of auto-discovered examples. Fixed framework fixtures still run unless explicit package paths are supplied.
 - `SUI_PARITY_MIN_MOVE_FILES=3` requires larger multi-file examples.
 
+The integration runner executes checks serially. Parity, audit, and browser checks are not run concurrently because they use shared `.sui-build`, `dist`, and Sui CLI cache state.
+
 The parity test warns when the local Sui CLI version differs from `sui-version.json` and fails when the CLI is missing. It fails on any mismatch in module bytecode, dependency IDs, or package digest. It does not patch outputs or maintain expected-result snapshots.
+
+`node test/integration/run.mjs audit build` runs `sui move build --path <package> --install-dir <output>` for `crates/sui-framework/packages/sui-framework` and `crates/sui-framework/packages/sui-system`, converts generated `.mv` artifacts to base64, runs the low-level WASM `compile` binding with `compileIntent: "publish"`, and compares module bytecode.
+
+`node test/integration/run.mjs audit upgrade` uses `sui move build --dump-bytecode-as-base64` as the CLI artifact source for upgrade-intent bytecode and compares it with `prepareMovePackageUpgrade` for published package fixtures. The comparison covers modules, dependency IDs, and digest.
 
 Passing parity tests are evidence for the covered fixtures only. See `CLI_PIPELINE.md` for current implementation boundaries.
 
@@ -415,10 +440,10 @@ For manual browser verification, run `npm run dev:browser-parity` and open the p
 
 ## Support Status
 
-| Area                                                       | Status                | Current contract                                                                                                                                                                        |
-| ---------------------------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Full upstream `BuildPlan` reuse                            | `planned`             | Snapshot adapter feasibility is tracked in `CLI_PIPELINE.md`. Do not change package order, address resolution, source discovery, lint, or test-mode behavior without targeted fixtures. |
-| Bytecode-only `.mv` dependency fallback                    | `unsupported`         | Source snapshots are required. The package does not synthesize source or package metadata to stand in for missing `.mv` fallback behavior.                                              |
-| `stripMetadata`                                            | `reserved/no-op`      | The option is part of the public shape but should not be described as active compiler behavior.                                                                                         |
-| Dev-address / extra named-address API                      | `requires API design` | No stable public override API exists yet.                                                                                                                                               |
-| V0/V1/V2/V3 lockfile graph loading as pinned graph sources | `unsupported`         | Supported packages use manifest fallback instead; V3 publication migration is separate from graph loading.                                                                              |
+| Area                                                       | Status                | Current contract                                                                                                                                                                                      |
+| ---------------------------------------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Full upstream `BuildPlan` execution                        | `not used at runtime` | Runtime builds use the snapshot-backed Rust/WASM package model described in `CLI_PIPELINE.md`. Package order, address resolution, source discovery, lint, and test-mode behavior are fixture-covered. |
+| Bytecode-only `.mv` dependency fallback                    | `unsupported`         | Source snapshots are required. The package does not synthesize source or package metadata to stand in for missing `.mv` fallback behavior.                                                            |
+| `stripMetadata`                                            | `reserved/no-op`      | The option is part of the public shape but should not be described as active compiler behavior.                                                                                                       |
+| Dev-address / extra named-address API                      | `not exposed`         | No stable public override API is exposed.                                                                                                                                                             |
+| V0/V1/V2/V3 lockfile graph loading as pinned graph sources | `unsupported`         | Supported packages use manifest fallback instead; V3 publication migration is separate from graph loading.                                                                                            |

@@ -7,7 +7,6 @@ import {
   LocalSuiFetcher,
   assertSuiCliVersion,
   createParityContext,
-  isIgnoredDir,
   isInsideDir,
   pathExists,
   prepareParityWorktree,
@@ -27,115 +26,49 @@ const {
   suiBuildConfig,
   parityOutputDir,
   parityWorkDir,
-} = createParityContext(process.argv.slice(2), "parity-output");
-const maxPackages = Number(process.env.SUI_PARITY_LIMIT || 5);
-const minMoveFiles = Number(process.env.SUI_PARITY_MIN_MOVE_FILES || 2);
+} = createParityContext(
+  process.argv.slice(2),
+  "parity-cli-upgrade-artifact-output"
+);
 const defaultFrameworkPackageSubdirs = [
   "crates/sui-framework/packages/deepbook",
 ];
 
-async function countMoveFiles(packageDir) {
-  let count = 0;
-
-  async function visit(currentDir) {
-    const entries = await fs.readdir(currentDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        if (!isIgnoredDir(entry.name)) {
-          await visit(path.join(currentDir, entry.name));
-        }
-      } else if (entry.name.endsWith(".move")) {
-        count += 1;
-      }
-    }
-  }
-
-  await visit(packageDir);
-  return count;
-}
-
-async function discoverMovePackages(examplesDir) {
-  const packages = [];
-
-  async function visit(currentDir) {
-    const entries = await fs.readdir(currentDir, { withFileTypes: true });
-    const hasMoveToml = entries.some(
-      (entry) => entry.isFile() && entry.name === "Move.toml"
-    );
-
-    if (hasMoveToml) {
-      const moveFileCount = await countMoveFiles(currentDir);
-      if (moveFileCount >= minMoveFiles) {
-        packages.push({ dir: currentDir, moveFileCount });
-      }
-      return;
-    }
-
-    for (const entry of entries) {
-      if (entry.isDirectory() && !isIgnoredDir(entry.name)) {
-        await visit(path.join(currentDir, entry.name));
-      }
-    }
-  }
-
-  await visit(examplesDir);
-  packages.sort(
-    (a, b) => b.moveFileCount - a.moveFileCount || a.dir.localeCompare(b.dir)
-  );
-  return packages.slice(0, maxPackages).map((pkg) => pkg.dir);
-}
-
-function uniquePackageDirs(packages) {
-  const seen = new Set();
-  return packages.filter((packageDir) => {
-    const key = path.resolve(packageDir);
-    if (seen.has(key)) {
-      return false;
-    }
-    seen.add(key);
-    return true;
-  });
-}
-
-async function resolveDefaultPackages(examplesDir, workDir) {
-  const discovered = await discoverMovePackages(examplesDir);
-  const frameworkPackages = [];
-
+async function resolveDefaultPackages(workDir) {
+  const resolved = [];
   for (const subdir of defaultFrameworkPackageSubdirs) {
     const packageDir = path.join(workDir, subdir);
     if (!(await pathExists(packageDir))) {
-      throw new Error(`Default parity package does not exist: ${subdir}`);
+      throw new Error(
+        `Default upgrade parity package does not exist: ${subdir}`
+      );
     }
-    frameworkPackages.push(packageDir);
+    resolved.push(packageDir);
   }
-
-  return uniquePackageDirs([...discovered, ...frameworkPackages]);
+  return resolved;
 }
 
-async function resolvePackageArgs(examplesDir, workDir) {
+async function resolvePackageArgs(workDir) {
   if (packageArgs.length === 0) {
-    return resolveDefaultPackages(examplesDir, workDir);
+    return resolveDefaultPackages(workDir);
   }
 
   const resolved = [];
   for (const arg of packageArgs) {
     const direct = path.resolve(repoRoot, arg);
-    const underExamples = path.resolve(examplesDir, arg);
     const underWorkDir = path.resolve(workDir, arg);
     if (await pathExists(direct)) {
       resolved.push(direct);
-    } else if (await pathExists(underExamples)) {
-      resolved.push(underExamples);
     } else if (await pathExists(underWorkDir)) {
       resolved.push(underWorkDir);
     } else {
       throw new Error(`Move package path does not exist: ${arg}`);
     }
   }
-  return uniquePackageDirs(resolved);
+  return resolved;
 }
 
-function runSuiCliBuild(packageDir) {
+function runSuiCliUpgradeCompileArtifact(packageDir) {
   const result = spawnSync(
     suiCli,
     ["move", "build", "--dump-bytecode-as-base64", "--path", packageDir],
@@ -153,7 +86,7 @@ function runSuiCliBuild(packageDir) {
   if (result.status !== 0) {
     throw new Error(
       [
-        `Sui CLI build failed in ${packageDir}`,
+        `Sui CLI upgrade compile artifact build failed in ${packageDir}`,
         result.stderr?.trim(),
         result.stdout?.trim(),
       ]
@@ -182,20 +115,15 @@ function normalizeDigest(digest) {
   throw new Error(`Unsupported digest shape: ${typeof digest}`);
 }
 
-function normalizeDependencies(dependencies) {
-  if (!Array.isArray(dependencies)) {
-    throw new Error("Build output dependencies must be an array");
-  }
-  return dependencies.map((dep) => String(dep).toLowerCase());
-}
-
 function normalizeOutput(output) {
   if (!Array.isArray(output.modules)) {
     throw new Error("Build output modules must be an array");
   }
   return {
     modules: output.modules,
-    dependencies: normalizeDependencies(output.dependencies || []),
+    dependencies: (output.dependencies || []).map((dep) =>
+      String(dep).toLowerCase()
+    ),
     digest: normalizeDigest(output.digest),
   };
 }
@@ -233,17 +161,11 @@ function compareBuilds(cliOutput, wasmOutput) {
   return differences;
 }
 
-function toDisplayPackageName(packageDir, examplesDir, workDir) {
-  let baseDir = repoRoot;
-  if (isInsideDir(packageDir, examplesDir)) {
-    baseDir = examplesDir;
-  } else if (isInsideDir(packageDir, workDir)) {
-    baseDir = workDir;
+function toDisplayPackageName(packageDir, workDir) {
+  if (isInsideDir(packageDir, workDir)) {
+    return path.relative(workDir, packageDir).replace(/\\/g, "/");
   }
-  return (
-    path.relative(baseDir, packageDir).replace(/\\/g, "/") ||
-    path.basename(packageDir)
-  );
+  return path.relative(repoRoot, packageDir).replace(/\\/g, "/");
 }
 
 async function writeArtifact(artifactPackageName, name, data) {
@@ -254,7 +176,7 @@ async function writeArtifact(artifactPackageName, name, data) {
 
 async function main() {
   console.log(
-    `Running CLI-vs-WASM parity tests in [${mode.toUpperCase()}] mode`
+    `Running CLI upgrade artifact parity tests in [${mode.toUpperCase()}] mode`
   );
 
   if (!(await pathExists(wasmPath))) {
@@ -269,15 +191,12 @@ async function main() {
     suiBuildConfig,
     parityWorkDir
   );
-
-  const examplesDir = path.join(workDir, "examples", "move");
-  const packages = await resolvePackageArgs(examplesDir, workDir);
-  if (packages.length === 0) {
-    throw new Error(`No Move packages found under ${examplesDir}`);
-  }
+  const packages = await resolvePackageArgs(workDir);
 
   const distUrl = pathToFileURL(path.join(distDir, "index.js")).href;
-  const { initMovePackageBuilder, dumpMovePackage } = await import(distUrl);
+  const { initMovePackageBuilder, prepareMovePackageUpgrade } = await import(
+    distUrl
+  );
   await initMovePackageBuilder({ wasm: await fs.readFile(wasmPath) });
 
   const fetcher = new LocalSuiFetcher({
@@ -288,14 +207,11 @@ async function main() {
 
   let failed = false;
   for (const packageDir of packages) {
-    const packageName = toDisplayPackageName(packageDir, examplesDir, workDir);
+    const packageName = toDisplayPackageName(packageDir, workDir);
     const artifactPackageName = toArtifactPackageName(packageName);
     const packageSubdir = isInsideDir(packageDir, workDir)
       ? path.relative(workDir, packageDir).replace(/\\/g, "/")
       : undefined;
-    console.log(`\n=== ${packageName} ===`);
-
-    const rootFiles = await readMovePackageFiles(packageDir);
     const rootGit = packageSubdir
       ? {
           git: SUI_REPO_URL,
@@ -303,9 +219,13 @@ async function main() {
           subdir: packageSubdir,
         }
       : undefined;
+    console.log(`\n=== ${packageName} ===`);
 
-    const cliOutput = normalizeOutput(runSuiCliBuild(packageDir));
-    const wasmResult = await dumpMovePackage({
+    const rootFiles = await readMovePackageFiles(packageDir);
+    const cliOutput = normalizeOutput(
+      runSuiCliUpgradeCompileArtifact(packageDir)
+    );
+    const wasmResult = await prepareMovePackageUpgrade({
       files: rootFiles,
       network,
       fetcher,
@@ -313,17 +233,16 @@ async function main() {
       silenceWarnings: true,
     });
 
+    await writeArtifact(artifactPackageName, "cli.json", cliOutput);
     if ("error" in wasmResult) {
       failed = true;
-      console.error(`[WASM] Build failed: ${wasmResult.error}`);
-      await writeArtifact(artifactPackageName, "cli.json", cliOutput);
+      console.error(`[WASM] Upgrade preparation failed: ${wasmResult.error}`);
       await writeArtifact(artifactPackageName, "wasm-error.json", wasmResult);
       continue;
     }
 
     const wasmOutput = normalizeOutput(wasmResult);
     const differences = compareBuilds(cliOutput, wasmOutput);
-    await writeArtifact(artifactPackageName, "cli.json", cliOutput);
     await writeArtifact(artifactPackageName, "wasm.json", wasmOutput);
 
     if (differences.length > 0) {
@@ -337,10 +256,12 @@ async function main() {
   }
 
   if (failed) {
-    throw new Error(`CLI-vs-WASM parity failed. See ${parityOutputDir}`);
+    throw new Error(
+      `CLI upgrade artifact parity failed. See ${parityOutputDir}`
+    );
   }
 
-  console.log("\nCLI-vs-WASM parity tests passed.");
+  console.log("\nCLI upgrade artifact parity tests passed.");
 }
 
 main().catch((error) => {

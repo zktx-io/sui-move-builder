@@ -1,4 +1,4 @@
-const { buildMovePackage, resolveDependencies } = await import(
+const { dumpMovePackage, resolveMovePackageDependencies } = await import(
   new URL("../../dist/full/index.js", import.meta.url)
 );
 
@@ -115,7 +115,7 @@ class LocalFetcher {
 }
 
 async function resolve(files, network = "testnet") {
-  return resolveDependencies({
+  return resolveMovePackageDependencies({
     files,
     network,
     fetcher: new LocalFetcher(),
@@ -123,7 +123,7 @@ async function resolve(files, network = "testnet") {
 }
 
 async function buildForFailure(files, network = "mainnet") {
-  return buildMovePackage({
+  return dumpMovePackage({
     files,
     network,
     fetcher: new LocalFetcher(),
@@ -254,7 +254,7 @@ MissingSource = { local = "../missing-source" }
   /bytecode-only dependencies are not supported/,
   "source-only dependency enforcement"
 );
-await assertBuildFailureCode(
+await assertMovePackageFailureCode(
   () =>
     buildForFailure(
       rootFiles({
@@ -285,7 +285,7 @@ Unsupported = { version = "1.0.0" }
   /unsupported source form/,
   "unsupported dependency source"
 );
-await assertBuildFailureCode(
+await assertMovePackageFailureCode(
   () =>
     buildForFailure(
       rootFiles({
@@ -331,7 +331,7 @@ async function assertRejects(fn, pattern, label) {
   throw new Error(`${label}: expected rejection`);
 }
 
-async function assertBuildFailureCode(fn, category, code, label) {
+async function assertMovePackageFailureCode(fn, category, code, label) {
   const result = await fn();
   if (!("error" in result)) {
     throw new Error(`${label}: expected build failure`);

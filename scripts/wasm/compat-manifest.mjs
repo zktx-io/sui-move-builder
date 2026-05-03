@@ -9,7 +9,7 @@ const REQUIRED_FILE_PATCHES = [
 
 function assertManifest(condition, message) {
   if (!condition) {
-    throw new Error(`Invalid template manifest: ${message}`);
+    throw new Error(`Invalid compat manifest: ${message}`);
   }
 }
 
@@ -36,36 +36,36 @@ function assertSimpleName(value, label) {
   );
 }
 
-async function assertTemplateFile(templatesDir, fileName, label) {
+async function assertCompatFile(compatDir, fileName, label) {
   assertSimpleName(fileName, label);
-  const filePath = path.join(templatesDir, fileName);
+  const filePath = path.join(compatDir, fileName);
   try {
     await fs.access(filePath);
   } catch {
     throw new Error(
-      `Template manifest references missing file for ${label}: ${filePath}`
+      `Compat manifest references missing file for ${label}: ${filePath}`
     );
   }
 }
 
-async function assertStubTemplateFile(templatesDir, templateName, label) {
-  assertSimpleName(templateName, label);
+async function assertCompatStubFile(compatDir, compatName, label) {
+  assertSimpleName(compatName, label);
   assertManifest(
-    !templateName.endsWith(".rs"),
+    !compatName.endsWith(".rs"),
     `${label} must omit the .rs extension`
   );
-  await assertTemplateFile(templatesDir, `${templateName}.rs`, label);
+  await assertCompatFile(compatDir, `${compatName}.rs`, label);
 }
 
-export async function loadTemplateManifest(templatesDir) {
-  const manifestPath = path.join(templatesDir, "manifest.json");
+export async function loadCompatManifest(compatDir) {
+  const manifestPath = path.join(compatDir, "manifest.json");
   let manifest;
 
   try {
     manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
   } catch (error) {
     throw new Error(
-      `Failed to read template manifest ${manifestPath}: ${error.message}`
+      `Failed to read compat manifest ${manifestPath}: ${error.message}`
     );
   }
 
@@ -89,13 +89,13 @@ export async function loadTemplateManifest(templatesDir) {
     "filePatches must be an object"
   );
 
-  for (const [crateName, templateName] of Object.entries(
+  for (const [crateName, compatName] of Object.entries(
     manifest.stubTemplates
   )) {
     assertSimpleName(crateName, `stubTemplates key ${crateName}`);
-    await assertStubTemplateFile(
-      templatesDir,
-      templateName,
+    await assertCompatStubFile(
+      compatDir,
+      compatName,
       `stubTemplates.${crateName}`
     );
   }
@@ -116,8 +116,8 @@ export async function loadTemplateManifest(templatesDir) {
   }
 
   for (const key of REQUIRED_FILE_PATCHES) {
-    await assertTemplateFile(
-      templatesDir,
+    await assertCompatFile(
+      compatDir,
       manifest.filePatches[key],
       `filePatches.${key}`
     );

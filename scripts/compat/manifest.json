@@ -8,6 +8,7 @@
     "mysten-metrics": "mysten-metrics",
     "fs4": "fs4",
     "consensus-config": "consensus-config",
+    "sui-rpc": "sui-rpc",
     "move-package-alt": "move-package-alt",
     "move-package-alt-compilation": "move-package-alt-compilation",
     "consensus-types": "consensus-types",
@@ -61,6 +62,7 @@
     "named-lock",
     "suins-indexer",
     "sui-tls",
+    "sui-analytics-indexer",
     "tokio-postgres-rustls",
     "rustls",
     "webpki",
@@ -91,7 +93,6 @@
     "blstrs"
   ],
   "emptyStubCrates": [
-    "sui-rpc",
     "axum",
     "sui-surfer",
     "sui-faucet",
@@ -112,6 +113,7 @@
     "named-lock",
     "suins-indexer",
     "sui-tls",
+    "sui-analytics-indexer",
     "tokio-postgres-rustls",
     "rustls",
     "webpki",
@@ -136,6 +138,7 @@
   ],
   "filePatches": {
     "fastcryptoSecp256r1Mod": "fastcrypto_secp256r1_mod.rs",
+    "fastcryptoRistretto255Mod": "fastcrypto_ristretto255_mod.rs",
     "nitroAttestation": "nitro_attestation.rs",
     "moveUnitTestRunner": "move_unit_test_runner_patch.rs"
   }

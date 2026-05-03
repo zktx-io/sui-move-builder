@@ -174,7 +174,7 @@ async function main() {
 
     console.log("Building prepared wasm (cargo build)...");
 
-    const suiVersion = context.templateVersion;
+    const suiVersion = context.suiVersion.version;
     const suiMoveVersion = "2024.beta";
     const baseRustflags =
       (process.env.RUSTFLAGS || "") +

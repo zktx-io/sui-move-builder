@@ -1,8 +1,8 @@
-const { initMoveCompiler, buildMovePackage } = await import(
+const { initMovePackageBuilder, dumpMovePackage } = await import(
   new URL("../../dist/full/index.js", import.meta.url)
 );
 
-await initMoveCompiler();
+await initMovePackageBuilder();
 
 const DEP_ID =
   "0x00000000000000000000000000000000000000000000000000000000000000dd";
@@ -122,7 +122,7 @@ module dep::dep {
 }
 
 async function buildWithResolvedDeps(files, dependencies, options = {}) {
-  return buildMovePackage({
+  return dumpMovePackage({
     files,
     network: "mainnet",
     resolvedDependencies: {
@@ -137,7 +137,7 @@ async function buildWithResolvedDeps(files, dependencies, options = {}) {
   });
 }
 
-const result = await buildMovePackage({
+const result = await dumpMovePackage({
   files: {
     "Move.toml": `
 [package]
@@ -160,7 +160,7 @@ module sui::main {
 
 if ("error" in result) {
   throw new Error(
-    `Normal build should ignore tests/*.move, got error: ${result.error}`
+    `Non-test build should ignore tests/*.move, got error: ${result.error}`
   );
 }
 
@@ -168,14 +168,15 @@ if (result.modules.length !== 1) {
   throw new Error(`Expected one root module, got ${result.modules.length}`);
 }
 
-console.log("[OK] normal build source discovery excludes tests/*.move");
+console.log("[OK] non-test build source discovery excludes tests/*.move");
 
-const normalDependencyResult = await buildWithResolvedDeps(rootWithDepFiles(), [
-  depWithBadTestSource(),
-]);
-if ("error" in normalDependencyResult) {
+const nonTestDependencyResult = await buildWithResolvedDeps(
+  rootWithDepFiles(),
+  [depWithBadTestSource()]
+);
+if ("error" in nonTestDependencyResult) {
   throw new Error(
-    `Normal build should ignore dependency tests/*.move, got error: ${normalDependencyResult.error}`
+    `Non-test build should ignore dependency tests/*.move, got error: ${nonTestDependencyResult.error}`
   );
 }
 

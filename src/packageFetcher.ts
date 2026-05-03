@@ -2,7 +2,7 @@
  * Utility functions for fetching Move packages from GitHub
  */
 
-import { GitHubFetcher } from "./fetcher.js";
+import { GitHubMovePackageFetcher } from "./fetcher.js";
 
 /**
  * Parse GitHub URL to extract owner, repo, branch/tag, and subdir
@@ -13,7 +13,7 @@ import { GitHubFetcher } from "./fetcher.js";
  * - https://github.com/owner/repo/tree/branch/path/to/package
  * - https://github.com/owner/repo/tree/tag/path/to/package
  */
-export function parseGitHubUrl(url: string): {
+function parseMovePackageGitHubUrl(url: string): {
   owner: string;
   repo: string;
   ref: string;
@@ -64,7 +64,7 @@ export function parseGitHubUrl(url: string): {
  *
  * @example
  * ```ts
- * const files = await fetchPackageFromGitHub(
+ * const files = await fetchMovePackageFromGitHub(
  *   'https://github.com/org/repo/tree/main/packages/example_package'
  * );
  *
@@ -76,24 +76,25 @@ export function parseGitHubUrl(url: string): {
  * // }
  * ```
  */
-export async function fetchPackageFromGitHub(
+export async function fetchMovePackageFromGitHub(
   url: string,
   options?: {
-    /** Custom fetcher instance (default: GitHubFetcher) */
-    fetcher?: GitHubFetcher;
+    /** Custom fetcher instance (default: GitHubMovePackageFetcher) */
+    fetcher?: GitHubMovePackageFetcher;
     /** Optional GitHub token to raise API limits (used when fetcher not provided). */
     githubToken?: string;
     /** Include Move.lock file (default: true) */
     includeLock?: boolean;
   }
 ): Promise<Record<string, string>> {
-  const parsed = parseGitHubUrl(url);
+  const parsed = parseMovePackageGitHubUrl(url);
 
   if (!parsed) {
     throw new Error(`Invalid GitHub URL: ${url}`);
   }
 
-  const fetcher = options?.fetcher || new GitHubFetcher(options?.githubToken);
+  const fetcher =
+    options?.fetcher || new GitHubMovePackageFetcher(options?.githubToken);
   const includeLock = options?.includeLock !== false;
 
   const gitUrl = `https://github.com/${parsed.owner}/${parsed.repo}.git`;
@@ -123,71 +124,4 @@ export async function fetchPackageFromGitHub(
   }
 
   return files;
-}
-
-/**
- * Fetch multiple packages from GitHub URLs
- *
- * @param urls - Array of GitHub URLs or URL-to-alias mappings
- * @returns Object mapping package names to their files
- *
- * @example
- * ```ts
- * const packages = await fetchPackagesFromGitHub([
- *   'https://github.com/MystenLabs/sui/tree/framework/mainnet/crates/sui-framework/packages/sui-framework',
- *   'https://github.com/org/repo/tree/main/packages/example_package'
- * ]);
- *
- * // packages = {
- * //   'Sui': { 'Move.toml': '...', ... },
- * //   'example_package': { 'Move.toml': '...', ... }
- * // }
- * ```
- */
-export async function fetchPackagesFromGitHub(
-  urls: string[] | Record<string, string>,
-  options?: {
-    fetcher?: GitHubFetcher;
-    githubToken?: string;
-    includeLock?: boolean;
-  }
-): Promise<Record<string, Record<string, string>>> {
-  const urlMap: Record<string, string> = Array.isArray(urls)
-    ? Object.fromEntries(urls.map((url, i) => [`package_${i}`, url]))
-    : urls;
-
-  const results: Record<string, Record<string, string>> = {};
-
-  for (const [name, url] of Object.entries(urlMap)) {
-    results[name] = await fetchPackageFromGitHub(url, options);
-  }
-
-  return results;
-}
-
-/**
- * Create a shorthand GitHub URL for common repositories
- *
- * @example
- * ```ts
- * githubUrl('MystenLabs/sui', 'framework/mainnet', 'crates/sui-framework/packages/sui-framework')
- * // Returns: https://github.com/MystenLabs/sui/tree/framework/mainnet/crates/sui-framework/packages/sui-framework
- * ```
- */
-export function githubUrl(
-  repo: string, // 'owner/repo'
-  ref: string = "main",
-  subdir?: string
-): string {
-  let url = `https://github.com/${repo}`;
-
-  if (ref || subdir) {
-    url += `/tree/${ref}`;
-  }
-
-  if (subdir) {
-    url += `/${subdir}`;
-  }
-
-  return url;
 }

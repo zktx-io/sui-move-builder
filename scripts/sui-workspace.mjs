@@ -74,7 +74,6 @@ export function splitSuiVersionArgs(argv) {
     if (flagName === "--sui-version") key = "version";
     else if (flagName === "--sui-tag") key = "tag";
     else if (flagName === "--sui-commit") key = "commit";
-    else if (flagName === "--sui-template-version") key = "templateVersion";
     else if (flagName === "--sui-repo") key = "repo";
 
     if (!key) {
@@ -105,9 +104,6 @@ function applyVersionLayer(config, layer) {
   if (Object.hasOwn(layer, "version")) {
     config.version = layer.version || undefined;
   }
-  if (Object.hasOwn(layer, "templateVersion")) {
-    config.templateVersion = layer.templateVersion || undefined;
-  }
   if (Object.hasOwn(layer, "repo")) {
     config.repo = layer.repo || undefined;
   }
@@ -120,9 +116,6 @@ function nonEmptyEnvOverrides(env) {
   if (env.SUI_VERSION) overrides.version = env.SUI_VERSION;
   if (env.SUI_TAG) overrides.tag = env.SUI_TAG;
   if (env.SUI_COMMIT) overrides.commit = env.SUI_COMMIT;
-  if (env.SUI_TEMPLATE_VERSION) {
-    overrides.templateVersion = env.SUI_TEMPLATE_VERSION;
-  }
   if (env.SUI_REPO_URL) overrides.repo = env.SUI_REPO_URL;
   return overrides;
 }
@@ -141,10 +134,8 @@ export function resolveSuiVersionConfig(
   if (!config.commit && !config.tag) {
     throw new Error("Sui version config must define commit or tag");
   }
-  if (!config.version && !config.templateVersion) {
-    throw new Error(
-      "Sui version config must define version or templateVersion"
-    );
+  if (!config.version) {
+    throw new Error("Sui version config must define version");
   }
 
   return { suiVersion: config, restArgs };
@@ -174,7 +165,6 @@ export function getSuiBuildConfig(repoRoot, suiVersion) {
     commit,
     checkoutRef,
     displayRef: tag || commit,
-    templateVersion: suiVersion.templateVersion || `v${suiVersion.version}`,
   };
 }
 

@@ -1,8 +1,10 @@
-const { getWasmBindings, resolveDependencies } = await import(
+import { loadWasmBindings } from "./wasm_helpers.mjs";
+
+const { resolveMovePackageDependencies } = await import(
   new URL("../../dist/full/index.js", import.meta.url)
 );
 
-const wasm = await getWasmBindings();
+const wasm = await loadWasmBindings("full");
 function digest(moveToml, packageName) {
   return wasm.compute_manifest_digest_from_move_toml(
     moveToml,
@@ -82,7 +84,7 @@ Dep = "0x0"
 }
 
 const fetcher = new FixtureFetcher();
-const resolved = await resolveDependencies({
+const resolved = await resolveMovePackageDependencies({
   files: {
     "Move.toml": rootMoveToml,
     "Move.lock": staleMoveLock,
@@ -125,7 +127,7 @@ deps = {}
 
 await assertRejects(
   () =>
-    resolveDependencies({
+    resolveMovePackageDependencies({
       files: {
         "Move.toml": rootMoveToml,
         "Move.lock": malformedNoRootLock,
@@ -157,7 +159,7 @@ deps = {}
 
 await assertRejects(
   () =>
-    resolveDependencies({
+    resolveMovePackageDependencies({
       files: {
         "Move.toml": rootMoveToml,
         "Move.lock": malformedMissingEdgeLock,
@@ -171,6 +173,100 @@ await assertRejects(
 );
 
 console.log("[OK] malformed v4 lockfile graph structure is rejected");
+
+const implicitRootMoveToml = `
+[package]
+name = "App"
+version = "0.0.0"
+edition = "2024"
+
+[addresses]
+app = "0x0"
+`;
+const moveStdlibMoveToml = `
+[package]
+name = "MoveStdlib"
+version = "0.0.0"
+edition = "2024"
+published-at = "0x1"
+
+[addresses]
+std = "0x1"
+`;
+const suiMoveToml = `
+[package]
+name = "Sui"
+version = "0.0.0"
+edition = "2024"
+published-at = "0x2"
+
+[dependencies]
+MoveStdlib = { local = "../move-stdlib" }
+
+[addresses]
+sui = "0x2"
+`;
+const badImplicitMoveLock = `
+[move]
+version = 4
+
+[pinned.mainnet.App]
+source = { root = true }
+use_environment = "mainnet"
+manifest_digest = "${digest(implicitRootMoveToml, "App")}"
+deps = { std = "BadStd", sui = "Sui" }
+
+[pinned.mainnet.MoveStdlib]
+source = { local = "../move-stdlib" }
+use_environment = "mainnet"
+manifest_digest = "${digest(moveStdlibMoveToml, "MoveStdlib")}"
+deps = {}
+
+[pinned.mainnet.Sui]
+source = { local = "../sui" }
+use_environment = "mainnet"
+manifest_digest = "${digest(suiMoveToml, "Sui")}"
+deps = { MoveStdlib = "MoveStdlib" }
+`;
+
+class BadImplicitFetcher {
+  async fetch() {
+    throw new Error("unexpected git fetch");
+  }
+
+  async fetchLocal(localPath) {
+    if (localPath === "../move-stdlib") {
+      return {
+        "Move.toml": moveStdlibMoveToml,
+        "sources/std.move": "module 0x1::std {}",
+      };
+    }
+    if (localPath === "../sui") {
+      return {
+        "Move.toml": suiMoveToml,
+        "sources/sui.move": "module 0x2::sui {}",
+      };
+    }
+    throw new Error(`Unexpected local path: ${localPath}`);
+  }
+}
+
+await assertRejects(
+  () =>
+    resolveMovePackageDependencies({
+      files: {
+        "Move.toml": implicitRootMoveToml,
+        "Move.lock": badImplicitMoveLock,
+        "sources/root.move": "module 0x0::root {}",
+      },
+      network: "mainnet",
+      fetcher: new BadImplicitFetcher(),
+    }),
+  /undefined dependency 'BadStd'|BadStd/,
+  "undefined implicit lockfile target should be rejected"
+);
+
+console.log("[OK] malformed implicit v4 lockfile target is rejected");
 
 const oldDepMoveToml = `
 [package]
@@ -231,7 +327,7 @@ class ChangedContentFetcher {
 }
 
 const changedContentFetcher = new ChangedContentFetcher();
-const changedContentResolved = await resolveDependencies({
+const changedContentResolved = await resolveMovePackageDependencies({
   files: {
     "Move.toml": rootMoveToml,
     "Move.lock": contentChangedMoveLock,
@@ -333,7 +429,7 @@ class SameNameFetcher {
   }
 }
 
-const sameNameResolved = await resolveDependencies({
+const sameNameResolved = await resolveMovePackageDependencies({
   files: {
     "Move.toml": sameNameRootMoveToml,
     "Move.lock": sameNameMoveLock,
@@ -421,7 +517,7 @@ class ExplicitSystemFetcher {
   }
 }
 
-const explicitSystemResolved = await resolveDependencies({
+const explicitSystemResolved = await resolveMovePackageDependencies({
   files: {
     "Move.toml": explicitSystemRootMoveToml,
     "Move.lock": explicitSystemMoveLock,
@@ -478,7 +574,7 @@ manifest_digest = "${depManifestDigest}"
 deps = {}
 `;
 
-const envResolved = await resolveDependencies({
+const envResolved = await resolveMovePackageDependencies({
   files: {
     "Move.toml": envRootMoveToml,
     "Move.mainnet.toml": envOverrideMoveToml,
@@ -550,7 +646,7 @@ class LocalPinFetcher {
 }
 
 const localPinFetcher = new LocalPinFetcher();
-const localResolved = await resolveDependencies({
+const localResolved = await resolveMovePackageDependencies({
   files: {
     "Move.toml": localRootMoveToml,
     "Move.lock": localMoveLock,
@@ -582,7 +678,7 @@ class MissingMoveTomlFetcher {
 
 await assertRejects(
   () =>
-    resolveDependencies({
+    resolveMovePackageDependencies({
       files: {
         "Move.toml": rootMoveToml,
         "Move.lock": `

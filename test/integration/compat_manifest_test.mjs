@@ -2,15 +2,15 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { loadTemplateManifest } from "../../scripts/wasm/template-manifest.mjs";
+import { loadCompatManifest } from "../../scripts/wasm/compat-manifest.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../.."
 );
-const templatesDir = path.join(repoRoot, "scripts/templates/v1.63.3");
+const compatDir = path.join(repoRoot, "scripts/compat");
 
-const manifest = await loadTemplateManifest(templatesDir);
+const manifest = await loadCompatManifest(compatDir);
 const stubbed = new Set(Object.keys(manifest.stubTemplates));
 const empty = new Set(manifest.emptyStubCrates);
 
@@ -21,7 +21,7 @@ for (const crate of manifest.offendingCrates) {
 }
 
 const testRunnerPatch = await fs.readFile(
-  path.join(templatesDir, manifest.filePatches.moveUnitTestRunner),
+  path.join(compatDir, manifest.filePatches.moveUnitTestRunner),
   "utf8"
 );
 if (testRunnerPatch.includes("DEBUG:")) {
@@ -39,4 +39,4 @@ if (prepareScript.includes("contains debug prints")) {
   throw new Error("prepare-wasm must not validate patches by debug strings");
 }
 
-console.log("[OK] versioned template manifest has explicit stub coverage");
+console.log("[OK] compat manifest has explicit stub coverage");

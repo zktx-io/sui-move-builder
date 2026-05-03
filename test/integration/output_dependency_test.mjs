@@ -1,8 +1,8 @@
-const { initMoveCompiler, buildMovePackage } = await import(
+const { initMovePackageBuilder, dumpMovePackage } = await import(
   new URL("../../dist/full/index.js", import.meta.url)
 );
 
-await initMoveCompiler();
+await initMovePackageBuilder();
 
 const BRIDGE_ID =
   "0x000000000000000000000000000000000000000000000000000000000000000b";
@@ -156,7 +156,7 @@ function frameworkLockfileDependencies() {
 }
 
 async function buildWithDependencies(files, dependencies) {
-  return buildMovePackage({
+  return dumpMovePackage({
     files,
     network: "mainnet",
     resolvedDependencies: {

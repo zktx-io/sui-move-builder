@@ -1,10 +1,11 @@
 /* global Response */
 
-const { resolveDependencies, GitHubFetcher, getWasmBindings } = await import(
-  new URL("../../dist/full/index.js", import.meta.url)
-);
+import { loadWasmBindings } from "./wasm_helpers.mjs";
 
-const wasm = await getWasmBindings();
+const { resolveMovePackageDependencies, GitHubMovePackageFetcher } =
+  await import(new URL("../../dist/full/index.js", import.meta.url));
+
+const wasm = await loadWasmBindings("full");
 
 function rootFiles() {
   return {
@@ -76,7 +77,7 @@ class LocalWorkspaceFetcher {
 }
 
 const localFetcher = new LocalWorkspaceFetcher();
-const resolved = await resolveDependencies({
+const resolved = await resolveMovePackageDependencies({
   files: rootFiles(),
   network: "mainnet",
   fetcher: localFetcher,
@@ -111,7 +112,7 @@ console.log("[OK] local package dependencies are loaded through fetchLocal");
 await testGitParentLocalDependency();
 
 const v4Fetcher = new LocalWorkspaceFetcher();
-const resolvedFromV4LocalPins = await resolveDependencies({
+const resolvedFromV4LocalPins = await resolveMovePackageDependencies({
   files: {
     ...rootFiles(),
     "Move.lock": localV4Lockfile(),
@@ -133,7 +134,7 @@ console.log("[OK] V4 local source pins are loaded through fetchLocal");
 
 await assertRejects(
   () =>
-    resolveDependencies({
+    resolveMovePackageDependencies({
       files: rootFiles(),
       network: "mainnet",
       fetcher: {
@@ -151,7 +152,7 @@ await assertRejects(
 
 await assertRejects(
   () =>
-    resolveDependencies({
+    resolveMovePackageDependencies({
       files: rootFiles(),
       network: "mainnet",
       fetcher: {
@@ -174,9 +175,9 @@ await assertRejects(
 
 console.log("[OK] local package loading failures are explicit");
 
-await testGitHubFetcherIncludesPublishedToml();
+await testGitHubMovePackageFetcherIncludesPublishedToml();
 
-async function testGitHubFetcherIncludesPublishedToml() {
+async function testGitHubMovePackageFetcherIncludesPublishedToml() {
   const originalFetch = globalThis.fetch;
   const rawRequests = [];
 
@@ -224,7 +225,7 @@ async function testGitHubFetcherIncludesPublishedToml() {
   };
 
   try {
-    const fetcher = new GitHubFetcher();
+    const fetcher = new GitHubMovePackageFetcher();
     const files = await fetcher.fetch(
       "https://github.com/example/project.git",
       "main",
@@ -232,10 +233,12 @@ async function testGitHubFetcherIncludesPublishedToml() {
     );
 
     if (!files["Published.toml"]) {
-      throw new Error("GitHubFetcher should include Published.toml");
+      throw new Error("GitHubMovePackageFetcher should include Published.toml");
     }
     if (files["README.md"]) {
-      throw new Error("GitHubFetcher should not include unrelated markdown");
+      throw new Error(
+        "GitHubMovePackageFetcher should not include unrelated markdown"
+      );
     }
     if (
       fetcher.getResolvedSha(
@@ -243,16 +246,20 @@ async function testGitHubFetcherIncludesPublishedToml() {
         "main"
       ) !== "resolved-tree-sha"
     ) {
-      throw new Error("GitHubFetcher should record resolved tree SHA");
+      throw new Error(
+        "GitHubMovePackageFetcher should record resolved tree SHA"
+      );
     }
     if (!rawRequests.some((url) => url.endsWith("/Published.toml"))) {
-      throw new Error("GitHubFetcher did not request Published.toml");
+      throw new Error(
+        "GitHubMovePackageFetcher did not request Published.toml"
+      );
     }
   } finally {
     globalThis.fetch = originalFetch;
   }
 
-  console.log("[OK] GitHubFetcher includes Published.toml");
+  console.log("[OK] GitHubMovePackageFetcher includes Published.toml");
 }
 
 async function testGitParentLocalDependency() {
@@ -300,7 +307,7 @@ child = "0x0"
     },
   };
 
-  const resolved = await resolveDependencies({
+  const resolved = await resolveMovePackageDependencies({
     files: {
       "Move.toml": `
 [package]

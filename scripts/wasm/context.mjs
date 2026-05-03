@@ -34,12 +34,12 @@ export function createWasmBuildContext(argv = process.argv.slice(2)) {
     suiBuildConfig,
     suiWorkDir: suiBuildConfig.workDir,
     localSourceDir: path.join(repoRoot, "sui-move-wasm"),
-    templateVersion: suiBuildConfig.templateVersion,
-    templatesDir: path.join(
+    compatDir: path.join(repoRoot, "scripts", "compat"),
+    compatManifestPath: path.join(
       repoRoot,
       "scripts",
-      "templates",
-      suiBuildConfig.templateVersion
+      "compat",
+      "manifest.json"
     ),
     distDir: path.join(repoRoot, "dist"),
     generatedDir,
@@ -72,11 +72,11 @@ export async function writePatchState(context, details = {}) {
       commit: context.suiVersion.commit,
       resolvedCommit: details.resolvedCommit ?? null,
       repo: context.suiBuildConfig.repoUrl,
-      templateVersion: context.templateVersion,
     },
     paths: {
       sourceDir: context.suiBuildConfig.sourceDir,
       workDir: context.suiWorkDir,
+      compatDir: context.compatDir,
       generatedDir: context.generatedDir,
       stubsDir: context.generatedStubsDir,
       vendorDir: context.generatedVendorDir,
@@ -127,13 +127,11 @@ export async function assertPreparedWorkspace(context) {
     version: context.suiVersion.version,
     tag: context.suiVersion.tag,
     commit: context.suiVersion.commit,
-    templateVersion: context.templateVersion,
   };
   const actual = {
     version: state.sui?.version,
     tag: state.sui?.tag,
     commit: state.sui?.commit,
-    templateVersion: state.sui?.templateVersion,
   };
 
   for (const [key, expectedValue] of Object.entries(expected)) {
@@ -147,6 +145,7 @@ export async function assertPreparedWorkspace(context) {
   const expectedPaths = {
     sourceDir: context.suiBuildConfig.sourceDir,
     workDir: context.suiWorkDir,
+    compatDir: context.compatDir,
     generatedDir: context.generatedDir,
     stubsDir: context.generatedStubsDir,
     vendorDir: context.generatedVendorDir,
@@ -182,6 +181,8 @@ export async function assertPreparedWorkspace(context) {
         "Cargo.toml"
       ),
     },
+    { label: "compat overlay directory", path: context.compatDir },
+    { label: "compat manifest", path: context.compatManifestPath },
     { label: "generated directory", path: context.generatedDir },
     { label: "generated stubs directory", path: context.generatedStubsDir },
     { label: "generated vendor directory", path: context.generatedVendorDir },
