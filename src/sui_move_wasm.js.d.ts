@@ -8,16 +8,6 @@ export function compile(
   depsJson: string,
   optionsJson?: string
 ): WasmCompileResult;
-export interface WasmTestResult {
-  passed: boolean;
-  output: string;
-}
-export function test(filesJson: string, depsJson: string): WasmTestResult;
-export function test_with_options(
-  filesJson: string,
-  depsJson: string,
-  optionsJson: string
-): WasmTestResult;
 export function sui_move_version(): string;
 export function sui_version(): string;
 export function compute_manifest_digest(depsJson: string): string;

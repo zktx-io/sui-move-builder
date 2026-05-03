@@ -31,10 +31,21 @@ npm install @zktx.io/sui-move-builder
 
 The package is published with two generated variants:
 
-1. **Full Version (Default)**: Includes the WASM `testing` feature, which brings in `move-unit-test`, `sui-move-natives`, and `move-vm-runtime` for Move unit test execution.
-2. **Lite Version**: Build-focused artifact without the WASM test runner dependencies. This is usually the better browser entrypoint when unit test execution is not needed.
+1. **Lite Version (Default)**: Build-focused artifact without the WASM test runner dependencies.
+2. **Full Version**: Includes the lite build APIs plus the WASM `testing` feature for Move unit test execution.
 
-### Using the Full Version (Default)
+### Using the Lite Version (Default)
+
+```ts
+import {
+  initMovePackageBuilder,
+  dumpMovePackage,
+  prepareMovePackagePublish,
+  prepareMovePackageUpgrade,
+} from "@zktx.io/sui-move-builder";
+```
+
+### Using the Full Version
 
 ```ts
 import {
@@ -43,18 +54,7 @@ import {
   prepareMovePackagePublish,
   prepareMovePackageUpgrade,
   testMovePackage,
-} from "@zktx.io/sui-move-builder";
-```
-
-### Using the Lite Version
-
-```ts
-import {
-  initMovePackageBuilder,
-  dumpMovePackage,
-  prepareMovePackagePublish,
-  prepareMovePackageUpgrade,
-} from "@zktx.io/sui-move-builder/lite";
+} from "@zktx.io/sui-move-builder/full";
 ```
 
 ## Quick start (Node.js or browser)
@@ -90,8 +90,6 @@ const result = await dumpMovePackage({
   files,
   // optional: silence warnings from Move compiler (default: false)
   silenceWarnings: false,
-  // optional: enable test mode (include #[test_only] modules)
-  testMode: false,
 });
 
 if ("error" in result) {
@@ -122,13 +120,13 @@ if ("error" in result) {
 
 ### Browser loading
 
-The same package is intended for browser use. The lite build is usually the better browser entrypoint:
+The default package entrypoint is the lite build:
 
 ```ts
 import {
   initMovePackageBuilder,
   dumpMovePackage,
-} from "@zktx.io/sui-move-builder/lite";
+} from "@zktx.io/sui-move-builder";
 
 await initMovePackageBuilder();
 const result = await dumpMovePackage({ files });
@@ -152,14 +150,14 @@ The package exposes intent-specific preparation APIs:
 | `prepareMovePackagePublish` | Prepare modules, dependency IDs, and digest for a publish payload      |
 | `prepareMovePackageUpgrade` | Prepare modules, dependency IDs, digest, and package ID for an upgrade |
 
-These APIs do not sign transactions, choose gas/payment, build a complete PTB, dry-run, execute, or update on-chain publication records. Publish and upgrade preparation reject `testMode`.
+These APIs do not sign transactions, choose gas/payment, build a complete PTB, dry-run, execute, or update on-chain publication records.
 
 ## Running Tests
 
 You can run Move unit tests using the `testMovePackage` function (available in the full version).
 
 ```ts
-import { testMovePackage } from "@zktx.io/sui-move-builder";
+import { testMovePackage } from "@zktx.io/sui-move-builder/full";
 
 const result = await testMovePackage({
   files,
@@ -176,6 +174,8 @@ if ("error" in result) {
 }
 ```
 
+`testMovePackage` returns the Move unit-test runner stdout in `output`. It does not expose CLI test-runner flags such as filter, list, thread count, statistics, or random-test options.
+
 ### Build Options (`MovePackageInput`)
 
 | Option                        | Type                                 | Description                                                                                         |
@@ -185,7 +185,6 @@ if ("error" in result) {
 | `githubToken`                 | `string`                             | GitHub API token to increase rate limits                                                            |
 | `fetcher`                     | `MovePackageFetcher`                 | Optional host loader for git and local dependency package snapshots                                 |
 | `silenceWarnings`             | `boolean`                            | Suppress compiler warnings (default: `false`)                                                       |
-| `testMode`                    | `boolean`                            | Compile in test mode (include `#[test_only]` modules)                                               |
 | `withUnpublishedDependencies` | `boolean`                            | Compile unpublished dependencies as `0x0` package IDs                                               |
 | `modes`                       | `string[]`                           | Move compiler modes, equivalent to CLI `--mode` values                                              |
 | `lintFlag`                    | `"none" \| "default" \| "all"`       | Move compiler lint level. Defaults to `"none"`                                                      |

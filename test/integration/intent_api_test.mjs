@@ -1,6 +1,6 @@
 import { loadWasmBindings } from "./wasm_helpers.mjs";
 
-const api = await import(new URL("../../dist/full/index.js", import.meta.url));
+const api = await import(new URL("../../dist/lite/index.js", import.meta.url));
 
 const {
   dumpMovePackage,
@@ -20,7 +20,6 @@ const supportedApi = new Set([
   "prepareMovePackagePublish",
   "prepareMovePackageUpgrade",
   "resolveMovePackageDependencies",
-  "testMovePackage",
 ]);
 
 for (const exportedName of Object.keys(api)) {
@@ -225,10 +224,5 @@ const missingUpgradeResult = await prepareMovePackageUpgrade(
   baseInput(unpublishedFiles)
 );
 expectValidationFailure(missingUpgradeResult, "unpublished root upgrade");
-
-const publishTestModeResult = await prepareMovePackagePublish(
-  baseInput(unpublishedFiles, { testMode: true })
-);
-expectValidationFailure(publishTestModeResult, "publish testMode");
 
 console.log("[OK] intent APIs expose dump/publish/upgrade preparation");

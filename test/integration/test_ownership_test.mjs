@@ -1,13 +1,12 @@
 const { initMovePackageBuilder, testMovePackage } = await import(
   new URL("../../dist/full/index.js", import.meta.url)
 );
+import { resolvedTestDependencies } from "./test_fixture_helpers.mjs";
 
 await initMovePackageBuilder();
 
 const DEP_ID =
   "0x000000000000000000000000000000000000000000000000000000000000cafe";
-const STD_ID =
-  "0x0000000000000000000000000000000000000000000000000000000000000001";
 
 const files = {
   "Move.toml": `
@@ -70,53 +69,10 @@ module dep::dep_tests {
   rootDependencyAliases: ["Dep"],
 };
 
-const moveStdlib = {
-  name: "MoveStdlib",
-  files: {
-    "dependencies/MoveStdlib/Move.toml": `
-[package]
-name = "MoveStdlib"
-version = "0.0.0"
-published-at = "0x1"
-edition = "2024"
-
-[addresses]
-std = "0x1"
-`,
-    "dependencies/MoveStdlib/sources/unit_test.move": `
-#[test_only]
-module std::unit_test;
-
-public native fun poison();
-public native fun destroy<T>(v: T);
-`,
-  },
-  edition: "2024",
-  addressMapping: {
-    std: STD_ID,
-    MoveStdlib: STD_ID,
-  },
-  publishedIdForOutput: STD_ID,
-  source: {
-    type: "system",
-    system: "std",
-  },
-  manifestDeps: [],
-  manifest: {
-    name: "MoveStdlib",
-    dependencies: {},
-  },
-  rootDependencyAliases: [],
-};
-
 const result = await testMovePackage({
   files,
   network: "mainnet",
-  resolvedDependencies: {
-    files: JSON.stringify(files),
-    dependencies: JSON.stringify([moveStdlib, dep]),
-    lockfileDependencies: JSON.stringify([moveStdlib, dep]),
-  },
+  resolvedDependencies: resolvedTestDependencies(files, [dep]),
 });
 
 if ("error" in result) {

@@ -1,7 +1,9 @@
 import { defineConfig } from "tsup";
 
+const entry = process.env.SUI_MOVE_BUILDER_ENTRY || "src/index.ts";
+
 export default defineConfig({
-  entry: ["src/index.ts"],
+  entry: { index: entry },
   format: ["esm", "cjs"],
   dts: true,
   sourcemap: process.env.SOURCEMAP === "true",

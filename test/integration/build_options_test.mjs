@@ -350,18 +350,4 @@ if (!hasAddress(customModeBuild.dependencies, "0x42")) {
   throw new Error("active mode dependency should be emitted");
 }
 
-const publishTestMode = await prepareMovePackagePublish({
-  files: unpublishedRootFiles,
-  resolvedDependencies: unpublishedResolved,
-  testMode: true,
-});
-expectFailure(publishTestMode, "publish testMode", "input_validation");
-
-const upgradeTestMode = await prepareMovePackageUpgrade({
-  files: publishedRootFiles,
-  resolvedDependencies: publishedResolved,
-  testMode: true,
-});
-expectFailure(upgradeTestMode, "upgrade testMode", "input_validation");
-
 console.log("[OK] build options match current CLI BuildConfig semantics");

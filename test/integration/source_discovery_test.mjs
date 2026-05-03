@@ -179,22 +179,3 @@ if ("error" in nonTestDependencyResult) {
     `Non-test build should ignore dependency tests/*.move, got error: ${nonTestDependencyResult.error}`
   );
 }
-
-const testModeDependencyResult = await buildWithResolvedDeps(
-  rootWithDepFiles(),
-  [depWithBadTestSource()],
-  { testMode: true }
-);
-if (!("error" in testModeDependencyResult)) {
-  throw new Error("testMode should compile dependency tests/*.move");
-}
-if (
-  !testModeDependencyResult.error.includes("dependencies/Dep/tests/bad.move") ||
-  !testModeDependencyResult.error.includes("unexpected token")
-) {
-  throw new Error(
-    `Expected dependency test source diagnostic, got: ${testModeDependencyResult.error}`
-  );
-}
-
-console.log("[OK] test mode source discovery includes dependency tests/*.move");

@@ -34,7 +34,6 @@ pub(crate) struct PackageGroup {
 
 pub(crate) enum CompilerInputMode {
     Build {
-        test_mode: bool,
         root_as_zero: bool,
         set_unpublished_deps_to_zero: bool,
     },
@@ -45,14 +44,14 @@ pub(crate) enum CompilerInputMode {
 impl CompilerInputMode {
     fn root_test_mode(&self) -> bool {
         match self {
-            Self::Build { test_mode, .. } => *test_mode,
+            Self::Build { .. } => false,
             Self::TestRunner => true,
         }
     }
 
     fn dependency_test_mode(&self) -> bool {
         match self {
-            Self::Build { test_mode, .. } => *test_mode,
+            Self::Build { .. } => false,
             Self::TestRunner => true,
         }
     }

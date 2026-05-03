@@ -53,6 +53,8 @@ For code or documentation changes, keep claims tied to verified behavior. Do not
 
 When adding a parity-sensitive integration test, update `test/integration/run.mjs`, the representative package scripts when needed, and this guide's required verification list in the same change.
 
+`testMovePackage` is a full-artifact API. Do not add public test-runner options or lite/root exports only to satisfy integration tests. The unit-test output parity case covers the currently exposed full API behavior.
+
 Run build, parity, audit, and browser verification serially. These commands share `.sui-build`, `dist`, and Sui CLI cache state, so the default process does not use background jobs or parallel npm runners.
 
 ## Parity and Hardcoding Rules

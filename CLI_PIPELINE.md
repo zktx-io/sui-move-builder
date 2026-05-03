@@ -49,7 +49,7 @@ The runtime package boundary is a host-provided snapshot, not an implicit filesy
 ## 4) Compiler Invocation
 
 - **CLI**: `Compiler::from_package_paths` with target + deps (Source/Bytecode mix), using real FS or VFS.
-- **Here (WASM/Rust)**: `compile_impl` builds `PackagePaths` for root/deps, writes files to an in-memory VFS, then calls `Compiler::from_package_paths`. Dependency named-address maps/IDs come from Rust package-group construction, falling back to `SourceManifest` parsing (via `manifest.rs`) where needed. `PackageConfig` uses manifest edition/flavor, source warning filters, and package-id safe names. `compileIntent` is one of `dump`, `publish`, or `upgrade`; `dump` and `upgrade` compile the root package named address as `0x0`, while `publish` keeps the package root address selected by package metadata. Dependency addresses are unchanged unless `withUnpublishedDependencies` maps unpublished dependency addresses to `0x0`. `testMode` controls test source inclusion and `Flags::testing()`. `modes` controls manifest dependency inclusion and `Flags::set_modes`. `lintFlag` maps to Move compiler lint levels (`none`, `default`, `all`) and registers the same regular/Sui linter filter sets used by the pinned compiler path. `stripMetadata` is passed by JS but not represented in the Rust compile options.
+- **Here (WASM/Rust)**: `compile_impl` builds `PackagePaths` for root/deps, writes files to an in-memory VFS, then calls `Compiler::from_package_paths`. Dependency named-address maps/IDs come from Rust package-group construction, falling back to `SourceManifest` parsing (via `manifest.rs`) where needed. `PackageConfig` uses manifest edition/flavor, source warning filters, and package-id safe names. `compileIntent` is one of `dump`, `publish`, or `upgrade`; `dump` and `upgrade` compile the root package named address as `0x0`, while `publish` keeps the package root address selected by package metadata. Dependency addresses are unchanged unless `withUnpublishedDependencies` maps unpublished dependency addresses to `0x0`. `modes` controls manifest dependency inclusion and `Flags::set_modes`. `lintFlag` maps to Move compiler lint levels (`none`, `default`, `all`) and registers the same regular/Sui linter filter sets used by the pinned compiler path. `stripMetadata` is passed by JS but not represented in the Rust compile options.
 
 ## 5) Module Ordering
 
@@ -109,8 +109,8 @@ Runtime code must not add filesystem package-root discovery, git-cache assumptio
 
 - **CLI**: `sui move test` compiles in test mode and runs the unit test runner.
 - **Here (WASM/Rust)**:
-  - **Compilation**: `compile_impl` accepts `test_mode: true` in `compileOptions`. This sets `Flags::testing()` and includes modules marked with `#[test_only]`.
-  - **Execution**: In the full build, `test_impl` takes the package source, dependencies, and test options, includes test-mode sources for root and dependency packages, passes user modes to compiler flags, constructs the test plan with the root package name, and runs tests using `move_unit_test::UnitTestingConfig` plus Sui natives. It returns a boolean pass/fail status and a string of output logs.
+  - **Compilation**: `test_impl` is available only in the full artifact. It includes test-mode sources for root and dependency packages and sets `Flags::testing()` internally.
+  - **Execution**: In the full build, `test_impl` takes the package source and dependencies, passes user modes to compiler flags, constructs the test plan with the root package name, and runs tests using `move_unit_test::UnitTestingConfig` plus Sui natives. It returns a boolean pass/fail status and the unit-test runner stdout. CLI test-runner flags such as filter, list, thread count, statistics, and random-test options are not public API.
 
 ## Verification checklist (keep in sync)
 
@@ -123,9 +123,9 @@ Runtime code must not add filesystem package-root discovery, git-cache assumptio
 - V4 lockfile graph loading: keep fixtures for same-name/different-source pins, undefined edges, local source pins through `fetchLocal`, and dependency snapshots missing `Move.toml`.
 - Explicit system deps: `node test/integration/run.mjs output-deps` covers preserving a root-declared system dependency alias while omitting the same system package when it is not root-declared.
 - Test mode: `node test/integration/run.mjs unit-test-ownership` covers the rule that dependency package tests are compiled but not run as root tests. `node test/integration/run.mjs unit-test-modes` covers user mode propagation to the test compiler path.
-- Source discovery: `node test/integration/run.mjs source-discovery` covers the non-test build rule that `tests/*.move` must not leak into compiler input and the test-mode rule that dependency tests are included in compiler input.
+- Source discovery: `node test/integration/run.mjs source-discovery` covers the build rule that `tests/*.move` must not leak into compiler input.
 - Lint setup: `node test/integration/run.mjs compiler-lint` covers accepted `lintFlag` values and invalid value handling.
-- Build options: `node test/integration/run.mjs build-options` covers `withUnpublishedDependencies`, arbitrary `modes`, intent root address policy, and publish/upgrade `testMode` validation.
+- Build options: `node test/integration/run.mjs build-options` covers `withUnpublishedDependencies`, arbitrary `modes`, and intent root address policy.
 
 ## 8) Implementation Defaults & Boundaries
 

@@ -20,6 +20,7 @@ const semanticCases = [
   "intent-api",
   "build-options",
   "output-deps",
+  "unit-test-output-parity",
   "unit-test-modes",
   "unit-test-ownership",
 ];
@@ -37,6 +38,7 @@ const caseFiles = new Map([
   ["intent-api", "intent_api_test.mjs"],
   ["build-options", "build_options_test.mjs"],
   ["output-deps", "output_dependency_test.mjs"],
+  ["unit-test-output-parity", "test_output_parity_test.mjs"],
   ["unit-test-modes", "test_modes_test.mjs"],
   ["unit-test-ownership", "test_ownership_test.mjs"],
 ]);

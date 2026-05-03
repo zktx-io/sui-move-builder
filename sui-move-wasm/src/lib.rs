@@ -408,7 +408,6 @@ fn compile_impl(
         &files,
         &dep_packages,
         CompilerInputMode::Build {
-            test_mode: options.test_mode,
             root_as_zero: options.compile_intent.root_as_zero(),
             set_unpublished_deps_to_zero: options.with_unpublished_dependencies,
         },
@@ -437,12 +436,7 @@ fn compile_impl(
         }
     };
 
-    let build_config = compiler_build_config(
-        options.test_mode,
-        options.silence_warnings,
-        lint_level,
-        options.modes,
-    );
+    let build_config = compiler_build_config(options.silence_warnings, lint_level, options.modes);
     compiler = configure_compiler_for_sui(compiler, &build_config);
 
     let (compiler_files, res) = match compiler.build() {
@@ -458,7 +452,7 @@ fn compile_impl(
     match res {
         Ok((units, warning_diags)) => {
             let fn_info = fn_info(&units);
-            if let Err(e) = verify_bytecode(&units, &fn_info, options.test_mode) {
+            if let Err(e) = verify_bytecode(&units, &fn_info, false) {
                 return WasmCompileResult {
                     success: false,
                     output: format!("Bytecode Verification Failed: {}", e),
@@ -628,6 +622,11 @@ impl Default for WasmTestOptions {
 }
 
 #[cfg(feature = "testing")]
+fn default_sui_unit_test_bound() -> u64 {
+    ProtocolConfig::get_for_max_version_UNSAFE().max_tx_gas()
+}
+
+#[cfg(feature = "testing")]
 fn test_impl(
     files_json: &str,
     dependencies_json: &str,
@@ -687,7 +686,14 @@ fn test_impl(
         }
     };
 
-    let build_config = compiler_build_config(true, false, LintLevel::None, options.modes);
+    let test_modes = {
+        let mut modes = options.modes;
+        if !modes.iter().any(|mode| mode == "test") {
+            modes.push("test".to_string());
+        }
+        modes
+    };
+    let build_config = compiler_build_config(false, LintLevel::None, test_modes);
     let compiler = configure_compiler_for_sui(compiler, &build_config);
     let (files_info, comments_and_compiler_res) =
         match compiler.run::<{ move_compiler::PASS_CFGIR }>() {
@@ -753,11 +759,11 @@ fn test_impl(
         }
     };
 
+    let default_config = UnitTestingConfig::default_with_bound(Some(default_sui_unit_test_bound()));
     let config = UnitTestingConfig {
-        num_threads: 1,
-        gas_limit: Some(1_000_000),
+        gas_limit: Some(default_sui_unit_test_bound()),
         report_stacktrace_on_abort: true,
-        ..UnitTestingConfig::default_with_bound(None)
+        ..default_config
     };
 
     let output_buffer = std::io::Cursor::new(Vec::new());
@@ -779,12 +785,6 @@ fn test_impl(
         passed,
         output: output_str,
     }
-}
-
-#[cfg(feature = "testing")]
-#[wasm_bindgen]
-pub fn test(files_json: &str, dependencies_json: &str) -> WasmTestResult {
-    test_impl(files_json, dependencies_json, None)
 }
 
 #[cfg(feature = "testing")]
@@ -1642,11 +1642,7 @@ fn lockfile_v4_dependency_aliases_for_lockfile(move_toml: &str) -> BTreeSet<Stri
     value
         .get("dependencies")
         .and_then(|deps| deps.as_table())
-        .map(|deps| {
-            deps.iter()
-                .map(|(name, _)| name.clone())
-                .collect()
-        })
+        .map(|deps| deps.iter().map(|(name, _)| name.clone()).collect())
         .unwrap_or_default()
 }
 
@@ -2310,12 +2306,8 @@ fn lockfile_v4_generate_impl(input: LockfileV4GenerateInput) -> Result<String, H
             "manifest_digest = {}",
             lockfile_v4_toml_string(&digest)
         ));
-        let deps = lockfile_v4_generated_deps(
-            package,
-            &packages,
-            &package_ids,
-            &manifest_name_to_ids,
-        )?;
+        let deps =
+            lockfile_v4_generated_deps(package, &packages, &package_ids, &manifest_name_to_ids)?;
         lines.push(lockfile_v4_format_deps(&deps));
         lines.push(String::new());
     }
@@ -3639,8 +3631,6 @@ impl CompileIntent {
 struct WasmCompileOptions {
     #[serde(default, rename = "silenceWarnings")]
     silence_warnings: bool,
-    #[serde(default, rename = "testMode")]
-    test_mode: bool,
     #[serde(default, rename = "withUnpublishedDependencies")]
     with_unpublished_dependencies: bool,
     #[serde(default)]
@@ -3666,20 +3656,17 @@ fn parse_lint_level(lint_flag: Option<&str>) -> Result<LintLevel, String> {
 }
 
 struct CompilerBuildConfig {
-    test_mode: bool,
     silence_warnings: bool,
     lint_level: LintLevel,
     modes: Vec<Symbol>,
 }
 
 fn compiler_build_config(
-    test_mode: bool,
     silence_warnings: bool,
     lint_level: LintLevel,
     modes: Vec<String>,
 ) -> CompilerBuildConfig {
     CompilerBuildConfig {
-        test_mode,
         silence_warnings,
         lint_level,
         modes: modes
@@ -3690,11 +3677,10 @@ fn compiler_build_config(
 }
 
 fn compiler_flags_for_build_config(build_config: &CompilerBuildConfig) -> Flags {
-    let flags = if build_config.test_mode
-        || build_config
-            .modes
-            .iter()
-            .any(|mode| mode.as_str() == "test")
+    let flags = if build_config
+        .modes
+        .iter()
+        .any(|mode| mode.as_str() == "test")
     {
         Flags::testing()
     } else {

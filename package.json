@@ -20,19 +20,19 @@
     "url": "https://github.com/zktx-io/sui-move-builder/issues"
   },
   "type": "module",
-  "main": "./dist/full/index.cjs",
-  "module": "./dist/full/index.js",
-  "types": "./dist/full/index.d.ts",
+  "main": "./dist/lite/index.cjs",
+  "module": "./dist/lite/index.js",
+  "types": "./dist/lite/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/full/index.d.ts",
-      "import": "./dist/full/index.js",
-      "require": "./dist/full/index.cjs"
-    },
-    "./lite": {
       "types": "./dist/lite/index.d.ts",
       "import": "./dist/lite/index.js",
       "require": "./dist/lite/index.cjs"
+    },
+    "./full": {
+      "types": "./dist/full/index.d.ts",
+      "import": "./dist/full/index.js",
+      "require": "./dist/full/index.cjs"
     }
   },
   "publishConfig": {
@@ -53,7 +53,7 @@
     "build:wasm:prepared:lite": "node scripts/build-prepared-wasm.mjs --profile lite",
     "build:wasm:prepared:full": "node scripts/build-prepared-wasm.mjs --profile full",
     "build:wasm": "npm run prepare:wasm && npm run build:wasm:prepared",
-    "build:js": "tsup --out-dir dist/full && tsup --out-dir dist/lite",
+    "build:js": "SUI_MOVE_BUILDER_ENTRY=src/full.ts tsup --out-dir dist/full && SUI_MOVE_BUILDER_ENTRY=src/index.ts tsup --out-dir dist/lite",
     "build": "npm run build:wasm && npm run build:js",
     "dev:browser-parity": "node test/browser-parity-server.mjs",
     "test": "node test/integration/run.mjs default",
