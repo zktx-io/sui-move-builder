@@ -55,6 +55,8 @@ When adding a parity-sensitive integration test, update `test/integration/run.mj
 
 `testMovePackage` is a full-artifact API. Do not add public test-runner options or lite/root exports only to satisfy integration tests. The unit-test output parity case covers the currently exposed full API behavior.
 
+Publication update helpers consume successful external execution results and prepared build outputs. Do not add DApp Kit, wallet, signer, gas, sender, PTB execution, transaction-construction helpers, or non-CLI synthetic file creation to satisfy browser deployment examples.
+
 Run build, parity, audit, and browser verification serially. These commands share `.sui-build`, `dist`, and Sui CLI cache state, so the default process does not use background jobs or parallel npm runners.
 
 ## Parity and Hardcoding Rules

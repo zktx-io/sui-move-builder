@@ -63,15 +63,16 @@ The runtime package boundary is a host-provided snapshot, not an implicit filesy
 
 ## Known Limitations
 
-| Area                                                        | Status                | Current contract                                                                                                                                 | Do not replace with                                                            |
-| ----------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
-| Bytecode-only `.mv` dependency fallback                     | `unsupported`         | All dependencies must be available as source snapshots.                                                                                          | Generated source or synthetic package metadata.                                |
-| Browser/local filesystem discovery                          | `host-snapshot only`  | Local dependency files must be provided through `fetchLocal` or another host snapshot loader.                                                    | Hidden filesystem assumptions in browser code.                                 |
-| `stripMetadata`                                             | `reserved/no-op`      | The public option is passed through but is not represented in Rust compile options.                                                              | Documentation that presents it as active compiler behavior.                    |
-| Full upstream `PackageGraphBuilder` / `BuildPlan` execution | `not used at runtime` | V4 lockfile and manifest fallback semantics are Rust/WASM-owned for supported shapes, while TypeScript owns host fetching and snapshot assembly. | More local package-manager semantics without upstream references and fixtures. |
-| Dev-address / extra named-address override API              | `not exposed`         | No first-class `MovePackageInput` override channel is exposed.                                                                                   | Ad hoc address rewrites in TypeScript.                                         |
-| V0/V1/V2/V3 lockfile graph loading as pinned graph sources  | `unsupported`         | Supported packages fall back to manifest resolution; supported V3 publication data may be migrated separately.                                   | JS compatibility graph loading or silent lockfile pin trust.                   |
-| Transaction execution                                       | `not exposed`         | Publish and upgrade APIs prepare bytecode payload data only.                                                                                     | Signing, gas selection, PTB construction, dry-run, or execution in this layer. |
+| Area                                                        | Status                | Current contract                                                                                                                                               | Do not replace with                                                            |
+| ----------------------------------------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Bytecode-only `.mv` dependency fallback                     | `unsupported`         | All dependencies must be available as source snapshots.                                                                                                        | Generated source or synthetic package metadata.                                |
+| Browser/local filesystem discovery                          | `host-snapshot only`  | Local dependency files must be provided through `fetchLocal` or another host snapshot loader.                                                                  | Hidden filesystem assumptions in browser code.                                 |
+| `stripMetadata`                                             | `reserved/no-op`      | The public option is passed through but is not represented in Rust compile options.                                                                            | Documentation that presents it as active compiler behavior.                    |
+| Full upstream `PackageGraphBuilder` / `BuildPlan` execution | `not used at runtime` | V4 lockfile and manifest fallback semantics are Rust/WASM-owned for supported shapes, while TypeScript owns host fetching and snapshot assembly.               | More local package-manager semantics without upstream references and fixtures. |
+| Dev-address / extra named-address override API              | `not exposed`         | No first-class `MovePackageInput` override channel is exposed.                                                                                                 | Ad hoc address rewrites in TypeScript.                                         |
+| V0/V1/V2/V3 lockfile graph loading as pinned graph sources  | `unsupported`         | Supported packages fall back to manifest resolution; supported V3 publication data may be migrated separately.                                                 | JS compatibility graph loading or silent lockfile pin trust.                   |
+| Transaction execution                                       | `not exposed`         | Publish and upgrade APIs prepare bytecode payload data only.                                                                                                   | Signing, gas selection, PTB construction, dry-run, or execution in this layer. |
+| Publication update                                          | `WASM + JS helper`    | Successful external publish/upgrade results update `Published.toml`; caller-provided files are preserved. Prepared `Move.lock` remains a prepare/build output. | Wallet, DApp Kit, transaction execution coupling, or TS TOML rendering.        |
 
 ## Known Implementation Boundaries
 
@@ -238,7 +239,7 @@ Output record of deployment. Contains `original_id` and `published_at` per envir
 ### 11.2 Loading Priority (per package)
 
 ```
-Published.toml → migrated V3 publication data when provided by the JS wrapper → None
+Published.toml → migrated V3 publication data from the WASM helper → None
 ```
 
 - **All packages** (root + dependencies) attempt to read their own `Published.toml`
@@ -250,6 +251,12 @@ Published.toml → migrated V3 publication data when provided by the JS wrapper 
 | ---------------- | ------------------------------------------------ |
 | WASM Compilation | `original_id` when available, otherwise fallback |
 | Output Metadata  | latest/published ID information when available   |
+
+### 11.4 Publication Update
+
+`updateMovePackagePublication` consumes a successful externally executed transaction result. It does not sign, execute, query chain ID, or persist files. The caller supplies `chainId` and stores the returned `files`.
+
+Publication rendering uses the WASM helper that mirrors pinned Sui `update_publication`, `write_publish_data`, and `ParsedPublishedFile::render_as_toml`. Publish can create a new `Published.toml` snapshot after a successful result. Upgrade requires existing publication information for the selected environment. Missing optional fields in unrelated records stay missing.
 
 ---
 

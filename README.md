@@ -144,13 +144,54 @@ await initMovePackageBuilder({
 
 The package exposes intent-specific preparation APIs:
 
-| API                         | Purpose                                                                |
-| --------------------------- | ---------------------------------------------------------------------- |
-| `dumpMovePackage`           | Prepare CLI dump-style `{ modules, dependencies, digest }` output      |
-| `prepareMovePackagePublish` | Prepare modules, dependency IDs, and digest for a publish payload      |
-| `prepareMovePackageUpgrade` | Prepare modules, dependency IDs, digest, and package ID for an upgrade |
+| API                            | Purpose                                                                |
+| ------------------------------ | ---------------------------------------------------------------------- |
+| `dumpMovePackage`              | Prepare CLI dump-style `{ modules, dependencies, digest }` output      |
+| `prepareMovePackagePublish`    | Prepare modules, dependency IDs, and digest for a publish payload      |
+| `prepareMovePackageUpgrade`    | Prepare modules, dependency IDs, digest, and package ID for an upgrade |
+| `updateMovePackagePublication` | Update publication files from an externally executed publish/upgrade   |
 
-These APIs do not sign transactions, choose gas/payment, build a complete PTB, dry-run, execute, or update on-chain publication records.
+These APIs do not sign transactions, choose gas/payment, dry-run, execute, or store package files. Transaction construction and execution stay in the calling app.
+
+## Updating Publication Files After Publish
+
+The package returns bytecode payloads and generated `Move.lock` content for publish and upgrade. The calling app builds and executes the transaction with its own wallet flow, then passes the successful result back to update the publication snapshot.
+
+```ts
+import {
+  prepareMovePackagePublish,
+  updateMovePackagePublication,
+} from "@zktx.io/sui-move-builder";
+import { Transaction } from "@mysten/sui/transactions";
+
+const prepared = await prepareMovePackagePublish({ files, network: "testnet" });
+if ("error" in prepared) throw new Error(prepared.error);
+const filesWithLock = { ...files, "Move.lock": prepared.moveLock };
+
+const tx = new Transaction();
+const upgradeCap = tx.publish({
+  modules: prepared.modules,
+  dependencies: prepared.dependencies,
+});
+tx.transferObjects([upgradeCap], account.address);
+
+const result = await signAndExecuteTransaction({ transaction: tx });
+const { chainIdentifier } = await client.core.getChainIdentifier();
+
+const updated = await updateMovePackagePublication({
+  files: filesWithLock,
+  prepared,
+  result,
+  network: "testnet",
+  chainId: chainIdentifier,
+});
+if ("error" in updated) throw new Error(updated.error);
+
+const nextFiles = updated.files;
+console.log(updated.publishedToml);
+```
+
+Upgrade publication updates use `updateMovePackagePublication` after an externally executed upgrade transaction. The selected environment must already exist in `Published.toml` so the original package ID and UpgradeCap ID can be preserved.
 
 ## Running Tests
 
@@ -383,7 +424,7 @@ const result2 = await dumpMovePackage({
 
 - Dependencies are always compiled from source. Bytecode-only deps (.mv fallback used by the Sui CLI when sources are missing) are not supported in the wasm path.
 - V0/V1/V2/V3 `Move.lock` graph sections are not used as pinned graph sources. Supported packages fall back to manifest resolution; V3 publication migration is supported where covered by tests.
-- Publish and upgrade APIs prepare bytecode payload data only. Transaction signing, gas selection, PTB construction, dry-run, execution, and post-execution publication record updates are outside the WASM package boundary.
+- Publish and upgrade APIs prepare bytecode payload data only. Transaction signing, gas selection, PTB construction, dry-run, execution, and file persistence are outside the WASM package boundary.
 - CLI parity is verified for selected fixtures, not for every Sui package-manager path. Some compiler and test-runner behavior is still implemented through local compatibility glue.
 
 ## Best Practices

@@ -2,6 +2,14 @@ export { GitHubMovePackageFetcher, MovePackageFetcher } from "./fetcher.js";
 export type { MovePackageFetchLocalContext } from "./fetcher.js";
 
 export type {
+  MovePackagePublication,
+  MovePackagePublicationUpdateInput,
+  MovePackagePublicationUpdateResult,
+} from "./publishedRecord.js";
+
+export { updateMovePackagePublication } from "./publishedRecord.js";
+
+export type {
   MovePackageDumpSuccess,
   MovePackageFailure,
   MovePackageFailureCategory,

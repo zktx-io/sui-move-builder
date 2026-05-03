@@ -2,7 +2,10 @@ import { MovePackageFetcher, GitHubMovePackageFetcher } from "./fetcher.js";
 import { resolve as resolveMoveToml } from "./resolver.js";
 import { parseToml } from "./tomlParser.js";
 import { generateMoveLockV4FromJson } from "./lockfileGenerator.js";
-import { structuredErrorCode } from "./structuredError.js";
+import {
+  StructuredBuildError,
+  structuredErrorCode,
+} from "./structuredError.js";
 
 /** Build progress event types for tracking build status */
 export type MovePackageProgressEvent =
@@ -118,22 +121,6 @@ export interface MovePackageFailure {
   /** Optional structured failure code produced by Rust/WASM helpers. */
   code?: string;
 }
-
-import {
-  migrateV3PublicationRecordsToPublishedToml,
-  stripEnvSectionsFromV3Lockfile,
-} from "./lockfileMigration.js";
-
-// ORIGINAL SOURCE REFERENCE: sui-types/src/digests.rs:164-165, 262-269
-// Chain IDs are first 4 bytes of genesis checkpoint digest as hex
-// MAINNET_CHAIN_IDENTIFIER_BASE58 = "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S"
-// TESTNET_CHAIN_IDENTIFIER_BASE58 = "69WiPg3DAQiwdxfncX6wYQ2siKwAe6L9BZthQea3JNMD"
-const CHAIN_IDS: Record<string, string> = {
-  mainnet: "35834a8a",
-  testnet: "4c78adac",
-  devnet: "2",
-  localnet: "localnet",
-};
 
 function isMoveManifestPath(path: string): boolean {
   const fileName = path.split(/[\\/]/).pop() || path;
@@ -301,6 +288,56 @@ function ensureCompileResult(result: unknown): {
   }
 
   throw new Error("Unexpected compile result shape from wasm");
+}
+
+type LegacyPublicationMigrationResponse =
+  | {
+      status: "ok";
+      publishedToml?: string;
+      moveLock?: string;
+    }
+  | { status: "error"; error?: string; code?: string };
+
+function parseLegacyPublicationMigrationResponse(
+  raw: string
+): LegacyPublicationMigrationResponse {
+  const parsed = JSON.parse(raw) as unknown;
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    typeof (parsed as { status?: unknown }).status !== "string"
+  ) {
+    throw new Error(
+      "Rust legacy_publication_migration returned an invalid response"
+    );
+  }
+  return parsed as LegacyPublicationMigrationResponse;
+}
+
+function applyLegacyPublicationMigration(
+  input: MovePackageInput | MovePackageUpgradeInput,
+  mod: WasmModule
+): string | undefined {
+  if (!input.files["Move.lock"]) {
+    return undefined;
+  }
+
+  const response = parseLegacyPublicationMigrationResponse(
+    mod.legacy_publication_migration(JSON.stringify({ files: input.files }))
+  );
+  if (response.status !== "ok") {
+    throw new StructuredBuildError(
+      response.error || "Legacy publication migration failed",
+      response.code
+    );
+  }
+  if (response.publishedToml) {
+    input.files["Published.toml"] = response.publishedToml;
+  }
+  if (response.moveLock) {
+    input.files["Move.lock"] = response.moveLock;
+  }
+  return response.publishedToml;
 }
 
 function parseCompileResult(
@@ -527,9 +564,17 @@ async function resolveMovePackageDependenciesInternal(
       | undefined);
 
   const mod = await loadWasm(input.wasm);
+  const files = { ...input.files, "Move.toml": moveToml };
+  applyLegacyPublicationMigration(
+    {
+      ...input,
+      files,
+    },
+    mod
+  );
   const resolved = await resolveMoveToml(
     moveToml,
-    { ...input.files, "Move.toml": moveToml },
+    files,
     input.fetcher ?? new GitHubMovePackageFetcher(input.githubToken),
     input.network,
     inferredRootGit
@@ -591,43 +636,18 @@ async function compileMovePackage(
     input.files = filteredFiles;
     input.rootGit = inferredRootGit;
 
-    // ORIGINAL CLI SOURCE:
-    // - external-crates/move/crates/move-package-alt/src/package/root_package.rs:249-267
-    //   save_lockfile_to_disk() migrates V3 publication records to Published.toml
-    // - external-crates/move/crates/move-package-alt/src/compatibility/legacy_lockfile.rs
-    //   load_legacy_lockfile() is the upstream V3 publication parser.
-    //
-    // V3 publication records are applied before resolve/build.
-    let migratedPublishedToml: string | undefined;
-    const inputLockfile = input.files["Move.lock"];
-    if (inputLockfile) {
-      const chainId = CHAIN_IDS[environment] || environment;
-      const migrationResult = migrateV3PublicationRecordsToPublishedToml(
-        inputLockfile,
-        environment,
-        chainId
-      );
-      migratedPublishedToml = migrationResult ?? undefined;
-      if (migratedPublishedToml) {
-        if (!input.files["Published.toml"]) {
-          input.files["Published.toml"] = migratedPublishedToml;
-        }
-
-        // Remove V3 [env] publication sections before V4 lockfile generation.
-        const strippedLock = stripEnvSectionsFromV3Lockfile(inputLockfile);
-        if (strippedLock) {
-          input.files["Move.lock"] = strippedLock;
-        }
-      } else {
-        // V3 lockfiles without environment pins fall back to manifest resolution.
-      }
-    }
-
     let mod: WasmModule;
     try {
       mod = await loadWasm(input.wasm);
     } catch (error) {
       return asFailure(error, "wasm_init");
+    }
+
+    let migratedPublishedToml: string | undefined;
+    try {
+      migratedPublishedToml = applyLegacyPublicationMigration(input, mod);
+    } catch (error) {
+      return asFailure(error, "lockfile_generation");
     }
 
     const intentValidation = validatePackageIntent(
@@ -765,19 +785,8 @@ async function compileMovePackage(
           intentValidation.packageId as string;
       }
 
-      // Attempt V3 publication migration when Move.lock contains supported records.
-      const inputLockfile = input.files["Move.lock"];
-      if (inputLockfile) {
-        const chainId = CHAIN_IDS[environment] || environment;
-        const migratedPublishedToml =
-          migrateV3PublicationRecordsToPublishedToml(
-            inputLockfile,
-            environment,
-            chainId
-          );
-        if (migratedPublishedToml) {
-          buildResult.publishedToml = migratedPublishedToml;
-        }
+      if (migratedPublishedToml) {
+        buildResult.publishedToml = migratedPublishedToml;
       }
     }
 
@@ -820,7 +829,7 @@ export async function prepareMovePackageUpgrade(
 
 /** Sui Move version baked into the wasm (e.g. from Cargo.lock). */
 export async function getPinnedSuiMoveVersion(options?: {
-  wasm?: string | URL;
+  wasm?: string | URL | BufferSource;
 }): Promise<string> {
   const mod = await loadWasm(options?.wasm);
   return mod.sui_move_version();
@@ -828,7 +837,7 @@ export async function getPinnedSuiMoveVersion(options?: {
 
 /** Sui repo version baked into the wasm (e.g. from Cargo.lock). */
 export async function getPinnedSuiVersion(options?: {
-  wasm?: string | URL;
+  wasm?: string | URL | BufferSource;
 }): Promise<string> {
   const mod = await loadWasm(options?.wasm);
   return mod.sui_version();

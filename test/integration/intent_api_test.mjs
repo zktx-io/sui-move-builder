@@ -20,6 +20,7 @@ const supportedApi = new Set([
   "prepareMovePackagePublish",
   "prepareMovePackageUpgrade",
   "resolveMovePackageDependencies",
+  "updateMovePackagePublication",
 ]);
 
 for (const exportedName of Object.keys(api)) {

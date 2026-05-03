@@ -244,6 +244,40 @@ await assertRejects(
   () =>
     resolve(
       rootFiles({
+        moveLock: "[moooove]\nversion = 1\n",
+      }),
+      "mainnet"
+    ),
+  /expected a \[move\] section/,
+  "malformed legacy Move.lock"
+);
+
+await assertRejects(
+  () =>
+    resolve(
+      rootFiles({
+        moveLock: `
+[move]
+version = 3
+
+[env.mainnet]
+chain-id = "35834a8a"
+original-published-id = "not-an-address"
+latest-published-id = "0x3"
+published-version = "3"
+`,
+      }),
+      "mainnet"
+    ),
+  /Invalid original-published-id/,
+  "invalid legacy publication address"
+);
+console.log("[OK] malformed legacy Move.lock fails explicitly");
+
+await assertRejects(
+  () =>
+    resolve(
+      rootFiles({
         dependencies: `
 [dependencies]
 MissingSource = { local = "../missing-source" }

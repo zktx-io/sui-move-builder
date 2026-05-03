@@ -36,6 +36,7 @@ const buildApi = [
   "prepareMovePackagePublish",
   "prepareMovePackageUpgrade",
   "resolveMovePackageDependencies",
+  "updateMovePackagePublication",
 ];
 
 for (const variant of variants) {

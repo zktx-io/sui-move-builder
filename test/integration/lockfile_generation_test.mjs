@@ -235,7 +235,7 @@ const malformedResult = await buildWith(
 );
 assertError(
   malformedResult,
-  /Failed to parse existing Move\.lock/,
+  /Failed to parse Move\.lock/,
   "malformed existing lockfile",
   "lockfile_generation",
   "malformed_lockfile"

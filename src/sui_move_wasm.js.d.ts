@@ -26,6 +26,8 @@ export function manifest_graph_resolve_package_groups(
   inputJson: string
 ): string;
 export function root_publication_metadata(inputJson: string): string;
+export function publication_update(inputJson: string): string;
+export function legacy_publication_migration(inputJson: string): string;
 export function lockfile_v4_generate(inputJson: string): string;
 export default function init(
   wasm?:
