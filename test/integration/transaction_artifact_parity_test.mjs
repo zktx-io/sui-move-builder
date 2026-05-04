@@ -1,16 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { SuiGraphQLClient } from "@mysten/sui/graphql";
 import { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Transaction } from "@mysten/sui/transactions";
 import {
   compareBuildOutputs,
   compareModuleBytecode,
-  modulesToOutput,
   normalizeOutput,
-  readNamedMoveModules,
   writeJsonArtifact,
 } from "./artifact_parity_helpers.mjs";
 import {
@@ -19,13 +16,17 @@ import {
 } from "./github_artifact_helpers.mjs";
 import {
   assertSuiCliVersion,
-  createParityContext,
+  createVerificationAuditContext,
   formatSuiCliFailure,
-  pathExists,
   readMovePackageFiles,
   repoRoot,
   toArtifactPackageName,
 } from "./parity_helpers.mjs";
+import {
+  compareCliWithVerificationCurrent,
+  verificationStatusGate,
+  verifyReferenceProvenance,
+} from "./verification_audit_helpers.mjs";
 
 const networkUrls = {
   mainnet: {
@@ -51,6 +52,7 @@ const fixtures = [
     packagePath: "move/enclave",
     txDigest: "B2eHopwUuSgMhJNHQA6LNMkQYVKesPe6M6MorbiwiaGX",
     expectedKind: "publish",
+    expectedStatus: "toolchain_mismatch",
   },
   {
     name: "apps-kiosk",
@@ -60,49 +62,17 @@ const fixtures = [
     packagePath: "kiosk",
     txDigest: "LexwBJLt1jMwhNsNCkU4jiWwZPaAeqwhgLy2RPZbd2n",
     expectedKind: "upgrade",
+    expectedStatus: "toolchain_mismatch",
   },
 ];
 
-const { suiVersion, mode, distDir, wasmPath, suiCli, parityOutputDir } =
-  createParityContext(
+const { suiVersion, mode, suiCli, parityOutputDir } =
+  createVerificationAuditContext(
     process.argv.slice(2),
     "parity-transaction-artifact-output"
   );
 
-function runSuiCliPublishArtifact(packageDir, outputDir, label, environment) {
-  const command = [
-    "move",
-    "build",
-    "--path",
-    packageDir,
-    "--install-dir",
-    outputDir,
-    "--build-env",
-    environment,
-  ];
-  const result = spawnSync(suiCli, command, {
-    cwd: repoRoot,
-    encoding: "utf8",
-    maxBuffer: 100 * 1024 * 1024,
-    timeout: Number(process.env.SUI_PARITY_CLI_TIMEOUT_MS || 180000),
-  });
-  if (result.error || result.status !== 0) {
-    throw new Error(
-      formatSuiCliFailure({
-        label,
-        command: [suiCli, ...command],
-        packageDir,
-        result,
-      })
-    );
-  }
-  return {
-    stdout: result.stdout.trim(),
-    stderr: result.stderr.trim(),
-  };
-}
-
-function runSuiCliUpgradeArtifact(packageDir, label, environment) {
+function runSuiCliDumpArtifact(packageDir, label, environment) {
   const command = [
     "move",
     "build",
@@ -135,23 +105,6 @@ function runSuiCliUpgradeArtifact(packageDir, label, environment) {
     throw new Error(`Sui CLI did not emit JSON output for ${packageDir}`);
   }
   return JSON.parse(stdout.slice(jsonStart, jsonEnd + 1));
-}
-
-async function readPublishCliOutput(outputDir) {
-  const buildDir = path.join(outputDir, "build");
-  const packageDirs = (await fs.readdir(buildDir, { withFileTypes: true }))
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => path.join(buildDir, entry.name))
-    .sort();
-  if (packageDirs.length !== 1) {
-    throw new Error(
-      `Expected exactly one built package under ${buildDir}, found ${packageDirs.length}`
-    );
-  }
-  const namedModules = await readNamedMoveModules(
-    path.join(packageDirs[0], "bytecode_modules")
-  );
-  return modulesToOutput(namedModules);
 }
 
 async function fetchTransactionArtifact(fixture) {
@@ -222,6 +175,7 @@ function extractTransactionArtifact(transaction, source) {
         kind: "publish",
         modules: normalizeTransactionModules(command.Publish.modules),
         dependencies: command.Publish.dependencies,
+        packageId: extractPublishedPackageId(transaction),
       });
     }
     if (command.Upgrade) {
@@ -250,6 +204,23 @@ function extractTransactionArtifact(transaction, source) {
   };
 }
 
+function extractPublishedPackageId(transaction) {
+  const packageWrites = (transaction.effects?.changedObjects || []).filter(
+    (change) =>
+      change?.outputState === "PackageWrite" &&
+      change?.idOperation === "Created"
+  );
+  if (packageWrites.length === 0) {
+    return undefined;
+  }
+  if (packageWrites.length !== 1) {
+    throw new Error(
+      `Expected exactly one published package object in ${transaction.digest}, found ${packageWrites.length}`
+    );
+  }
+  return String(packageWrites[0].objectId).toLowerCase();
+}
+
 function normalizeTransactionModules(modules) {
   return modules.map((module) => {
     if (typeof module === "string") {
@@ -259,73 +230,13 @@ function normalizeTransactionModules(modules) {
   });
 }
 
-async function buildWasmOutput({
-  fixture,
-  packageDir,
-  transactionArtifact,
-  distUrl,
-}) {
-  const {
-    GitHubMovePackageFetcher,
-    initMovePackageBuilder,
-    prepareMovePackagePublish,
-    prepareMovePackageUpgrade,
-  } = await import(distUrl);
-  await initMovePackageBuilder({ wasm: await fs.readFile(wasmPath) });
-  const token = await readGithubToken();
-  const fetcher = new GitHubMovePackageFetcher(token);
-  const files = await readMovePackageFiles(packageDir);
-  const rootGit = {
-    git: fixture.git,
-    rev: fixture.commit,
-    subdir: fixture.packagePath,
-  };
-
-  if (transactionArtifact.kind === "publish") {
-    return prepareMovePackagePublish({
-      files,
-      network: fixture.network,
-      fetcher,
-      rootGit,
-      silenceWarnings: true,
-    });
-  }
-
-  const packageId =
-    fixture.packageId ||
-    (files["Published.toml"] ? undefined : transactionArtifact.packageId);
-  if (!packageId && !files["Published.toml"]) {
-    throw new Error(
-      `${fixture.name}: upgrade source has no Published.toml and transaction has no package id`
-    );
-  }
-
-  const input = {
-    files,
-    network: fixture.network,
-    fetcher,
-    rootGit,
-    silenceWarnings: true,
-  };
-  if (packageId) {
-    input.packageId = packageId;
-  }
-  return prepareMovePackageUpgrade(input);
-}
-
 async function main() {
   console.log(
-    `Running transaction artifact parity tests in [${mode.toUpperCase()}] mode`
+    `Running transaction artifact provenance audit in [${mode.toUpperCase()}] mode`
   );
-  if (!(await pathExists(wasmPath))) {
-    throw new Error(
-      `Missing WASM artifact: ${wasmPath}. Run npm run build first.`
-    );
-  }
   assertSuiCliVersion(suiCli, suiVersion.version);
 
   const token = await readGithubToken();
-  const distUrl = pathToFileURL(path.join(distDir, "index.js")).href;
   let failed = false;
 
   for (const fixture of fixtures) {
@@ -333,7 +244,6 @@ async function main() {
     const outputRoot = path.join(parityOutputDir, artifactPackageName);
     const sourceRoot = path.join(outputRoot, "source");
     const packageDir = path.join(sourceRoot, fixture.packagePath);
-    const cliOutputDir = path.join(outputRoot, "cli-build");
     console.log(`\n=== ${fixture.name} ===`);
 
     try {
@@ -359,45 +269,48 @@ async function main() {
         transactionArtifact
       );
 
-      let resolvedCliOutput;
-      if (transactionArtifact.kind === "publish") {
-        runSuiCliPublishArtifact(
+      const resolvedCliOutput = normalizeOutput(
+        runSuiCliDumpArtifact(
           packageDir,
-          cliOutputDir,
-          `Sui CLI publish artifact build failed for ${fixture.name}`,
+          `Sui CLI current source build failed for ${fixture.name}`,
           fixture.network
-        );
-        resolvedCliOutput = await readPublishCliOutput(cliOutputDir);
-      } else {
-        resolvedCliOutput = normalizeOutput(
-          runSuiCliUpgradeArtifact(
-            packageDir,
-            `Sui CLI upgrade artifact build failed for ${fixture.name}`,
-            fixture.network
-          )
-        );
-      }
+        )
+      );
       await writeJsonArtifact(outputRoot, "cli.json", resolvedCliOutput);
 
-      const wasmResult = await buildWasmOutput({
-        fixture,
-        packageDir,
-        transactionArtifact,
-        distUrl,
-      });
-      if ("error" in wasmResult) {
-        await writeJsonArtifact(outputRoot, "wasm-error.json", wasmResult);
-        throw new Error(
-          `WASM ${transactionArtifact.kind} build failed: ${wasmResult.error}`
-        );
-      }
-      const wasmOutput = normalizeOutput(wasmResult);
-      await writeJsonArtifact(outputRoot, "wasm.json", wasmOutput);
-
+      const files = await readMovePackageFiles(packageDir);
       const txOutput = {
         modules: transactionArtifact.modules,
         dependencies: transactionArtifact.dependencies,
       };
+      const reference = {
+        ...txOutput,
+      };
+      const verification = await verifyReferenceProvenance({
+        files,
+        network: fixture.network,
+        githubToken: token,
+        rootGit: {
+          git: fixture.git,
+          rev: fixture.commit,
+          subdir: fixture.packagePath,
+        },
+        reference,
+      });
+      await writeJsonArtifact(outputRoot, "verification.json", verification);
+      const verificationGate = verificationStatusGate(fixture, verification);
+      const cliVsVerification = compareCliWithVerificationCurrent(
+        resolvedCliOutput,
+        verification
+      );
+      if (cliVsVerification.currentBuild) {
+        await writeJsonArtifact(
+          outputRoot,
+          "verification-current-build.json",
+          cliVsVerification.currentBuild
+        );
+      }
+
       const compareDependencyOutputs = transactionArtifact.kind === "upgrade";
       const txVsCli = compareModuleBytecode(
         "transaction",
@@ -405,43 +318,17 @@ async function main() {
         "cli",
         resolvedCliOutput
       );
-      const txVsWasm = compareModuleBytecode(
-        "transaction",
-        txOutput,
-        "wasm",
-        wasmOutput
-      );
-      const cliVsWasmModules = compareModuleBytecode(
-        "CLI",
-        resolvedCliOutput,
-        "WASM",
-        wasmOutput
-      );
-      const txVsWasmOutput = compareBuildOutputs(
-        "transaction",
-        txOutput,
-        "WASM",
-        wasmOutput
-      );
       const txVsCliOutput = compareDependencyOutputs
         ? compareBuildOutputs("transaction", txOutput, "CLI", resolvedCliOutput)
         : [];
-      const cliVsWasm = compareDependencyOutputs
-        ? compareBuildOutputs("CLI", resolvedCliOutput, "WASM", wasmOutput)
-        : [];
       const comparison = {
-        ok: cliVsWasmModules.ok && cliVsWasm.length === 0,
-        transactionMatchesCurrent:
-          txVsCli.ok &&
-          txVsWasm.ok &&
-          txVsCliOutput.length === 0 &&
-          txVsWasmOutput.length === 0,
+        ok: verificationGate.ok && cliVsVerification.ok,
+        transactionMatchesCurrent: txVsCli.ok && txVsCliOutput.length === 0,
+        verificationGate,
         transactionVsCli: txVsCli,
-        transactionVsWasm: txVsWasm,
-        cliVsWasmModules,
+        cliVsVerification,
+        verification,
         transactionVsCliOutput: txVsCliOutput,
-        transactionVsWasmOutput: txVsWasmOutput,
-        cliVsWasm,
       };
       await writeJsonArtifact(outputRoot, "comparison.json", comparison);
 
@@ -454,7 +341,7 @@ async function main() {
         );
       } else {
         console.log(
-          `[OK] kind=${transactionArtifact.kind}, modules=${wasmOutput.modules.length}`
+          `[OK] kind=${transactionArtifact.kind}, status=${verification.status}, modules=${resolvedCliOutput.modules.length}`
         );
       }
     } catch (error) {
@@ -465,10 +352,10 @@ async function main() {
 
   if (failed) {
     throw new Error(
-      `Transaction artifact parity failed. See ${parityOutputDir}`
+      `Transaction artifact provenance audit failed. See ${parityOutputDir}`
     );
   }
-  console.log("\nTransaction artifact parity tests passed.");
+  console.log("\nTransaction artifact provenance audit passed.");
 }
 
 main().catch((error) => {

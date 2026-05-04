@@ -40,12 +40,34 @@ use toml_edit::{
 use vfs::{impls::memory::MemoryFS, VfsPath};
 use wasm_bindgen::prelude::*;
 
-#[wasm_bindgen]
-pub struct WasmCompileResult {
+#[cfg(feature = "verification")]
+pub(crate) struct CompileResult {
     success: bool,
     output: String, // JSON string of compiled units or errors
 }
 
+#[cfg(feature = "verification")]
+impl CompileResult {
+    pub(crate) fn success(&self) -> bool {
+        self.success
+    }
+
+    pub(crate) fn output(&self) -> String {
+        self.output.clone()
+    }
+}
+
+#[cfg(not(feature = "verification"))]
+#[wasm_bindgen]
+pub struct WasmCompileResult {
+    success: bool,
+    output: String,
+}
+
+#[cfg(not(feature = "verification"))]
+pub(crate) type CompileResult = WasmCompileResult;
+
+#[cfg(not(feature = "verification"))]
 #[wasm_bindgen]
 impl WasmCompileResult {
     #[wasm_bindgen(getter)]
@@ -76,6 +98,8 @@ mod manifest;
 mod package_model;
 mod stage_report;
 mod system_packages;
+#[cfg(feature = "verification")]
+mod verification;
 use move_symbol_pool::Symbol;
 use package_model::{
     build_compiler_input, dependency_name_is_implicit, parse_hex_address_to_bytes, CompilerInput,
@@ -366,18 +390,18 @@ fn setup_vfs(
     Ok((root, files, dep_packages))
 }
 
-fn compile_impl(
+pub(crate) fn compile_impl(
     files_json: &str,
     dependencies_json: &str,
     options_json: Option<String>,
-) -> WasmCompileResult {
+) -> CompileResult {
     console_error_panic_hook::set_once();
 
     let options: WasmCompileOptions = match options_json {
         Some(json) => match serde_json::from_str(&json) {
             Ok(options) => options,
             Err(error) => {
-                return WasmCompileResult {
+                return CompileResult {
                     success: false,
                     output: format!("Invalid compile options: {}", error),
                 }
@@ -396,7 +420,7 @@ fn compile_impl(
     let lint_level = match parse_lint_level(options.lint_flag.as_deref()) {
         Ok(level) => level,
         Err(error) => {
-            return WasmCompileResult {
+            return CompileResult {
                 success: false,
                 output: error,
             }
@@ -406,7 +430,7 @@ fn compile_impl(
     let (root, files, dep_packages) = match setup_vfs(files_json, dependencies_json) {
         Ok(res) => res,
         Err(e) => {
-            return WasmCompileResult {
+            return CompileResult {
                 success: false,
                 output: e,
             }
@@ -423,7 +447,7 @@ fn compile_impl(
     ) {
         Ok(input) => input,
         Err(error) => {
-            return WasmCompileResult {
+            return CompileResult {
                 success: false,
                 output: error,
             }
@@ -438,7 +462,7 @@ fn compile_impl(
     let mut compiler = match Compiler::from_package_paths(Some(root), package_paths, Vec::new()) {
         Ok(c) => c,
         Err(e) => {
-            return WasmCompileResult {
+            return CompileResult {
                 success: false,
                 output: format!("Failed to create compiler: {}", e),
             }
@@ -451,7 +475,7 @@ fn compile_impl(
     let (compiler_files, res) = match compiler.build() {
         Ok(res) => res,
         Err(e) => {
-            return WasmCompileResult {
+            return CompileResult {
                 success: false,
                 output: format!("Compiler initialization error: {}", e),
             }
@@ -462,7 +486,7 @@ fn compile_impl(
         Ok((units, warning_diags)) => {
             let fn_info = fn_info(&units);
             if let Err(e) = verify_bytecode(&units, &fn_info, false) {
-                return WasmCompileResult {
+                return CompileResult {
                     success: false,
                     output: format!("Bytecode Verification Failed: {}", e),
                 };
@@ -509,7 +533,7 @@ fn compile_impl(
             let ordered_ids: Vec<ModuleId> = match module_set.compute_topological_order() {
                 Ok(iter) => iter.map(|m| m.self_id()).collect(),
                 Err(e) => {
-                    return WasmCompileResult {
+                    return CompileResult {
                         success: false,
                         output: format!("Failed to compute module ordering: {}", e),
                     }
@@ -577,7 +601,7 @@ fn compile_impl(
                 },
             };
 
-            WasmCompileResult {
+            CompileResult {
                 success: true,
                 output: serde_json::to_string(&output_data).unwrap_or_default(),
             }
@@ -588,7 +612,7 @@ fn compile_impl(
                 diags,
                 ansi_color,
             );
-            WasmCompileResult {
+            CompileResult {
                 success: false,
                 output: String::from_utf8_lossy(&error_buffer).to_string(),
             }
@@ -596,6 +620,7 @@ fn compile_impl(
     }
 }
 
+#[cfg(not(feature = "verification"))]
 #[wasm_bindgen]
 pub fn compile(
     files_json: &str,
@@ -603,6 +628,165 @@ pub fn compile(
     options_json: Option<String>,
 ) -> WasmCompileResult {
     compile_impl(files_json, dependencies_json, options_json)
+}
+
+#[cfg(feature = "verification")]
+#[wasm_bindgen]
+pub fn verify_against_reference(input_json: &str) -> String {
+    verification::verify_against_reference(input_json)
+}
+
+#[cfg(feature = "verification")]
+#[derive(Deserialize)]
+#[serde(tag = "operation", rename_all = "camelCase")]
+enum VerificationResolvePackageGroupsInput {
+    LockfileFetchPlan {
+        #[serde(rename = "moveLockToml")]
+        move_lock_toml: String,
+        environment: String,
+    },
+    LockfileResolvePackageGroups {
+        input: serde_json::Value,
+    },
+    ManifestGraphResolvePackageGroups {
+        input: serde_json::Value,
+    },
+    LegacyPublicationMigration {
+        input: serde_json::Value,
+    },
+}
+
+#[cfg(feature = "verification")]
+#[wasm_bindgen]
+pub fn verification_resolve_package_groups(input_json: &str) -> String {
+    let input: VerificationResolvePackageGroupsInput = match serde_json::from_str(input_json) {
+        Ok(input) => input,
+        Err(error) => {
+            return lockfile_v4_error_with_code(
+                "invalid_helper_input",
+                format!("Invalid verification resolver input: {}", error),
+            );
+        }
+    };
+
+    match input {
+        VerificationResolvePackageGroupsInput::LockfileFetchPlan {
+            move_lock_toml,
+            environment,
+        } => match lockfile_v4_plan_from_toml(&move_lock_toml, &environment) {
+            Ok(Some((root_id, lockfile_order, packages))) => {
+                let stage_reports = vec![
+                    StageReport::new("move_lock_fetch_plan", &environment, &[])
+                        .package_id(root_id.clone())
+                        .node_count(packages.len()),
+                ];
+                serde_json::json!({
+                    "status": "ok",
+                    "rootId": root_id,
+                    "lockfileOrder": lockfile_order,
+                    "packages": packages,
+                    "stageReports": stage_reports,
+                })
+                .to_string()
+            }
+            Ok(None) => lockfile_v4_missing(format!(
+                "Move.lock V4 has no pinned.{} section",
+                environment
+            )),
+            Err(error) => lockfile_v4_error_from_helper(error),
+        },
+        VerificationResolvePackageGroupsInput::LockfileResolvePackageGroups { input } => {
+            let input: LockfileV4ValidateInput = match serde_json::from_value(input) {
+                Ok(input) => input,
+                Err(error) => {
+                    return lockfile_v4_error_with_code(
+                        "invalid_helper_input",
+                        format!("Invalid lockfile V4 package-group input: {}", error),
+                    );
+                }
+            };
+
+            let graph = match lockfile_v4_validate_graph_impl(&input) {
+                LockfileV4ValidationResult::Ok(graph) => graph,
+                LockfileV4ValidationResult::OutOfDate(package_id) => {
+                    return lockfile_v4_out_of_date(package_id)
+                }
+                LockfileV4ValidationResult::Error(error) => return lockfile_v4_error(error),
+            };
+
+            let active_edge_count = graph
+                .edges
+                .iter()
+                .filter(|edge| lockfile_v4_edge_matches_modes(edge, &input.modes))
+                .count();
+            let stage_reports = vec![
+                StageReport::new("move_lock_graph", &input.environment, &input.modes)
+                    .package_id(graph.root_id.clone())
+                    .node_count(graph.packages.len())
+                    .edge_count(graph.edges.len())
+                    .active_edge_count(active_edge_count),
+            ];
+            match lockfile_v4_package_groups_from_validated(&input, graph) {
+                Ok(groups) => {
+                    let mut reports = stage_reports;
+                    reports.push(
+                        StageReport::new("move_lock_linkage", &input.environment, &input.modes)
+                            .linked_node_count(groups.dependencies.len()),
+                    );
+                    serde_json::json!({
+                        "status": "ok",
+                        "rootFiles": groups.root_files,
+                        "dependencies": groups.dependencies,
+                        "lockfileDependencies": groups.lockfile_dependencies,
+                        "stageReports": reports,
+                    })
+                    .to_string()
+                }
+                Err(error) => lockfile_v4_error(error),
+            }
+        }
+        VerificationResolvePackageGroupsInput::ManifestGraphResolvePackageGroups { input } => {
+            let input: ManifestGraphInput = match serde_json::from_value(input) {
+                Ok(input) => input,
+                Err(error) => {
+                    return lockfile_v4_error_with_code(
+                        "invalid_helper_input",
+                        format!("Invalid manifest graph input: {}", error),
+                    );
+                }
+            };
+
+            match manifest_graph_resolve_package_groups_impl(input) {
+                Ok(response) => response.to_string(),
+                Err(error) => lockfile_v4_error_from_helper(error),
+            }
+        }
+        VerificationResolvePackageGroupsInput::LegacyPublicationMigration { input } => {
+            let input: LegacyPublicationMigrationInput = match serde_json::from_value(input) {
+                Ok(input) => input,
+                Err(error) => {
+                    return lockfile_v4_error_with_code(
+                        "invalid_helper_input",
+                        format!("Invalid legacy publication migration input: {}", error),
+                    );
+                }
+            };
+
+            match legacy_publication_migration_impl(input) {
+                Ok(output) => serde_json::to_string(&output).unwrap_or_else(|error| {
+                    serde_json::json!({
+                        "status": "error",
+                        "error": format!(
+                            "Failed to encode legacy publication migration output: {}",
+                            error
+                        ),
+                    })
+                    .to_string()
+                }),
+                Err(error) => lockfile_v4_error_from_helper(error),
+            }
+        }
+    }
 }
 
 #[cfg(feature = "testing")]
@@ -1369,6 +1553,7 @@ fn combined_dependencies_from_move_toml(
 
 /// Compute manifest digest from a Move.toml manifest. This is the preferred
 /// WASM entrypoint because Rust owns the Move.toml dependency semantics.
+#[cfg(not(feature = "verification"))]
 #[wasm_bindgen]
 pub fn compute_manifest_digest_from_move_toml(
     move_toml: &str,
@@ -1383,6 +1568,7 @@ pub fn compute_manifest_digest_from_move_toml(
 
 /// Backward-compatible JSON entrypoint. New code should prefer
 /// `compute_manifest_digest_from_move_toml`.
+#[cfg(not(feature = "verification"))]
 #[wasm_bindgen]
 pub fn compute_manifest_digest(deps_json: &str) -> String {
     #[derive(Deserialize)]
@@ -1913,6 +2099,7 @@ fn lockfile_v4_plan_from_toml(
     Ok(Some((root_ids.remove(0), lockfile_order, packages)))
 }
 
+#[cfg(not(feature = "verification"))]
 #[wasm_bindgen]
 pub fn lockfile_v4_fetch_plan(move_lock_toml: &str, environment: &str) -> String {
     match lockfile_v4_plan_from_toml(move_lock_toml, environment) {
@@ -2443,6 +2630,7 @@ struct RootPublicationMetadataInput {
     files: BTreeMap<String, String>,
 }
 
+#[cfg(not(feature = "verification"))]
 #[wasm_bindgen]
 pub fn root_publication_metadata(input_json: &str) -> String {
     let input: RootPublicationMetadataInput = match serde_json::from_str(input_json) {
@@ -2829,6 +3017,7 @@ fn publication_update_impl(
     Ok((rendered, output))
 }
 
+#[cfg(not(feature = "verification"))]
 #[wasm_bindgen]
 pub fn publication_update(input_json: &str) -> String {
     let input: PublicationUpdateInput = match serde_json::from_str(input_json) {
@@ -3010,6 +3199,7 @@ fn legacy_publication_migration_impl(
     })
 }
 
+#[cfg(not(feature = "verification"))]
 #[wasm_bindgen]
 pub fn legacy_publication_migration(input_json: &str) -> String {
     let input: LegacyPublicationMigrationInput = match serde_json::from_str(input_json) {
@@ -3455,6 +3645,7 @@ fn lockfile_v4_generate_impl(input: LockfileV4GenerateInput) -> Result<String, H
     Ok(lines.join("\n"))
 }
 
+#[cfg(not(feature = "verification"))]
 #[wasm_bindgen]
 pub fn lockfile_v4_generate(input_json: &str) -> String {
     let input: LockfileV4GenerateInput = match serde_json::from_str(input_json) {
@@ -5091,6 +5282,7 @@ fn manifest_graph_resolve_package_groups_impl(
     }))
 }
 
+#[cfg(not(feature = "verification"))]
 #[wasm_bindgen]
 pub fn manifest_graph_resolve_package_groups(input_json: &str) -> String {
     let input: ManifestGraphInput = match serde_json::from_str(input_json) {
@@ -5109,6 +5301,7 @@ pub fn manifest_graph_resolve_package_groups(input_json: &str) -> String {
     }
 }
 
+#[cfg(not(feature = "verification"))]
 #[wasm_bindgen]
 pub fn lockfile_v4_validate_graph(input_json: &str) -> String {
     let input: LockfileV4ValidateInput = match serde_json::from_str(input_json) {
@@ -5136,6 +5329,7 @@ pub fn lockfile_v4_validate_graph(input_json: &str) -> String {
     .to_string()
 }
 
+#[cfg(not(feature = "verification"))]
 #[wasm_bindgen]
 pub fn lockfile_v4_resolve_package_groups(input_json: &str) -> String {
     let input: LockfileV4ValidateInput = match serde_json::from_str(input_json) {

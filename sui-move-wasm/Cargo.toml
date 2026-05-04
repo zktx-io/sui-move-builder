@@ -10,6 +10,7 @@ build = "build.rs"
 [features]
 default = []
 testing = ["dep:move-unit-test", "dep:sui-move-natives", "dep:move-vm-config", "dep:move-vm-runtime"]
+verification = ["dep:move-binary-format"]
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
@@ -214,6 +215,7 @@ move-core-types = { path = "vendor/move/crates/move-core-types" }
 move-symbol-pool = { path = "vendor/move/crates/move-symbol-pool" }
 move-bytecode-utils = { path = "vendor/move/crates/move-bytecode-utils" }
 move-bytecode-verifier = { path = "vendor/move/crates/move-bytecode-verifier" }
+move-binary-format = { path = "vendor/move/crates/move-binary-format", optional = true }
 move-unit-test = { path = "vendor/move/crates/move-unit-test", optional = true }
 move-vm-config = { path = "vendor/move/crates/move-vm-config", optional = true }
 move-vm-runtime = { path = "vendor/move/crates/move-vm-runtime", optional = true }

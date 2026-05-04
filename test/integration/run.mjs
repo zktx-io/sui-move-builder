@@ -25,6 +25,7 @@ const semanticCases = [
   "published-toml-recording",
   "build-options",
   "stage-observability",
+  "verification-provenance",
   "output-deps",
   "unit-test-output-parity",
   "unit-test-modes",
@@ -49,6 +50,7 @@ const caseFiles = new Map([
   ["published-toml-recording", "published_toml_recording_test.mjs"],
   ["build-options", "build_options_test.mjs"],
   ["stage-observability", "stage_observability_test.mjs"],
+  ["verification-provenance", "verification_provenance_test.mjs"],
   ["output-deps", "output_dependency_test.mjs"],
   ["unit-test-output-parity", "test_output_parity_test.mjs"],
   ["unit-test-modes", "test_modes_test.mjs"],
@@ -95,15 +97,33 @@ function runParity(args) {
 
 function auditCommands(kind, mode) {
   const kinds = kind ? [kind] : ["build", "upgrade"];
-  const modes = mode ? [mode] : ["full", "lite"];
   const commands = [];
   for (const selectedKind of kinds) {
     const file = auditCaseFile(selectedKind);
-    for (const selectedMode of modes) {
-      commands.push([`test/integration/${file}`, selectedMode]);
+    if (isVerificationAuditKind(selectedKind)) {
+      if (mode && mode !== "verification") {
+        throw new Error(
+          `Audit kind '${selectedKind}' does not accept ${mode} mode; use 'audit ${selectedKind}'`
+        );
+      }
+      commands.push([`test/integration/${file}`, "verification"]);
+    } else {
+      if (mode === "verification") {
+        throw new Error(
+          `Audit kind '${selectedKind}' does not accept verification mode`
+        );
+      }
+      const modes = mode ? [mode] : ["full", "lite"];
+      for (const selectedMode of modes) {
+        commands.push([`test/integration/${file}`, selectedMode]);
+      }
     }
   }
   return commands;
+}
+
+function isVerificationAuditKind(kind) {
+  return kind === "transaction" || kind === "github-binary";
 }
 
 function auditCaseFile(kind) {
@@ -133,7 +153,7 @@ function runAudit(args) {
       arg === "github-binary"
     ) {
       kind = arg;
-    } else if (arg === "full" || arg === "lite") {
+    } else if (arg === "full" || arg === "lite" || arg === "verification") {
       mode = arg;
     } else {
       throw new Error(`Unknown audit argument: ${arg}`);

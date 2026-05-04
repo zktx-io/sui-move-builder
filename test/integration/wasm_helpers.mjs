@@ -1,8 +1,10 @@
 import { readFile } from "node:fs/promises";
 
 export async function loadWasmBindings(variant = "full") {
-  if (variant !== "full" && variant !== "lite") {
-    throw new Error(`WASM variant must be 'full' or 'lite', got: ${variant}`);
+  if (variant !== "full" && variant !== "lite" && variant !== "verification") {
+    throw new Error(
+      `WASM variant must be 'full', 'lite', or 'verification', got: ${variant}`
+    );
   }
 
   const mod = await import(

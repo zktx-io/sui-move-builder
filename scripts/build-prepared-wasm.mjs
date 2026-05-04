@@ -7,7 +7,7 @@ import {
   createWasmBuildContext,
 } from "./wasm/context.mjs";
 
-const VALID_PROFILES = new Set(["lite", "full", "all"]);
+const VALID_PROFILES = new Set(["lite", "full", "verification", "all"]);
 
 async function readCargoLockPackageVersion(lockPath, packageName) {
   const content = await fs.readFile(lockPath, "utf8");
@@ -60,7 +60,9 @@ function parseProfileArgs(args) {
     throw new Error(`Unknown build arguments: ${unknownArgs.join(" ")}`);
   }
   if (!VALID_PROFILES.has(profile)) {
-    throw new Error(`Invalid profile '${profile}'. Use lite, full, or all.`);
+    throw new Error(
+      `Invalid profile '${profile}'. Use lite, full, verification, or all.`
+    );
   }
 
   return profile;
@@ -92,6 +94,11 @@ function selectProfiles(profileName, distDir) {
       name: "full",
       features: ["testing"],
       outDir: path.join(distDir, "full"),
+    },
+    {
+      name: "verification",
+      features: ["verification"],
+      outDir: path.join(distDir, "verification"),
     },
   ];
 
@@ -234,7 +241,7 @@ async function main() {
         buildArgs.push("--no-default-features");
       }
 
-      const env = profile.name === "lite" ? liteEnv : fullEnv;
+      const env = profile.name === "full" ? fullEnv : liteEnv;
       await run("cargo", buildArgs, { cwd: crateDir, env });
 
       console.log(`Linking '${profile.name}' with wasm-bindgen...`);

@@ -33,6 +33,11 @@
       "types": "./dist/full/index.d.ts",
       "import": "./dist/full/index.js",
       "require": "./dist/full/index.cjs"
+    },
+    "./verification": {
+      "types": "./dist/verification/index.d.ts",
+      "import": "./dist/verification/index.js",
+      "require": "./dist/verification/index.cjs"
     }
   },
   "publishConfig": {
@@ -52,8 +57,9 @@
     "build:wasm:prepared": "node scripts/build-prepared-wasm.mjs --profile all",
     "build:wasm:prepared:lite": "node scripts/build-prepared-wasm.mjs --profile lite",
     "build:wasm:prepared:full": "node scripts/build-prepared-wasm.mjs --profile full",
+    "build:wasm:prepared:verification": "node scripts/build-prepared-wasm.mjs --profile verification",
     "build:wasm": "npm run prepare:wasm && npm run build:wasm:prepared",
-    "build:js": "SUI_MOVE_BUILDER_ENTRY=src/full.ts tsup --out-dir dist/full && SUI_MOVE_BUILDER_ENTRY=src/index.ts tsup --out-dir dist/lite",
+    "build:js": "SUI_MOVE_BUILDER_ENTRY=src/full.ts tsup --out-dir dist/full && SUI_MOVE_BUILDER_ENTRY=src/index.ts tsup --out-dir dist/lite && SUI_MOVE_BUILDER_ENTRY=src/verification.ts tsup --out-dir dist/verification",
     "build": "npm run build:wasm && npm run build:js",
     "dev:browser-parity": "node test/browser-parity-server.mjs",
     "test": "node test/integration/run.mjs default",

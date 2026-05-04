@@ -55,6 +55,36 @@ export function createParityContext(argv, outputDirName) {
   };
 }
 
+export function createVerificationAuditContext(argv, outputDirName) {
+  const { suiVersion, restArgs } = resolveSuiVersionConfig(
+    baseSuiVersion,
+    argv
+  );
+  if (restArgs[0] === "verification") {
+    restArgs.shift();
+  }
+  if (restArgs.length > 0) {
+    throw new Error(`Unknown verification audit argument: ${restArgs[0]}`);
+  }
+
+  const mode = "verification";
+  const suiBuildConfig = getSuiBuildConfig(repoRoot, suiVersion);
+  return {
+    suiVersion,
+    mode,
+    distDir: path.join(repoRoot, "dist", mode),
+    wasmPath: path.join(repoRoot, "dist", mode, "sui_move_wasm_bg.wasm"),
+    network: process.env.SUI_PARITY_NETWORK || "mainnet",
+    suiCli: resolveSuiCli(process.env.SUI_CLI || "sui"),
+    suiBuildConfig,
+    parityOutputDir: path.join(
+      suiBuildConfig.buildWorkspaceDir,
+      outputDirName,
+      mode
+    ),
+  };
+}
+
 export function resolveSuiCli(cli) {
   if (path.isAbsolute(cli) || cli.includes("/") || cli.includes("\\")) {
     return path.resolve(repoRoot, cli);

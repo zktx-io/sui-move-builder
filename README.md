@@ -7,7 +7,7 @@ Build Move packages in web or Node.js with a WASM compiler path that tracks the 
 ## Features
 
 - **Sui CLI-oriented build flow**: Uses JavaScript for host fetching/snapshots and Rust/WASM for supported package graph, lockfile, compiler, and output semantics.
-- **Parity harness**: Compares local Sui CLI output with full and lite WASM build outputs for selected packages.
+- **Parity harness**: Compares local Sui CLI output with lite/full build outputs and checks verification provenance artifacts for selected references.
 - **Address resolution**: Tracks `original_id` for compilation and `published_at` / latest IDs for output metadata where available.
 - **Lockfile handling**: Reads V4 pinned lockfiles, falls back from older lockfile graph formats to manifest resolution, and migrates supported V3 publish data when possible.
 - **Move.lock V4 output**: Generates V4 lockfile content with deterministic pinned sections and `manifest_digest` values.
@@ -27,12 +27,13 @@ For detailed CLI behavior notes, see [CLI_PIPELINE.md](./CLI_PIPELINE.md).
 npm install @zktx.io/sui-move-builder
 ```
 
-## Lite vs Full Version
+## Generated Variants
 
-The package is published with two generated variants:
+The package is published with three generated variants:
 
 1. **Lite Version (Default)**: Build-focused artifact without the WASM test runner dependencies.
 2. **Full Version**: Includes the lite build APIs plus the WASM `testing` feature for Move unit test execution.
+3. **Verification Version**: Rebuilds source with the pinned WASM toolchain and compares the result with caller-supplied reference bytecode for source provenance checks.
 
 ### Using the Lite Version (Default)
 
@@ -56,6 +57,17 @@ import {
   testMovePackage,
 } from "@zktx.io/sui-move-builder/full";
 ```
+
+### Using the Verification Version
+
+```ts
+import {
+  initMovePackageVerifier,
+  verifyMovePackageProvenance,
+} from "@zktx.io/sui-move-builder/verification";
+```
+
+`verifyMovePackageProvenance` accepts the same package snapshot and dependency resolution inputs as the build APIs, plus a reference artifact containing base64 Move modules and optional dependency IDs, package digest, root package address, or declared toolchain metadata. It returns one of `verified`, `toolchain_mismatch`, `mismatch`, `build_failure`, or `invalid_reference`. `verified` means the caller-provided source rebuilds to the caller-provided reference under the pinned Sui toolchain. `toolchain_mismatch` means the reference bytecode header does not match the pinned toolchain output, so this WASM artifact cannot prove or disprove provenance for that reference. Declared `reference.toolchainVersion` and `reference.buildConfig` are returned as evidence when provided; they do not replace bytecode comparison. If source compiles with a root address of `0x0` but the reference contains a published package address, pass that published address as `reference.rootAddress` or `reference.packageId`. The verification WASM does not fetch RPC, GitHub, transaction, or filesystem data; callers provide the source and reference bytes.
 
 ## Quick start (Node.js or browser)
 
@@ -336,13 +348,14 @@ The WASM build is split into a preparation step and a prepared build step:
 npm run prepare:wasm
 npm run build:wasm:prepared:lite # builds dist/lite from prepared state
 npm run build:wasm:prepared:full # builds dist/full from prepared state
-npm run build:wasm:prepared      # builds both variants from prepared state
+npm run build:wasm:prepared:verification # builds dist/verification from prepared state
+npm run build:wasm:prepared      # builds all variants from prepared state
 npm run build:wasm          # prepare + prepared build
 npm run build               # WASM build + JS package build
 npm run release:check       # typecheck + lint + format check + tests
 ```
 
-`prepare:wasm` may download or update the pinned Sui source, create a disposable patched worktree, generate compatibility stubs/vendor patches, and install the matching local `wasm-bindgen` tool. It removes stale patch state at startup and writes `.sui-build/patch-state.json` only after successful preparation. The `build:wasm:prepared:*` scripts expect that prepared state to already exist and use it to build `dist/lite`, `dist/full`, or both. Full builds run a Binaryen `wasm-opt` strip pass after `wasm-bindgen`; set `WASM_OPT=/path/to/wasm-opt` if it is not on `PATH`, or `SUI_WASM_SKIP_WASM_OPT=1` to build without that size post-processing. Prepared builds are best-effort offline builds; set `SUI_WASM_STRICT_OFFLINE=1` when you want Cargo to fail instead of reaching the network.
+`prepare:wasm` may download or update the pinned Sui source, create a disposable patched worktree, generate compatibility stubs/vendor patches, and install the matching local `wasm-bindgen` tool. It removes stale patch state at startup and writes `.sui-build/patch-state.json` only after successful preparation. The `build:wasm:prepared:*` scripts expect that prepared state to already exist and use it to build `dist/lite`, `dist/full`, `dist/verification`, or all three. Full builds run a Binaryen `wasm-opt` strip pass after `wasm-bindgen`; set `WASM_OPT=/path/to/wasm-opt` if it is not on `PATH`, or `SUI_WASM_SKIP_WASM_OPT=1` to build without that size post-processing. Prepared builds are best-effort offline builds; set `SUI_WASM_STRICT_OFFLINE=1` when you want Cargo to fail instead of reaching the network.
 
 The build keeps the upstream Sui checkout separate from generated and patched state:
 
@@ -352,7 +365,7 @@ The build keeps the upstream Sui checkout separate from generated and patched st
 - `.sui-build/generated/vendor/`: vendored dependency sources that need local WASM patching
 - `.sui-build/generated/local-bin/`: local build tools such as the pinned `wasm-bindgen`
 - `.sui-build/patch-state.json`: successful prepare marker checked by `build:wasm:prepared`
-- `dist/full` and `dist/lite`: generated npm artifacts
+- `dist/full`, `dist/lite`, and `dist/verification`: generated npm artifacts
 
 Only edit tracked project sources such as `src/`, `sui-move-wasm/`, and `scripts/compat/`. The `.sui-build/` directory is ignored build/cache state and can be removed with `npm run clean` together with `dist/`. Set `SUI_SOURCE_DIR` or `SUI_WORK_DIR` only when you intentionally want those directories somewhere else.
 
@@ -366,7 +379,7 @@ SUI_VERSION=1.x.y SUI_TAG=mainnet-v1.x.y npm run build:wasm
 node scripts/build-wasm.mjs --sui-version 1.x.y --sui-tag mainnet-v1.x.y
 ```
 
-For repeated version updates, use the process and prompt in [AGENTS.md](./AGENTS.md). The intended flow is to refresh and test the active compat overlay during `prepare:wasm`, then reuse the prepared worktree for lite/full builds and release checks.
+For repeated version updates, use the process and prompt in [AGENTS.md](./AGENTS.md). The intended flow is to refresh and test the active compat overlay during `prepare:wasm`, then reuse the prepared worktree for lite/full/verification builds and release checks.
 
 ## Package Management Logic
 
@@ -458,17 +471,17 @@ if (entry.name === "build" || entry.name === ".git") continue;
 This package compares the same local Move package through the official Sui CLI and the WASM builder. The default dump parity package set includes auto-discovered examples from `.sui-build/parity-work/examples/move` plus the fixed framework fixture at `crates/sui-framework/packages/deepbook`; pass explicit package paths when you want to test a specific fixture.
 
 ```bash
-npm run build       # required once; produces dist/full and dist/lite WASM artifacts
+npm run build       # required once; produces dist/full, dist/lite, and dist/verification WASM artifacts
 npm test            # runtime + semantic fixtures + full/lite CLI parity
 npm run test:parity # compare Sui CLI vs both full and lite WASM
-npm run test:audit  # compare CLI build/upgrade artifacts with WASM outputs
+npm run test:audit  # compare CLI build/upgrade artifacts with lite/full WASM outputs
 npm run test:browser # optional local browser smoke test for full and lite
 npm run dev:browser-parity # interactive browser build + CLI comparison page
 node test/integration/run.mjs semantic # runtime + semantic fixtures without CLI parity
 node test/integration/run.mjs output-deps # run a single integration case
 ```
 
-`dist/` artifacts are generated output and are not checked into this repository. Runtime, parity, and browser tests expect `npm run build` to have produced `dist/full` and `dist/lite` first.
+`dist/` artifacts are generated output and are not checked into this repository. Runtime, parity, audit, and browser tests expect `npm run build` to have produced the required `dist/` variants first.
 
 Useful options:
 
@@ -485,9 +498,9 @@ The parity test warns when the local Sui CLI version differs from `sui-version.j
 
 `node test/integration/run.mjs audit upgrade` uses `sui move build --dump-bytecode-as-base64` as the CLI artifact source for upgrade-intent bytecode and compares it with `prepareMovePackageUpgrade` for published package fixtures. The comparison covers modules, dependency IDs, and digest.
 
-`node test/integration/run.mjs audit transaction <full|lite>` uses Sui RPC and GitHub access to fetch configured publish or upgrade transactions, rebuilds the matching GitHub source commit with the corresponding intent, requires CLI and WASM outputs to match, and records transaction bytecode/dependency differences as audit evidence.
+`node test/integration/run.mjs audit transaction` uses Sui RPC and GitHub access to fetch configured publish or upgrade transactions, rebuilds the configured GitHub source commit through the verification artifact, requires CLI dump output to match `verification.currentBuild`, and records transaction bytecode/dependency differences plus the fixture's expected verification status as audit evidence. `audit transaction verification` is equivalent. `audit transaction full` and `audit transaction lite` are usage errors.
 
-`node test/integration/run.mjs audit github-binary <full|lite>` uses GitHub API and raw file access to fetch configured committed `.mv` artifacts, rebuilds the same source commit, requires CLI and WASM outputs to match, and records bytecode diff summaries when committed artifacts differ from current build output.
+`node test/integration/run.mjs audit github-binary` uses GitHub API and raw file access to fetch configured committed `.mv` artifacts, rebuilds the same source commit through the verification artifact, requires CLI dump output to match `verification.currentBuild`, and records bytecode diff summaries plus the fixture's expected verification status. `audit github-binary verification` is equivalent. `audit github-binary full` and `audit github-binary lite` are usage errors.
 
 Passing parity tests are evidence for the covered fixtures only. See `CLI_PIPELINE.md` for current implementation boundaries.
 
