@@ -252,17 +252,14 @@ if (dumpResult.modules[0] === publishResult.modules[0]) {
 const modeDepFiles = {
   "Move.toml": `
 [package]
-name = "ModeDep"
+name = "mode_dep"
 version = "0.0.0"
 edition = "2024"
 implicit-dependencies = false
 published-at = "0x42"
-
-[addresses]
-mode_dep = "0x42"
 `,
   "sources/dep.move": `
-module mode_dep::fixture {
+module 0x42::fixture {
     public fun value(): u64 { 42 }
 }
 `,
@@ -276,15 +273,11 @@ version = "0.0.0"
 edition = "2024"
 implicit-dependencies = false
 
-[addresses]
-sui_mode_fixture = "0x0"
-
 [dependencies]
-Sui = { local = "../sui" }
-ModeDep = { local = "../mode-dep", modes = ["custom"] }
+mode_dep = { local = "../mode-dep", modes = ["custom"] }
 `,
   "sources/main.move": `
-module sui_mode_fixture::main {
+module 0x0::main {
     public fun base(): u64 { 1 }
 
     #[mode(custom)]
@@ -301,12 +294,6 @@ const modeFetcher = {
     if (localPath === "../mode-dep") {
       return modeDepFiles;
     }
-    if (localPath === "../sui") {
-      return frameworkFiles("Sui", "sui", "0x2");
-    }
-    if (localPath === "../move-stdlib") {
-      return frameworkFiles("MoveStdlib", "std", "0x1");
-    }
     throw new Error(`unexpected local fetch: ${localPath}`);
   },
   async fetchFile() {
@@ -322,11 +309,11 @@ const noModeResolved = await resolveMovePackageDependencies({
   fetcher: modeFetcher,
 });
 const noModeDeps = JSON.parse(noModeResolved.dependencies);
-if (noModeDeps.some((dep) => dep.name === "ModeDep")) {
+if (noModeDeps.some((dep) => dep.name === "mode_dep")) {
   throw new Error("mode dependency should be filtered without matching mode");
 }
 const noModeLockfileDeps = JSON.parse(noModeResolved.lockfileDependencies);
-if (!noModeLockfileDeps.some((dep) => dep.name === "ModeDep")) {
+if (!noModeLockfileDeps.some((dep) => dep.name === "mode_dep")) {
   throw new Error("mode dependency should remain in lockfile dependencies");
 }
 const noModeBuild = await dumpMovePackage({
@@ -337,7 +324,7 @@ expectSuccess(noModeBuild, "build without custom mode");
 if (hasAddress(noModeBuild.dependencies, "0x42")) {
   throw new Error("inactive mode dependency should not be emitted");
 }
-if (!noModeBuild.moveLock.includes('ModeDep = "ModeDep"')) {
+if (!noModeBuild.moveLock.includes('mode_dep = "mode_dep"')) {
   throw new Error(
     "inactive mode dependency should remain in generated Move.lock"
   );
@@ -349,7 +336,7 @@ const customModeResolved = await resolveMovePackageDependencies({
   modes: ["custom"],
 });
 const customModeDeps = JSON.parse(customModeResolved.dependencies);
-if (!customModeDeps.some((dep) => dep.name === "ModeDep")) {
+if (!customModeDeps.some((dep) => dep.name === "mode_dep")) {
   throw new Error("mode dependency should be included with matching mode");
 }
 const customModeBuild = await dumpMovePackage({

@@ -1061,13 +1061,23 @@ fn dependency_address_override_from_table(
     })
 }
 
-fn combined_dependency_from_table(
+enum CombinedDependencyModeSource {
+    FromTable,
+    Fixed(Option<Vec<String>>),
+}
+
+fn combined_dependency_from_table_with_modes(
     name: &str,
     table: &toml::value::Table,
     environment: &str,
+    modes: CombinedDependencyModeSource,
 ) -> Result<CombinedMoveDependency, String> {
     let source = combined_dependency_source_from_table(table)
         .ok_or_else(|| format!("Dependency '{}' has unsupported source form", name))?;
+    let modes = match modes {
+        CombinedDependencyModeSource::FromTable => toml_table_string_vec(table, "modes"),
+        CombinedDependencyModeSource::Fixed(modes) => modes,
+    };
     Ok(CombinedMoveDependency {
         name: name.to_string(),
         source,
@@ -1076,7 +1086,7 @@ fn combined_dependency_from_table(
             .and_then(|value| value.as_bool())
             .unwrap_or(false),
         rename_from: toml_table_string(table, "rename-from", "rename_from"),
-        modes: toml_table_string_vec(table, "modes"),
+        modes,
         use_environment: environment.to_string(),
         address_override: None,
         package_hint: toml_table_string(table, "package", "package"),
@@ -1226,10 +1236,56 @@ fn combined_dependencies_from_move_toml(
                     name
                 )
             })?;
+            let dependency_name = if is_legacy {
+                lockfile_v4_normalize_legacy_name_to_identifier(name)
+            } else {
+                name.clone()
+            };
             defaults.insert(
-                name.clone(),
-                combined_dependency_from_table(name, table, environment)?,
+                dependency_name.clone(),
+                combined_dependency_from_table_with_modes(
+                    &dependency_name,
+                    table,
+                    environment,
+                    if is_legacy {
+                        CombinedDependencyModeSource::Fixed(None)
+                    } else {
+                        CombinedDependencyModeSource::FromTable
+                    },
+                )?,
             );
+        }
+    }
+
+    if is_legacy {
+        if let Some(dep_table) = parsed
+            .get("dev-dependencies")
+            .and_then(|deps| deps.as_table())
+        {
+            for (name, value) in dep_table {
+                if package_uses_implicit_dependencies && dependency_name_is_implicit(name) {
+                    return Err(format!(
+                        "The `{}` dependency is implicitly provided and should not be defined in your manifest.",
+                        name
+                    ));
+                }
+                let table = value.as_table().ok_or_else(|| {
+                    format!(
+                        "Dependency '{}' must be a table with a supported source",
+                        name
+                    )
+                })?;
+                let dependency_name = lockfile_v4_normalize_legacy_name_to_identifier(name);
+                defaults.insert(
+                    dependency_name.clone(),
+                    combined_dependency_from_table_with_modes(
+                        &dependency_name,
+                        table,
+                        environment,
+                        CombinedDependencyModeSource::Fixed(Some(vec!["test".to_string()])),
+                    )?,
+                );
+            }
         }
     }
 

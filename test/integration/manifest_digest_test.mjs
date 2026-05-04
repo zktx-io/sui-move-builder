@@ -179,6 +179,31 @@ assertEqual(
   "system dependency table should be represented by Rust digest helper"
 );
 
+const legacyDevDependencyMoveToml = `
+[package]
+name = "LegacyPkg"
+version = "0.0.0"
+implicit-dependencies = false
+
+[addresses]
+legacy_pkg = "0x0"
+
+[dev-dependencies]
+DevDep = { local = "../dev-dep" }
+`;
+assertEqual(
+  digestFromMoveToml(legacyDevDependencyMoveToml, "LegacyPkg"),
+  digestFromJson([
+    {
+      name: "DevDep",
+      local: "../dev-dep",
+      modes: ["test"],
+      use_environment: "mainnet",
+    },
+  ]),
+  "legacy dev-dependencies should be included with test mode"
+);
+
 if (digestFromMoveToml("[package", "Pkg") !== "") {
   throw new Error("malformed Move.toml should return an empty digest");
 }
