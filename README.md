@@ -108,7 +108,7 @@ if ("error" in result) {
 
   // Migration output from supported V3 publication records
   if (result.publishedToml) {
-    console.log("Published.toml:", result.publishedToml); // string: Migrated from V3 Move.lock publication records
+    console.log("Published.toml:", result.publishedToml); // string: Published.toml content for supported V3 publication records
   }
 
   // Warnings (if silenceWarnings: false)
@@ -366,7 +366,7 @@ This builder follows the implemented parts of the Sui CLI package-management pre
    - Published package addresses can come from lockfile environment records, `Published.toml`, or manifest metadata depending on the package and lockfile format.
 3. **Move.toml**: Used when there is no usable lockfile path. Defines direct dependencies and their sources.
 4. **Published.toml**:
-   - Used to resolve published package IDs for the selected environment when available.
+   - Provides published package IDs for the selected environment when available.
    - **Does not** override dependency resolution; it is primarily an output record of deployment.
    - If a package has matching publication data, the builder uses that information for compilation/output address handling.
 

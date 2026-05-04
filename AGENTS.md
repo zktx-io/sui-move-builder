@@ -25,6 +25,8 @@ Before changing a pinned Sui version, compatibility overlay, or parity-sensitive
 
 - Before planning or editing, do not rely on task descriptions alone; verify the current repository structure and script behavior first.
 - Read `AGENTS.md`, `sui-version.json`, `package.json` scripts, `CLI_PIPELINE.md`, `scripts/compat/manifest.json`, and the task-relevant Rust/TypeScript files.
+- Before parity-sensitive changes, open the `CLI Structure vs WASM Structure` table in `CLI_PIPELINE.md`. If the affected stage is not represented there, update the table before changing code.
+- When changing `AGENTS.md`, `README.md`, or `CLI_PIPELINE.md`, run `node test/integration/run.mjs cli-pipeline-table` and `node test/integration/run.mjs doc-freshness` before submitting.
 - Identify the target Sui `version`, `tag`, and `commit`. Decide whether the change updates `sui-version.json` or uses an explicit script/env override.
 - Identify the current version exposure paths for CLI and WASM. Check `sui --version` for the selected CLI, and check the Rust/WASM exports plus public JS APIs that report the pinned Sui version.
 - Confirm that `scripts/compat/manifest.json` exists before running prepare. Missing manifests are porting blockers.

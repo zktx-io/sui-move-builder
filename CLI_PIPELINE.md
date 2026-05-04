@@ -13,6 +13,33 @@ The development WASM build keeps four areas separate:
 
 `npm run prepare:wasm` is the step that may fetch/update source, recreate the worktree, apply the active compatibility overlay, and write `.sui-build/patch-state.json`. It removes any stale patch state at startup and writes a new patch-state file only after successful preparation. `npm run build:wasm:prepared:lite`, `npm run build:wasm:prepared:full`, and `npm run build:wasm:prepared` validate that final marker against the current version, compat overlay path, paths, and required prepared files before building `dist/lite`, `dist/full`, or both; they should not be used as porting steps for a new upstream version. Full prepared builds run a Binaryen `wasm-opt` strip pass after `wasm-bindgen` unless `SUI_WASM_SKIP_WASM_OPT=1` is set. `npm run build:wasm` runs prepare and the prepared all-profile build.
 
+## CLI Structure vs WASM Structure
+
+This table is the starting point for parity-sensitive work. Before changing a stage, confirm whether it is a direct upstream call, a Rust/WASM implementation of upstream package-manager behavior, a TypeScript host boundary, or an unsupported CLI-only path.
+
+| Stage                           | Pinned CLI owner                                                                                                                                     | WASM owner                                | Porting shape       | Current validation                                                      | Version-up checkpoint                                                                 |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- | ------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Input loading                   | `crates/sui/src/sui_commands.rs`, `external-crates/move/crates/move-package-alt/src/package/root_package.rs`                                         | `src/core.ts`                             | TS host boundary    | Runtime smoke and package-loading tests                                 | Check accepted snapshot files and failure behavior for missing package inputs.        |
+| Dependency fetch                | `external-crates/move/crates/move-package-alt/src/graph/builder.rs`                                                                                  | `src/resolver.ts`                         | TS host boundary    | Package-loading, manifest fallback, V4 lockfile graph tests             | Check Git, local, symlink, resolved-SHA, and `fetchLocal` contracts.                  |
+| `Move.toml`/env overlay         | `external-crates/move/crates/move-package-alt/src/package/package_impl.rs`, `crates/sui-package-alt/src/sui_flavor.rs`                               | `sui-move-wasm/src/lib.rs`                | rust self-impl      | Manifest digest, manifest fallback, build-options tests                 | Re-check manifest parser fields, implicit deps, environment overlays, modes.          |
+| `Move.lock`                     | `external-crates/move/crates/move-package-alt/src/schema/lockfile.rs`, `external-crates/move/crates/move-package-alt/src/package/lockfile.rs`        | `sui-move-wasm/src/lib.rs`                | rust self-impl      | Lockfile graph and lockfile generation tests                            | Re-check version policy, pin fields, digest validation, and repin behavior.           |
+| Manifest graph                  | `external-crates/move/crates/move-package-alt/src/graph/builder.rs`                                                                                  | `sui-move-wasm/src/lib.rs`                | rust self-impl      | Manifest fallback and package-loading tests                             | Re-check package ID creation, dependency merge, local dependencies, and cycles.       |
+| V4 graph                        | `external-crates/move/crates/move-package-alt/src/graph/builder.rs`                                                                                  | `sui-move-wasm/src/lib.rs`                | rust self-impl      | Lockfile graph tests                                                    | Re-check pin fetch plan, manifest digest, override edges, and undefined edges.        |
+| Mode filtering/linkage          | `external-crates/move/crates/move-package-alt/src/graph/linkage.rs`                                                                                  | `sui-move-wasm/src/lib.rs`                | rust self-impl      | Lockfile graph, build-options, parity tests                             | Re-check mode-gated edges, override conflicts, original-ID selection, and cycles.     |
+| Manifest digest                 | `external-crates/move/crates/move-package-alt/src/package/package_impl.rs`, `external-crates/move/crates/move-package-alt/src/dependency/combine.rs` | `sui-move-wasm/src/lib.rs`                | rust self-impl      | Manifest digest and manifest digest CLI parity tests                    | Re-check `CombinedDependency`, `ReplacementDependency`, implicit deps, and TOML.      |
+| Address resolution priority     | `external-crates/move/crates/move-package-alt/src/package/package_impl.rs`, `external-crates/move/crates/move-package-alt/src/package/lockfile.rs`   | `sui-move-wasm/src/package_model.rs`      | rust self-impl      | Output-deps, build-options, parity, and audit tests                     | Re-check `original_id`, `published_at`, unpublished dummy IDs, and output IDs.        |
+| Intent dispatch                 | `crates/sui/src/sui_commands.rs`                                                                                                                     | `src/core.ts`, `sui-move-wasm/src/lib.rs` | rust self-impl      | Intent API, parity, build artifact audit, upgrade artifact audit tests  | Re-check dump/publish/upgrade flags such as `root_as_zero` and validation.            |
+| Compiler input                  | `external-crates/move/crates/move-package-alt-compilation/src/build_plan.rs`                                                                         | `sui-move-wasm/src/package_model.rs`      | rust self-impl      | Source-discovery, compiler-lint, output-deps, parity, and audit tests   | Re-check package paths, named addresses, edition/flavor, and dependency order.        |
+| Source discovery                | `external-crates/move/crates/move-package-alt-compilation/src/source_discovery.rs`                                                                   | `sui-move-wasm/src/package_model.rs`      | rust self-impl      | Source-discovery and unit-test-ownership tests                          | Re-check `sources`, `scripts`, `examples`, `tests`, source ordering, and modes.       |
+| Compiler flags                  | `external-crates/move/crates/move-package-alt-compilation/src/lib.rs`                                                                                | `sui-move-wasm/src/lib.rs`                | rust self-impl      | Compiler-lint, build-options, and unit-test-modes tests                 | Re-check exposed flags and keep unexposed CLI flags marked `not exposed`.             |
+| Verifier                        | `crates/sui-move-build/src/lib.rs`                                                                                                                   | `sui-move-wasm/src/lib.rs`                | vendor pass-through | Parity and audit tests                                                  | Re-check bytecode verifier and Sui verifier API drift.                                |
+| Module/dependency/digest output | `crates/sui-move-build/src/lib.rs`, `external-crates/move/crates/move-package-alt-compilation/src/compiled_package.rs`                               | `sui-move-wasm/src/lib.rs`                | vendor pass-through | Parity and audit tests                                                  | Re-check module order, dependency ID order, digest inputs, and tree-shaking scope.    |
+| `Move.lock` generation          | `external-crates/move/crates/move-package-alt/src/graph/to_lockfile.rs`, `external-crates/move/crates/move-package-alt/src/schema/lockfile.rs`       | `sui-move-wasm/src/lib.rs`                | rust self-impl      | Lockfile generation and manifest digest CLI parity tests                | Re-check pin rendering, multi-environment preservation, source identity, and pins.    |
+| Test runner                     | `crates/sui-move/src/unit_test.rs`, `external-crates/move/crates/move-compiler/src/unit_test/plan_builder.rs`                                        | `sui-move-wasm/src/lib.rs`                | vendor pass-through | Unit-test-output-parity, unit-test-modes, and unit-test-ownership tests | Re-check full-only exports, root test ownership, runner stdout, and exposed flags.    |
+| Legacy publication migration    | `external-crates/move/crates/move-package-alt/src/compatibility/legacy_lockfile.rs`                                                                  | `sui-move-wasm/src/lib.rs`                | rust self-impl      | Published TOML recording and lockfile generation tests                  | Re-check supported legacy inputs and failure behavior for malformed metadata.         |
+| Publication update              | `external-crates/move/crates/move-package-alt/src/package/root_package.rs`, `external-crates/move/crates/move-package-alt/src/schema/lockfile.rs`    | `src/core.ts`, `sui-move-wasm/src/lib.rs` | rust self-impl      | Published TOML recording tests                                          | Re-check publish/upgrade success result extraction and `Published.toml` rendering.    |
+| Unsupported host-only behavior  | `external-crates/move/crates/move-package-alt-compilation/src/build_plan.rs`, `crates/sui/src/sui_commands.rs`                                       | README and public API boundary            | not exposed         | Runtime smoke, API surface, and documentation checks                    | Keep filesystem output, signing, gas, PTB execution, docgen, disassembly unsupported. |
+
 ## 1) Input / Source Loading
 
 - **CLI**: Reads `Move.toml`, optional `Move.lock`, and source files from disk.
@@ -183,6 +210,7 @@ The `manifest_digest` field in generated Move.lock V4 is computed by Rust/WASM a
 
 - `ManifestDependencyInfo` uses default enum serialization (NOT `#[serde(untagged)]`)
 - `ReplacementDependency` uses `#[serde(flatten, default)]` attributes
+- `node test/integration/run.mjs manifest-digest-cli-parity` compares Rust/WASM digest output with CLI-generated root `Move.lock` digests for modern `[dep-replacements.mainnet]` fields (`rename-from`, `override`, `modes`, `use-environment`, `published-at`, `original-id`) and legacy `[dev-dependencies]`.
 - Intended to match the CLI for supported dependency shapes covered by the helper (git/local/system-style inputs). Other package-manager dependency forms should be verified before claiming parity.
 
 ---
@@ -399,13 +427,13 @@ let mut deps: Vec<_> = self
 
 ### 16.3 Manifest Digest Calculation
 
-**CLI Source**: `package_impl.rs:287-308`, `manifest.rs:155-170`
+**CLI Source**: `package_impl.rs:240-298`, `dependency/combine.rs:32-82`
 
-CLI computes `manifest_digest` from `CombinedDependency` which includes implicit deps:
+CLI computes `manifest_digest` from `CombinedDependency`. The combined dependency input includes `[dependencies]`, selected `[dep-replacements.<env>]`, legacy `[dev-dependencies]` as test-mode dependencies, and implicit system dependencies when Sui flavor enables them:
 
 ```rust
 fn compute_digest(deps: &[CombinedDependency]) -> String {
-    // ... deps includes implicit system deps like sui, std ...
+    // ... deps includes explicit deps, selected replacements, and implicit system deps ...
 }
 ```
 
@@ -487,8 +515,9 @@ let (min_depth, min_pkg, other_pkg) = if new_depth < *old_depth {
 
 ```json
 {
-  "version": "1.63.3",
-  "commit": "04dd28d5c5d92bff685ddfecb86f8acce18ce6df"
+  "version": "1.70.2",
+  "tag": "mainnet-v1.70.2",
+  "commit": "6d4ec0b0621dd9555753c9ecd5be021b25a0d267"
 }
 ```
 

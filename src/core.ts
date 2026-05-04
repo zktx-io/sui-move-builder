@@ -502,7 +502,7 @@ export async function initMovePackageBuilder(options?: {
 
 /**
  * Resolve dependencies for a Move package without compiling.
- * This function can be used to resolve dependencies once and reuse them across multiple builds.
+ * Resolves dependencies once for reuse across multiple builds.
  */
 export async function resolveMovePackageDependencies(
   input: Omit<MovePackageInput, "resolvedDependencies">
