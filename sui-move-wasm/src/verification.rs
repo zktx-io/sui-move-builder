@@ -9,7 +9,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::compile_impl;
+use crate::compiler_support::compile_impl;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
