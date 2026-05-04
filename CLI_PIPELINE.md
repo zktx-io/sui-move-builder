@@ -372,7 +372,7 @@ Result A == Result B for selected outputs → covered fixture parity
 
 ### 15.4 Parity Test Method
 
-The current integration test does not use transaction snapshots or package-specific expected results. It builds the same local Move package twice:
+The default parity integration test does not use transaction snapshots or package-specific expected results. It builds the same local Move package twice:
 
 1. `sui move build --dump-bytecode-as-base64 --path <package>` using the local Sui CLI.
 2. `dumpMovePackage` using the generated WASM artifact.
@@ -382,6 +382,10 @@ The current integration test does not use transaction snapshots or package-speci
 `node test/integration/run.mjs audit build` runs `sui move build --path <package> --install-dir <output>` for `crates/sui-framework/packages/sui-framework` and `crates/sui-framework/packages/sui-system`, converts generated `.mv` files into base64 JSON under `.sui-build/parity-cli-build-artifact-output`, runs the existing low-level WASM `compile` binding with `compileIntent: "publish"`, and compares module bytecode. The command also validates that `BuildInfo.yaml` records `root_as_zero: false`, `set_unpublished_deps_to_zero: false`, and `test_mode: false`.
 
 `node test/integration/run.mjs audit upgrade` uses `sui move build --dump-bytecode-as-base64` as the CLI artifact source for upgrade-intent bytecode and compares it with `prepareMovePackageUpgrade` for published package fixtures. The command compares modules, dependency IDs, and digest for both full and lite WASM artifacts.
+
+`node test/integration/run.mjs audit transaction <mode>` uses Sui RPC and GitHub access to fetch configured Sui transactions, extracts the single `Publish` or `Upgrade` command payload, rebuilds the configured GitHub source commit with the matching publish or upgrade intent, and requires pinned CLI and WASM outputs to match for that source and environment. Transaction bytecode/dependencies are recorded as audit evidence; older transaction payloads can differ when they were built with an older compiler or with source state that does not match the configured commit. Publish transactions use CLI installed `.mv` artifacts and WASM publish preparation; upgrade transactions use CLI dump output and WASM upgrade preparation.
+
+`node test/integration/run.mjs audit github-binary <mode>` uses GitHub API and raw file access to fetch configured committed `.mv` artifacts, rebuilds the same source commit with the fixture's declared intent, and requires pinned CLI and WASM outputs to match for that source and environment. Committed `.mv` differences are recorded with module hashes, first differing offset, bytecode header, and table section.
 
 `npm run test:browser` uses Chrome headless and the Chrome DevTools Protocol to verify that both `dist/lite` and `dist/full` load and compile in a real browser environment. `npm run dev:browser-parity` serves an interactive browser page that loads Sui examples, local packages, or GitHub packages, builds them in the browser, and compares the browser WASM output against the local Sui CLI JSON output.
 

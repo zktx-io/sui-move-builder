@@ -1,8 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  compareModuleBytecode,
+  modulesToOutput,
+  readNamedMoveModules,
+  writeJsonArtifact,
+} from "./artifact_parity_helpers.mjs";
 import {
   SUI_REPO_URL,
   LocalSuiFetcher,
@@ -87,6 +92,8 @@ function runSuiCliBuild(packageDir, outputDir) {
     packageDir,
     "--install-dir",
     outputDir,
+    "--build-env",
+    network,
   ];
   const result = spawnSync(suiCli, command, {
     cwd: repoRoot,
@@ -191,28 +198,7 @@ async function readCliBuildArtifacts(outputDir, packageName) {
   const modulesDir = path.join(packageBuildDir, "bytecode_modules");
   const buildInfoContent = await fs.readFile(buildInfoPath, "utf8");
   const { buildFlags, dependencies } = parseBuildInfoYaml(buildInfoContent);
-  const entries = await fs.readdir(modulesDir, { withFileTypes: true });
-  const moduleFiles = entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".mv"))
-    .map((entry) => entry.name)
-    .sort();
-
-  if (moduleFiles.length === 0) {
-    throw new Error(`No .mv modules generated under ${modulesDir}`);
-  }
-
-  const namedModules = [];
-  for (const fileName of moduleFiles) {
-    const bytes = await fs.readFile(path.join(modulesDir, fileName));
-    const base64 = bytes.toString("base64");
-    if (!base64) {
-      throw new Error(`Empty base64 output for ${fileName}`);
-    }
-    namedModules.push({
-      name: fileName.replace(/\.mv$/, ""),
-      base64,
-    });
-  }
+  const namedModules = await readNamedMoveModules(modulesDir);
 
   const selectedFlags = {
     root_as_zero: buildFlags.root_as_zero,
@@ -222,9 +208,7 @@ async function readCliBuildArtifacts(outputDir, packageName) {
 
   return {
     package: packageName,
-    moduleCount: namedModules.length,
-    modules: namedModules.map((module) => module.base64),
-    namedModules,
+    ...modulesToOutput(namedModules),
     buildFlags: selectedFlags,
     dependencies,
   };
@@ -314,43 +298,6 @@ async function compileWasmPublishPackage({
   return result;
 }
 
-function moduleHash(base64) {
-  return createHash("sha256")
-    .update(Buffer.from(base64, "base64"))
-    .digest("hex");
-}
-
-function compareModuleBytecode(cliOutput, wasmOutput) {
-  const cliModules = [...cliOutput.modules].sort();
-  const wasmModules = [...wasmOutput.modules].sort();
-  const differences = [];
-
-  if (cliModules.length !== wasmModules.length) {
-    differences.push(
-      `module count differs: CLI=${cliModules.length}, WASM=${wasmModules.length}`
-    );
-  }
-
-  const max = Math.max(cliModules.length, wasmModules.length);
-  for (let i = 0; i < max; i += 1) {
-    if (cliModules[i] !== wasmModules[i]) {
-      differences.push(`module bytecode differs at sorted index ${i}`);
-      break;
-    }
-  }
-
-  if (differences.length === 0) {
-    return { ok: true, differences: [] };
-  }
-
-  return {
-    ok: false,
-    differences,
-    cliHashes: cliModules.map(moduleHash),
-    wasmHashes: wasmModules.map(moduleHash),
-  };
-}
-
 async function main() {
   console.log(
     `Running CLI build artifact parity tests in [${mode.toUpperCase()}] mode`
@@ -408,14 +355,8 @@ async function main() {
         packageName
       );
       assertCliBuildArtifactShape(cliOutput);
-      await fs.writeFile(
-        path.join(outputRoot, "cli-build-artifact.json"),
-        JSON.stringify(cliOutput, null, 2)
-      );
-      await fs.writeFile(
-        path.join(outputRoot, "cli-output.json"),
-        JSON.stringify(cliResult, null, 2)
-      );
+      await writeJsonArtifact(outputRoot, "cli-build-artifact.json", cliOutput);
+      await writeJsonArtifact(outputRoot, "cli-output.json", cliResult);
 
       const files = await readMovePackageFiles(packageDir);
       const wasmResult = await compileWasmPublishPackage({
@@ -430,38 +371,27 @@ async function main() {
           ok: false,
           differences: ["WASM publish build failed"],
         };
-        await fs.writeFile(
-          path.join(outputRoot, "wasm-error.json"),
-          JSON.stringify(wasmResult, null, 2)
-        );
-        await fs.writeFile(
-          path.join(outputRoot, "comparison.json"),
-          JSON.stringify(comparison, null, 2)
-        );
+        await writeJsonArtifact(outputRoot, "wasm-error.json", wasmResult);
+        await writeJsonArtifact(outputRoot, "comparison.json", comparison);
         throw new Error(wasmResult.error);
       }
 
-      const comparison = compareModuleBytecode(cliOutput, wasmResult);
+      const comparison = compareModuleBytecode(
+        "cli",
+        cliOutput,
+        "wasm",
+        wasmResult
+      );
 
-      await fs.writeFile(
-        path.join(outputRoot, "wasm-package-artifact.json"),
-        JSON.stringify(
-          {
-            package: packageName,
-            intent: wasmResult.intent,
-            moduleCount: wasmResult.modules.length,
-            modules: wasmResult.modules,
-            dependencies: wasmResult.dependencies,
-            digest: wasmResult.digest,
-          },
-          null,
-          2
-        )
-      );
-      await fs.writeFile(
-        path.join(outputRoot, "comparison.json"),
-        JSON.stringify(comparison, null, 2)
-      );
+      await writeJsonArtifact(outputRoot, "wasm-package-artifact.json", {
+        package: packageName,
+        intent: wasmResult.intent,
+        moduleCount: wasmResult.modules.length,
+        modules: wasmResult.modules,
+        dependencies: wasmResult.dependencies,
+        digest: wasmResult.digest,
+      });
+      await writeJsonArtifact(outputRoot, "comparison.json", comparison);
 
       if (!comparison.ok) {
         failed = true;

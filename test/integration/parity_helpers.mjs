@@ -15,7 +15,7 @@ import {
 const require = createRequire(import.meta.url);
 const baseSuiVersion = require("../../sui-version.json");
 
-export { SUI_REPO_URL };
+export { SUI_REPO_URL, ensureSuiSourceCheckout };
 
 export const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -245,7 +245,7 @@ function isNetworkSuiCliFailure(result) {
     .join("\n")
     .toLowerCase();
 
-  return /tcp connect error|could not resolve|failed to fetch package|connection (timed out|refused|reset)|operation timed out|temporary failure in name resolution|failed to clone|unable to access|network (error|failure|timeout)/.test(
+  return /tcp connect error|could not resolve|connection (timed out|refused|reset)|operation timed out|temporary failure in name resolution|failed to clone|unable to access|network (error|failure|timeout)/.test(
     output
   );
 }

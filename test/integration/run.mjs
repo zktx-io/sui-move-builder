@@ -98,10 +98,7 @@ function auditCommands(kind, mode) {
   const modes = mode ? [mode] : ["full", "lite"];
   const commands = [];
   for (const selectedKind of kinds) {
-    const file =
-      selectedKind === "build"
-        ? "cli_build_artifact_parity_test.mjs"
-        : "cli_upgrade_artifact_parity_test.mjs";
+    const file = auditCaseFile(selectedKind);
     for (const selectedMode of modes) {
       commands.push([`test/integration/${file}`, selectedMode]);
     }
@@ -109,11 +106,32 @@ function auditCommands(kind, mode) {
   return commands;
 }
 
+function auditCaseFile(kind) {
+  if (kind === "build") {
+    return "cli_build_artifact_parity_test.mjs";
+  }
+  if (kind === "upgrade") {
+    return "cli_upgrade_artifact_parity_test.mjs";
+  }
+  if (kind === "transaction") {
+    return "transaction_artifact_parity_test.mjs";
+  }
+  if (kind === "github-binary") {
+    return "github_binary_artifact_parity_test.mjs";
+  }
+  throw new Error(`Unknown audit kind: ${kind}`);
+}
+
 function runAudit(args) {
   let kind;
   let mode;
   for (const arg of args) {
-    if (arg === "build" || arg === "upgrade") {
+    if (
+      arg === "build" ||
+      arg === "upgrade" ||
+      arg === "transaction" ||
+      arg === "github-binary"
+    ) {
       kind = arg;
     } else if (arg === "full" || arg === "lite") {
       mode = arg;

@@ -485,6 +485,10 @@ The parity test warns when the local Sui CLI version differs from `sui-version.j
 
 `node test/integration/run.mjs audit upgrade` uses `sui move build --dump-bytecode-as-base64` as the CLI artifact source for upgrade-intent bytecode and compares it with `prepareMovePackageUpgrade` for published package fixtures. The comparison covers modules, dependency IDs, and digest.
 
+`node test/integration/run.mjs audit transaction <full|lite>` uses Sui RPC and GitHub access to fetch configured publish or upgrade transactions, rebuilds the matching GitHub source commit with the corresponding intent, requires CLI and WASM outputs to match, and records transaction bytecode/dependency differences as audit evidence.
+
+`node test/integration/run.mjs audit github-binary <full|lite>` uses GitHub API and raw file access to fetch configured committed `.mv` artifacts, rebuilds the same source commit, requires CLI and WASM outputs to match, and records bytecode diff summaries when committed artifacts differ from current build output.
+
 Passing parity tests are evidence for the covered fixtures only. See `CLI_PIPELINE.md` for current implementation boundaries.
 
 For manual browser verification, run `npm run dev:browser-parity` and open the printed `http://127.0.0.1:<port>/` URL. The page loads a Move package from the pinned Sui examples, a local package path, or a GitHub repository; builds it with the selected browser WASM artifact; asks the local server to build the same package with `sui move build --dump-bytecode-as-base64 --path <package>`; then compares module bytecode, dependency IDs, and digest.

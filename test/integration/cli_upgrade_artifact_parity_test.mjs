@@ -3,6 +3,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  compareBuildOutputs,
+  normalizeOutput,
+  writeJsonArtifact,
+} from "./artifact_parity_helpers.mjs";
+import {
   SUI_REPO_URL,
   LocalSuiFetcher,
   assertSuiCliVersion,
@@ -76,6 +81,8 @@ function runSuiCliUpgradeCompileArtifact(packageDir) {
     "--dump-bytecode-as-base64",
     "--path",
     packageDir,
+    "--build-env",
+    network,
   ];
   const result = spawnSync(suiCli, command, {
     cwd: repoRoot,
@@ -105,73 +112,11 @@ function runSuiCliUpgradeCompileArtifact(packageDir) {
   return JSON.parse(stdout.slice(jsonStart, jsonEnd + 1));
 }
 
-function normalizeDigest(digest) {
-  if (Array.isArray(digest)) {
-    return Buffer.from(digest).toString("hex");
-  }
-  if (typeof digest === "string") {
-    return digest.replace(/^0x/, "").toLowerCase();
-  }
-  throw new Error(`Unsupported digest shape: ${typeof digest}`);
-}
-
-function normalizeOutput(output) {
-  if (!Array.isArray(output.modules)) {
-    throw new Error("Build output modules must be an array");
-  }
-  return {
-    modules: output.modules,
-    dependencies: (output.dependencies || []).map((dep) =>
-      String(dep).toLowerCase()
-    ),
-    digest: normalizeDigest(output.digest),
-  };
-}
-
-function compareArrays(label, left, right, differences) {
-  if (left.length !== right.length) {
-    differences.push(
-      `${label} count differs: CLI=${left.length}, WASM=${right.length}`
-    );
-    return;
-  }
-
-  for (let i = 0; i < left.length; i += 1) {
-    if (left[i] !== right[i]) {
-      differences.push(`${label}[${i}] differs`);
-      return;
-    }
-  }
-}
-
-function compareBuilds(cliOutput, wasmOutput) {
-  const differences = [];
-  compareArrays("modules", cliOutput.modules, wasmOutput.modules, differences);
-  compareArrays(
-    "dependencies",
-    cliOutput.dependencies,
-    wasmOutput.dependencies,
-    differences
-  );
-  if (cliOutput.digest !== wasmOutput.digest) {
-    differences.push(
-      `digest differs: CLI=${cliOutput.digest}, WASM=${wasmOutput.digest}`
-    );
-  }
-  return differences;
-}
-
 function toDisplayPackageName(packageDir, workDir) {
   if (isInsideDir(packageDir, workDir)) {
     return path.relative(workDir, packageDir).replace(/\\/g, "/");
   }
   return path.relative(repoRoot, packageDir).replace(/\\/g, "/");
-}
-
-async function writeArtifact(artifactPackageName, name, data) {
-  const dir = path.join(parityOutputDir, artifactPackageName);
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, name), JSON.stringify(data, null, 2));
 }
 
 async function main() {
@@ -225,6 +170,7 @@ async function main() {
     const cliOutput = normalizeOutput(
       runSuiCliUpgradeCompileArtifact(packageDir)
     );
+    const outputRoot = path.join(parityOutputDir, artifactPackageName);
     const wasmResult = await prepareMovePackageUpgrade({
       files: rootFiles,
       network,
@@ -233,17 +179,22 @@ async function main() {
       silenceWarnings: true,
     });
 
-    await writeArtifact(artifactPackageName, "cli.json", cliOutput);
+    await writeJsonArtifact(outputRoot, "cli.json", cliOutput);
     if ("error" in wasmResult) {
       failed = true;
       console.error(`[WASM] Upgrade preparation failed: ${wasmResult.error}`);
-      await writeArtifact(artifactPackageName, "wasm-error.json", wasmResult);
+      await writeJsonArtifact(outputRoot, "wasm-error.json", wasmResult);
       continue;
     }
 
     const wasmOutput = normalizeOutput(wasmResult);
-    const differences = compareBuilds(cliOutput, wasmOutput);
-    await writeArtifact(artifactPackageName, "wasm.json", wasmOutput);
+    const differences = compareBuildOutputs(
+      "CLI",
+      cliOutput,
+      "WASM",
+      wasmOutput
+    );
+    await writeJsonArtifact(outputRoot, "wasm.json", wasmOutput);
 
     if (differences.length > 0) {
       failed = true;

@@ -27,6 +27,16 @@ assertEqual(
 
 assertEqual(
   classifySuiCliFailure({
+    status: 1,
+    stderr:
+      "Failed to fetch package token\nCaused by:\n    Object 0xdeeb not found",
+  }),
+  "CLI build failure",
+  "CLI package fetch failure caused by source state"
+);
+
+assertEqual(
+  classifySuiCliFailure({
     error: { code: "ETIMEDOUT", message: "spawn sui ETIMEDOUT" },
   }),
   "network",
@@ -57,7 +67,8 @@ const formatted = formatSuiCliFailure({
   command: ["sui", "move", "build"],
   result: {
     status: 1,
-    stderr: "Failed to fetch package MoveStdlib",
+    stderr:
+      "Failed to fetch package MoveStdlib\nCaused by:\n    tcp connect error",
   },
 });
 if (!formatted.includes("Category: network")) {
