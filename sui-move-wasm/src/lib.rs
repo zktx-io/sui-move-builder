@@ -104,9 +104,9 @@ use lockfile_v4::{
 use manifest_digest::{CombinedDependencySource, CombinedMoveDependency, ManifestPackagePlanSubst};
 #[cfg(feature = "testing")]
 use move_symbol_pool::Symbol;
+use package_model::parse_hex_address_to_bytes;
 #[cfg(feature = "testing")]
 use package_model::{build_compiler_input, CompilerInput, CompilerInputMode};
-use package_model::{dependency_name_is_implicit, parse_hex_address_to_bytes};
 use stage_report::StageReport;
 
 fn package_version_from_lock(lock_contents: &str, package_name: &str) -> Option<String> {
@@ -653,15 +653,6 @@ pub fn compute_manifest_digest(deps_json: &str) -> String {
     manifest_digest::compute_manifest_digest(deps_json)
 }
 
-struct LockfileV4GenerateResolvedPackage {
-    id: String,
-    source: LockfileV4Source,
-    manifest_name: String,
-    graph_id_name: String,
-    combined_dependencies: Vec<CombinedMoveDependency>,
-    dep_alias_to_package_name: BTreeMap<String, String>,
-}
-
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ManifestPackagePlanDependency {
@@ -798,29 +789,6 @@ pub fn lockfile_v4_fetch_plan(move_lock_toml: &str, environment: &str) -> String
     }
 }
 
-fn lockfile_v4_find_move_toml<'a>(
-    files: &'a BTreeMap<String, String>,
-    environment: &str,
-) -> Option<&'a str> {
-    let network_toml = format!("Move.{}.toml", environment);
-    files
-        .get(&network_toml)
-        .or_else(|| {
-            files
-                .iter()
-                .find(|(path, _)| path.ends_with(&network_toml))
-                .map(|(_, content)| content)
-        })
-        .or_else(|| files.get("Move.toml"))
-        .or_else(|| {
-            files
-                .iter()
-                .find(|(path, _)| path.ends_with("Move.toml"))
-                .map(|(_, content)| content)
-        })
-        .map(|value| value.as_str())
-}
-
 fn normalize_hex_address_string(value: &str) -> Option<String> {
     parse_hex_address_to_bytes(value)
         .map(|bytes| AccountAddress::new(bytes).to_canonical_string(true))
@@ -837,15 +805,6 @@ fn is_move_named_address(value: &str) -> bool {
     chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
-fn lockfile_v4_is_zero_or_unassigned_address(value: &str) -> bool {
-    value.trim() == "_"
-        || normalize_hex_address_string(value)
-            .map(|address| {
-                address == "0x0000000000000000000000000000000000000000000000000000000000000000"
-            })
-            .unwrap_or(false)
-}
-
 fn lockfile_v4_normalize_nonzero_address(value: &str) -> Option<String> {
     let normalized = normalize_hex_address_string(value)?;
     if normalized == "0x0000000000000000000000000000000000000000000000000000000000000000" {
@@ -853,388 +812,6 @@ fn lockfile_v4_normalize_nonzero_address(value: &str) -> Option<String> {
     } else {
         Some(normalized)
     }
-}
-
-const LOCKFILE_V4_NO_NAME_LEGACY_PACKAGE_NAME: &str = "unnamed_legacy_package";
-
-fn lockfile_v4_strip_move_comments(source: &str) -> String {
-    let mut result = String::new();
-    let mut in_block_comment = false;
-
-    for line in source.lines() {
-        let mut line_cleaned = line.to_string();
-
-        if let Some(start) = line_cleaned.find("///") {
-            line_cleaned.replace_range(start.., "");
-        }
-        if let Some(start) = line_cleaned.find("//") {
-            line_cleaned.replace_range(start.., "");
-        }
-
-        if in_block_comment {
-            if let Some(end) = line_cleaned.find("*/") {
-                line_cleaned.replace_range(..=end + 1, "");
-                in_block_comment = false;
-            } else {
-                continue;
-            }
-        }
-
-        while let Some(start) = line_cleaned.find("/*") {
-            if let Some(end) = line_cleaned[start..].find("*/") {
-                line_cleaned.replace_range(start..start + end + 2, "");
-            } else {
-                line_cleaned.replace_range(start.., "");
-                in_block_comment = true;
-                break;
-            }
-        }
-
-        result.push_str(&line_cleaned);
-    }
-
-    result
-}
-
-fn lockfile_v4_is_ident_start(byte: u8) -> bool {
-    byte == b'_' || byte.is_ascii_alphabetic()
-}
-
-fn lockfile_v4_is_ident_continue(byte: u8) -> bool {
-    byte == b'_' || byte.is_ascii_alphanumeric()
-}
-
-fn lockfile_v4_module_names_from_source(source: &str) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    let bytes = source.as_bytes();
-    let mut index = 0;
-
-    while index + b"module".len() <= bytes.len() {
-        if !bytes[index..].starts_with(b"module")
-            || (index > 0 && lockfile_v4_is_ident_continue(bytes[index - 1]))
-        {
-            index += 1;
-            continue;
-        }
-
-        let mut cursor = index + b"module".len();
-        if cursor >= bytes.len() || !bytes[cursor].is_ascii_whitespace() {
-            index += 1;
-            continue;
-        }
-        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        if cursor >= bytes.len() || !lockfile_v4_is_ident_start(bytes[cursor]) {
-            index += 1;
-            continue;
-        }
-
-        let name_start = cursor;
-        cursor += 1;
-        while cursor < bytes.len() && lockfile_v4_is_ident_continue(bytes[cursor]) {
-            cursor += 1;
-        }
-
-        if cursor + 1 >= bytes.len() || bytes[cursor] != b':' || bytes[cursor + 1] != b':' {
-            index += 1;
-            continue;
-        }
-
-        let name = &source[name_start..cursor];
-        if !name.starts_with("0x") && !name.starts_with("0X") {
-            names.insert(name.to_string());
-        }
-        index = cursor + 2;
-    }
-
-    names
-}
-
-fn lockfile_v4_is_legacy_name_source_path(path: &str) -> bool {
-    let Some(relative_path) = path.strip_prefix("sources/") else {
-        return false;
-    };
-    relative_path.ends_with(".move")
-        && relative_path
-            .split('/')
-            .filter(|part| !part.is_empty())
-            .count()
-            <= 5
-}
-
-fn lockfile_v4_module_names_from_sources(files: &BTreeMap<String, String>) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    for (path, content) in files {
-        if !lockfile_v4_is_legacy_name_source_path(path) {
-            continue;
-        }
-        let clean = lockfile_v4_strip_move_comments(content);
-        names.extend(lockfile_v4_module_names_from_source(&clean));
-    }
-    names
-}
-
-fn lockfile_v4_derive_legacy_modern_name(
-    addresses: &BTreeMap<String, String>,
-    files: &BTreeMap<String, String>,
-) -> Option<String> {
-    let zero_addresses = addresses
-        .iter()
-        .filter_map(|(name, address)| {
-            lockfile_v4_is_zero_or_unassigned_address(address).then(|| name.clone())
-        })
-        .collect::<Vec<_>>();
-
-    if zero_addresses.len() == 1 && is_move_named_address(&zero_addresses[0]) {
-        return Some(zero_addresses[0].clone());
-    }
-
-    let module_names = lockfile_v4_module_names_from_sources(files);
-    if module_names.len() == 1 {
-        module_names.into_iter().next()
-    } else {
-        None
-    }
-}
-
-fn lockfile_v4_chain_id(environment: &str) -> &str {
-    match environment {
-        "mainnet" => "35834a8a",
-        "testnet" => "4c78adac",
-        "devnet" => "2",
-        other => other,
-    }
-}
-
-fn lockfile_v4_env_publication(
-    files: &BTreeMap<String, String>,
-    environment: &str,
-) -> (Option<String>, Option<String>) {
-    let Some(lockfile_content) = files.get("Move.lock") else {
-        return (None, None);
-    };
-    let Ok(value) = lockfile_content.parse::<toml::Value>() else {
-        return (None, None);
-    };
-    let chain_id = lockfile_v4_chain_id(environment);
-    let env = value
-        .get("env")
-        .and_then(|envs| envs.get(chain_id).or_else(|| envs.get(environment)))
-        .and_then(|env| env.as_table());
-
-    let original_id = env
-        .and_then(|env| env.get("original-published-id"))
-        .and_then(|value| value.as_str())
-        .and_then(normalize_hex_address_string);
-    let latest_id = env
-        .and_then(|env| env.get("latest-published-id"))
-        .and_then(|value| value.as_str())
-        .and_then(normalize_hex_address_string);
-
-    (original_id, latest_id)
-}
-
-fn lockfile_v4_published_toml_publication(
-    files: &BTreeMap<String, String>,
-    environment: &str,
-) -> (Option<String>, Option<String>) {
-    let Some(published_content) = files.get("Published.toml") else {
-        return (None, None);
-    };
-    let Ok(value) = published_content.parse::<toml::Value>() else {
-        return (None, None);
-    };
-    let env = value
-        .get("published")
-        .and_then(|published| published.get(environment))
-        .and_then(|env| env.as_table());
-
-    let published_at = env
-        .and_then(|env| env.get("published-at"))
-        .and_then(|value| value.as_str())
-        .and_then(normalize_hex_address_string);
-    let original_id = env
-        .and_then(|env| env.get("original-id"))
-        .and_then(|value| value.as_str())
-        .and_then(normalize_hex_address_string);
-
-    (published_at, original_id)
-}
-
-fn lockfile_v4_manifest_from_files(
-    package_id: &str,
-    files: &BTreeMap<String, String>,
-    environment: &str,
-) -> Result<(LockfileV4PackageManifest, String), String> {
-    let move_toml = lockfile_v4_find_move_toml(files, environment)
-        .ok_or_else(|| format!("Dependency '{}' did not provide Move.toml", package_id))?;
-    let value = move_toml
-        .parse::<toml::Value>()
-        .map_err(|error| format!("Failed to parse Move.toml for '{}': {}", package_id, error))?;
-    let package = value
-        .get("package")
-        .and_then(|package| package.as_table())
-        .ok_or_else(|| format!("Move.toml for '{}' has no [package]", package_id))?;
-
-    let mut name = package
-        .get("name")
-        .and_then(|value| value.as_str())
-        .unwrap_or(package_id)
-        .to_string();
-    let legacy_name = name.clone();
-    let version = package
-        .get("version")
-        .and_then(|value| value.as_str())
-        .unwrap_or("0.0.0")
-        .to_string();
-    let edition = package
-        .get("edition")
-        .and_then(|value| value.as_str())
-        .map(|value| value.to_string());
-    let implicit_dependencies = package
-        .get("implicit-dependencies")
-        .or_else(|| package.get("implicit_dependencies"))
-        .and_then(|value| value.as_bool())
-        .unwrap_or(true);
-    let is_legacy = value
-        .get("addresses")
-        .and_then(|addresses| addresses.as_table())
-        .is_some()
-        || value
-            .get("dev-addresses")
-            .and_then(|addresses| addresses.as_table())
-            .is_some()
-        || value
-            .get("dev-dependencies")
-            .and_then(|dependencies| dependencies.as_table())
-            .is_some();
-    let manifest_published_at = package
-        .get("published-at")
-        .or_else(|| package.get("published_at"))
-        .and_then(|value| value.as_str())
-        .filter(|value| *value != "0x0")
-        .and_then(normalize_hex_address_string);
-    let manifest_original_id = package
-        .get("original-id")
-        .or_else(|| package.get("original_id"))
-        .and_then(|value| value.as_str())
-        .and_then(normalize_hex_address_string);
-
-    let (lock_original_id, lock_latest_id) = lockfile_v4_env_publication(files, environment);
-    let mut published_at = manifest_published_at
-        .clone()
-        .or(lock_latest_id.clone())
-        .or(lock_original_id.clone());
-    let mut original_id = manifest_original_id.or(lock_original_id);
-
-    let (published_toml_latest, published_toml_original) =
-        lockfile_v4_published_toml_publication(files, environment);
-    if published_toml_latest.is_some() {
-        published_at = published_toml_latest;
-    }
-    if published_toml_original.is_some() {
-        original_id = published_toml_original;
-    }
-
-    let mut addresses = BTreeMap::new();
-    if let Some(address_table) = value
-        .get("addresses")
-        .and_then(|addresses| addresses.as_table())
-    {
-        for (name, address) in address_table {
-            if let Some(address_str) = address.as_str() {
-                addresses.insert(
-                    name.clone(),
-                    normalize_hex_address_string(address_str)
-                        .unwrap_or_else(|| address_str.to_string()),
-                );
-            }
-        }
-    }
-
-    if is_legacy {
-        name = lockfile_v4_derive_legacy_modern_name(&addresses, files)
-            .unwrap_or_else(|| LOCKFILE_V4_NO_NAME_LEGACY_PACKAGE_NAME.to_string());
-        for (address_name, address) in &addresses {
-            if address.trim() == "_" && address_name != &name {
-                return Err(format!(
-                    "Found non instantiated named address `{}` (declared as `_`). All addresses in the `addresses` field must be instantiated.",
-                    address_name
-                ));
-            }
-        }
-    }
-    let implicit_dependencies = if is_legacy {
-        manifest_digest::legacy_implicit_dependencies(&legacy_name, &value, implicit_dependencies)
-    } else {
-        implicit_dependencies
-    };
-    let combined_dependencies = manifest_digest::combined_dependencies_from_move_toml(
-        move_toml,
-        Some(if is_legacy {
-            legacy_name.clone()
-        } else {
-            name.clone()
-        }),
-        environment,
-    )?;
-
-    let self_address_key = addresses
-        .keys()
-        .find(|key| key.eq_ignore_ascii_case(&name))
-        .cloned();
-    if let Some(self_key) = &self_address_key {
-        if let Some(self_address) = addresses.get(self_key) {
-            if self_address != "0x0000000000000000000000000000000000000000000000000000000000000000"
-            {
-                original_id = Some(self_address.clone());
-            }
-        }
-    }
-
-    let address_to_use = original_id.clone().or_else(|| published_at.clone());
-    let package_has_named_self = !is_legacy || name != LOCKFILE_V4_NO_NAME_LEGACY_PACKAGE_NAME;
-    if let Some(address) = address_to_use {
-        if package_has_named_self && !addresses.contains_key(&name) && is_move_named_address(&name)
-        {
-            addresses.insert(name.clone(), address);
-        }
-    } else if package_has_named_self
-        && !addresses.contains_key(&name)
-        && is_move_named_address(&name)
-    {
-        addresses.insert(name.clone(), "0x0".to_string());
-    }
-
-    let dependencies = value
-        .get("dependencies")
-        .cloned()
-        .and_then(|value| serde_json::to_value(value).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    let dev_dependencies = value
-        .get("dev-dependencies")
-        .cloned()
-        .and_then(|value| serde_json::to_value(value).ok());
-
-    Ok((
-        LockfileV4PackageManifest {
-            name,
-            legacy_name: is_legacy.then_some(legacy_name),
-            version,
-            edition,
-            is_legacy,
-            implicit_dependencies,
-            published_at: published_at.clone(),
-            original_id,
-            latest_published_id: published_at,
-            addresses,
-            dependencies,
-            dev_dependencies,
-            combined_dependencies,
-        },
-        move_toml.to_string(),
-    ))
 }
 
 #[cfg(not(feature = "verification"))]
@@ -1255,428 +832,6 @@ pub fn legacy_publication_migration(input_json: &str) -> String {
     publication::legacy_publication_migration_json(input_json)
 }
 
-fn lockfile_v4_toml_string(value: &str) -> String {
-    let escaped = value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t");
-    format!("\"{}\"", escaped)
-}
-
-fn lockfile_v4_format_source(
-    source: &LockfileV4Source,
-    is_root: bool,
-    package_id: &str,
-) -> Result<String, String> {
-    match source {
-        LockfileV4Source::Root if is_root => Ok("source = { root = true }".to_string()),
-        LockfileV4Source::Root => Err(format!(
-            "Move.lock V4 generation package '{}' has root source outside the root package",
-            package_id
-        )),
-        LockfileV4Source::Git { git, rev, subdir } => Ok(format!(
-            "source = {{ git = {}, subdir = {}, rev = {} }}",
-            lockfile_v4_toml_string(git),
-            lockfile_v4_toml_string(subdir.as_deref().unwrap_or_default()),
-            lockfile_v4_toml_string(rev)
-        )),
-        LockfileV4Source::Local { local } => Ok(format!(
-            "source = {{ local = {} }}",
-            lockfile_v4_toml_string(local)
-        )),
-        LockfileV4Source::Unsupported => Err(format!(
-            "Move.lock V4 generation package '{}' has unsupported source",
-            package_id
-        )),
-    }
-}
-
-fn lockfile_v4_source_matches_combined_dependency(
-    source: &LockfileV4Source,
-    dependency: &CombinedMoveDependency,
-) -> bool {
-    match source {
-        LockfileV4Source::Git { git, rev, subdir } => match &dependency.source {
-            CombinedDependencySource::Git {
-                git: dep_git,
-                rev: dep_rev,
-                subdir: dep_subdir,
-            } => {
-                dep_git == git
-                    && dep_rev.as_deref() == Some(rev.as_str())
-                    && dep_subdir.as_deref().unwrap_or_default()
-                        == subdir.as_deref().unwrap_or_default()
-            }
-            _ => false,
-        },
-        LockfileV4Source::Local { local } => match &dependency.source {
-            CombinedDependencySource::Local { local: dep_local } => dep_local == local,
-            _ => false,
-        },
-        LockfileV4Source::Root | LockfileV4Source::Unsupported => false,
-    }
-}
-
-fn lockfile_v4_find_implicit_target(
-    alias: &str,
-    package_ids: &BTreeSet<String>,
-    manifest_name_to_ids: &BTreeMap<String, Vec<String>>,
-) -> Option<String> {
-    let lower = alias.to_ascii_lowercase();
-    let candidates: &[&str] = match lower.as_str() {
-        "sui" => &["Sui"],
-        "std" | "movestdlib" => &["MoveStdlib", "Std"],
-        _ => return None,
-    };
-
-    for candidate in candidates {
-        if package_ids.contains(*candidate) {
-            return Some((*candidate).to_string());
-        }
-    }
-
-    for candidate in candidates {
-        if let Some(ids) = manifest_name_to_ids.get(*candidate) {
-            if ids.len() == 1 {
-                return ids.first().cloned();
-            }
-        }
-    }
-
-    None
-}
-
-fn lockfile_v4_resolve_dependency_target(
-    current: &LockfileV4GenerateResolvedPackage,
-    dependency: &CombinedMoveDependency,
-    all_packages: &[LockfileV4GenerateResolvedPackage],
-    package_ids: &BTreeSet<String>,
-    manifest_name_to_ids: &BTreeMap<String, Vec<String>>,
-) -> Result<String, String> {
-    let alias = dependency.name.as_str();
-    if let Some(target) = current.dep_alias_to_package_name.get(alias) {
-        if package_ids.contains(target) {
-            return Ok(target.clone());
-        }
-        return Err(format!(
-            "Move.lock V4 generation package '{}' dependency '{}' references unknown package '{}'",
-            current.id, alias, target
-        ));
-    }
-
-    if matches!(dependency.source, CombinedDependencySource::System { .. }) {
-        if let Some(target) =
-            lockfile_v4_find_implicit_target(alias, package_ids, manifest_name_to_ids)
-        {
-            return Ok(target);
-        }
-    } else {
-        let mut source_matches = all_packages
-            .iter()
-            .filter(|package| package.id != current.id)
-            .filter(|package| {
-                lockfile_v4_source_matches_combined_dependency(&package.source, dependency)
-            })
-            .map(|package| package.id.clone())
-            .collect::<Vec<_>>();
-        source_matches.sort();
-        source_matches.dedup();
-        if source_matches.len() == 1 {
-            return Ok(source_matches.remove(0));
-        }
-        if source_matches.len() > 1 {
-            return Err(format!(
-                "Move.lock V4 generation package '{}' dependency '{}' matches multiple packages",
-                current.id, alias
-            ));
-        }
-    }
-
-    if let Some(package_hint) = dependency
-        .package_hint
-        .as_ref()
-        .or(dependency.rename_from.as_ref())
-    {
-        if package_ids.contains(package_hint.as_str()) {
-            return Ok(package_hint.clone());
-        }
-        if let Some(ids) = manifest_name_to_ids.get(package_hint.as_str()) {
-            if ids.len() == 1 {
-                return ids.first().cloned().ok_or_else(|| {
-                    format!(
-                        "Move.lock V4 generation package '{}' dependency '{}' has no target",
-                        current.id, alias
-                    )
-                });
-            }
-        }
-    }
-
-    if package_ids.contains(alias) {
-        return Ok(alias.to_string());
-    }
-
-    if let Some(ids) = manifest_name_to_ids.get(alias) {
-        if ids.len() == 1 {
-            return ids.first().cloned().ok_or_else(|| {
-                format!(
-                    "Move.lock V4 generation package '{}' dependency '{}' has no target",
-                    current.id, alias
-                )
-            });
-        }
-    }
-
-    if dependency_name_is_implicit(alias) {
-        if let Some(target) =
-            lockfile_v4_find_implicit_target(alias, package_ids, manifest_name_to_ids)
-        {
-            return Ok(target);
-        }
-    }
-
-    Err(format!(
-        "Move.lock V4 generation package '{}' cannot resolve dependency '{}'",
-        current.id, alias
-    ))
-}
-
-fn lockfile_v4_generated_deps(
-    package: &LockfileV4GenerateResolvedPackage,
-    all_packages: &[LockfileV4GenerateResolvedPackage],
-    package_ids: &BTreeSet<String>,
-    manifest_name_to_ids: &BTreeMap<String, Vec<String>>,
-) -> Result<BTreeMap<String, String>, String> {
-    let mut deps = BTreeMap::new();
-
-    for dependency in &package.combined_dependencies {
-        let target = lockfile_v4_resolve_dependency_target(
-            package,
-            dependency,
-            all_packages,
-            package_ids,
-            manifest_name_to_ids,
-        )?;
-        deps.insert(dependency.name.clone(), target);
-    }
-
-    Ok(deps)
-}
-
-fn lockfile_v4_format_deps(deps: &BTreeMap<String, String>) -> String {
-    if deps.is_empty() {
-        return "deps = {}".to_string();
-    }
-
-    let parts = deps
-        .iter()
-        .map(|(alias, target)| format!("{} = {}", alias, lockfile_v4_toml_string(target)))
-        .collect::<Vec<_>>();
-    format!("deps = {{ {} }}", parts.join(", "))
-}
-
-fn lockfile_v4_section_environment(line: &str) -> Option<String> {
-    let trimmed = line.trim();
-    if !trimmed.starts_with("[pinned.") || !trimmed.ends_with(']') || trimmed.starts_with("[[") {
-        return None;
-    }
-
-    let inner = trimmed.trim_start_matches('[').trim_end_matches(']');
-    let rest = inner.strip_prefix("pinned.")?;
-    rest.split('.').next().map(|value| value.to_string())
-}
-
-fn lockfile_v4_append_other_environment_sections(
-    lines: &mut Vec<String>,
-    existing_lockfile: &str,
-    environment: &str,
-) -> Result<(), HelperError> {
-    if existing_lockfile.trim().is_empty() {
-        return Ok(());
-    }
-
-    existing_lockfile.parse::<toml::Value>().map_err(|error| {
-        HelperError::with_code(
-            "malformed_lockfile",
-            format!("Failed to parse existing Move.lock: {}", error),
-        )
-    })?;
-
-    let mut current_section = vec![];
-    let mut in_other_environment = false;
-
-    let flush = |lines: &mut Vec<String>, section: &mut Vec<String>| {
-        if !section.is_empty() {
-            lines.append(section);
-            lines.push(String::new());
-        }
-    };
-
-    for line in existing_lockfile.lines() {
-        if let Some(section_environment) = lockfile_v4_section_environment(line) {
-            if in_other_environment {
-                flush(lines, &mut current_section);
-            }
-            in_other_environment = section_environment != environment;
-            current_section = if in_other_environment {
-                vec![line.to_string()]
-            } else {
-                vec![]
-            };
-            continue;
-        }
-
-        if line.trim_start().starts_with('[') {
-            if in_other_environment {
-                flush(lines, &mut current_section);
-            }
-            in_other_environment = false;
-            current_section.clear();
-            continue;
-        }
-
-        if in_other_environment {
-            current_section.push(line.to_string());
-        }
-    }
-
-    if in_other_environment {
-        flush(lines, &mut current_section);
-    }
-
-    Ok(())
-}
-
-fn lockfile_v4_generate_impl(input: LockfileV4GenerateInput) -> Result<String, HelperError> {
-    if !matches!(input.root.source, LockfileV4Source::Root) {
-        return Err(HelperError::new(
-            "Move.lock V4 generation root package must have root source",
-        ));
-    }
-
-    let mut root_dep_alias_to_package_name = input.root.dep_alias_to_package_name.clone();
-    for package in &input.packages {
-        for alias in &package.root_dependency_aliases {
-            if let Some(existing) = root_dep_alias_to_package_name.get(alias) {
-                if existing != &package.id {
-                    return Err(HelperError::new(format!(
-                        "Move.lock V4 generation root dependency alias '{}' resolves to both '{}' and '{}'",
-                        alias, existing, package.id
-                    )));
-                }
-            }
-            root_dep_alias_to_package_name.insert(alias.clone(), package.id.clone());
-        }
-    }
-
-    let mut packages = vec![];
-    let root_manifest =
-        lockfile_v4_manifest_from_files(&input.root.id, &input.root.files, &input.environment)?;
-    let root_id = lockfile_v4_package_graph_id_name(&root_manifest.0);
-    packages.push(LockfileV4GenerateResolvedPackage {
-        id: root_id,
-        source: input.root.source,
-        manifest_name: root_manifest.0.name.clone(),
-        graph_id_name: lockfile_v4_package_graph_id_name(&root_manifest.0),
-        combined_dependencies: root_manifest.0.combined_dependencies.clone(),
-        dep_alias_to_package_name: root_dep_alias_to_package_name,
-    });
-
-    for package in input.packages {
-        if matches!(package.source, LockfileV4Source::Root) {
-            return Err(HelperError::new(format!(
-                "Move.lock V4 generation package '{}' has unsupported root source",
-                package.id
-            )));
-        }
-        let manifest =
-            lockfile_v4_manifest_from_files(&package.id, &package.files, &input.environment)?;
-        packages.push(LockfileV4GenerateResolvedPackage {
-            id: package.id,
-            source: package.source,
-            manifest_name: manifest.0.name.clone(),
-            graph_id_name: lockfile_v4_package_graph_id_name(&manifest.0),
-            combined_dependencies: manifest.0.combined_dependencies.clone(),
-            dep_alias_to_package_name: package.dep_alias_to_package_name,
-        });
-    }
-
-    packages.sort_by(|left, right| left.id.cmp(&right.id));
-
-    let mut package_ids = BTreeSet::new();
-    let mut manifest_name_to_ids: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for package in &packages {
-        if !package_ids.insert(package.id.clone()) {
-            return Err(HelperError::new(format!(
-                "Move.lock V4 generation has duplicate package id '{}'",
-                package.id
-            )));
-        }
-        manifest_name_to_ids
-            .entry(package.manifest_name.clone())
-            .or_default()
-            .push(package.id.clone());
-        if package.graph_id_name != package.manifest_name {
-            manifest_name_to_ids
-                .entry(package.graph_id_name.clone())
-                .or_default()
-                .push(package.id.clone());
-        }
-    }
-
-    let mut lines = vec![
-        "# Generated by move; do not edit".to_string(),
-        "# This file should be checked in.".to_string(),
-        String::new(),
-        "[move]".to_string(),
-        "version = 4".to_string(),
-        String::new(),
-    ];
-
-    for package in &packages {
-        let is_root = matches!(package.source, LockfileV4Source::Root);
-        lines.push(format!("[pinned.{}.{}]", input.environment, package.id));
-        lines.push(lockfile_v4_format_source(
-            &package.source,
-            is_root,
-            &package.id,
-        )?);
-        lines.push(format!(
-            "use_environment = {}",
-            lockfile_v4_toml_string(&input.environment)
-        ));
-        let digest = manifest_digest::compute_manifest_digest_from_combined(
-            package.combined_dependencies.clone(),
-        )
-        .ok_or_else(|| {
-            HelperError::new(format!(
-                "Failed to compute manifest_digest for '{}'",
-                package.id
-            ))
-        })?;
-        lines.push(format!(
-            "manifest_digest = {}",
-            lockfile_v4_toml_string(&digest)
-        ));
-        let deps =
-            lockfile_v4_generated_deps(package, &packages, &package_ids, &manifest_name_to_ids)?;
-        lines.push(lockfile_v4_format_deps(&deps));
-        lines.push(String::new());
-    }
-
-    if let Some(existing_lockfile) = input.existing_lockfile.as_deref() {
-        lockfile_v4_append_other_environment_sections(
-            &mut lines,
-            existing_lockfile,
-            &input.environment,
-        )?;
-    }
-
-    Ok(lines.join("\n"))
-}
-
 #[cfg(not(feature = "verification"))]
 #[wasm_bindgen]
 pub fn lockfile_v4_generate(input_json: &str) -> String {
@@ -1690,7 +845,7 @@ pub fn lockfile_v4_generate(input_json: &str) -> String {
         }
     };
 
-    match lockfile_v4_generate_impl(input) {
+    match lockfile_v4::generate(input) {
         Ok(lockfile) => serde_json::json!({
             "status": "ok",
             "lockfile": lockfile,
@@ -1741,7 +896,7 @@ fn lockfile_v4_validate_graph_impl(input: &LockfileV4ValidateInput) -> LockfileV
         };
 
         let (manifest, _move_toml) =
-            match lockfile_v4_manifest_from_files(&package.id, &files, &input.environment) {
+            match lockfile_v4::manifest_from_files(&package.id, &files, &input.environment) {
                 Ok(result) => result,
                 Err(error) => return LockfileV4ValidationResult::Error(error),
             };
@@ -1848,16 +1003,6 @@ fn lockfile_v4_validate_graph_impl(input: &LockfileV4ValidateInput) -> LockfileV
     };
 
     LockfileV4ValidationResult::Ok(graph)
-}
-
-fn lockfile_v4_manifest_dep_names(manifest: &LockfileV4PackageManifest) -> Vec<String> {
-    let mut deps = manifest
-        .combined_dependencies
-        .iter()
-        .map(|dependency| dependency.name.clone())
-        .collect::<Vec<_>>();
-    deps.sort();
-    deps
 }
 
 fn lockfile_v4_validate_manifest_dependency_names(
@@ -1995,7 +1140,7 @@ fn lockfile_v4_compiler_files(
     environment: &str,
     prefix: Option<&str>,
 ) -> BTreeMap<String, String> {
-    let selected_move_toml = lockfile_v4_find_move_toml(files, environment).map(str::to_string);
+    let selected_move_toml = lockfile_v4::find_move_toml(files, environment).map(str::to_string);
     let mut output = BTreeMap::new();
 
     for (path, content) in files {
@@ -2423,14 +1568,6 @@ fn lockfile_v4_package_is_legacy(package: &LockfileV4ValidatedPackage) -> bool {
     package.manifest.is_legacy
 }
 
-fn lockfile_v4_package_graph_id_name(manifest: &LockfileV4PackageManifest) -> String {
-    manifest
-        .legacy_name
-        .as_deref()
-        .map(manifest_digest::normalize_legacy_name_to_identifier)
-        .unwrap_or_else(|| manifest.name.clone())
-}
-
 fn lockfile_v4_package_node_address(package: &LockfileV4ValidatedPackage) -> Option<String> {
     lockfile_v4_package_compile_id(&package.id, &package.manifest)
         .and_then(|address| normalize_hex_address_string(&address))
@@ -2453,7 +1590,7 @@ fn lockfile_v4_named_addresses_for_package(
     let mut mapping = BTreeMap::new();
 
     if lockfile_v4_package_is_legacy(package) {
-        if package.manifest.name != LOCKFILE_V4_NO_NAME_LEGACY_PACKAGE_NAME {
+        if package.manifest.name != lockfile_v4::NO_NAME_LEGACY_PACKAGE_NAME {
             lockfile_v4_insert_named_address(
                 &mut mapping,
                 &package.manifest.name,
@@ -2627,7 +1764,7 @@ fn lockfile_v4_package_groups_from_validated_with_orders(
             address_mapping,
             published_id_for_output: lockfile_v4_package_output_id(&package.id, &package.manifest),
             source: package.source.clone(),
-            manifest_deps: lockfile_v4_manifest_dep_names(&package.manifest),
+            manifest_deps: lockfile_v4::manifest_dep_names(&package.manifest),
             manifest: LockfileV4PackageGroupManifest {
                 name: package.manifest.name.clone(),
                 dependencies: package.manifest.dependencies.clone(),
@@ -2894,7 +2031,7 @@ fn manifest_graph_plan_snapshot(
     HelperError,
 > {
     let (manifest, _move_toml) =
-        lockfile_v4_manifest_from_files(package_id_hint, &snapshot.files, environment)?;
+        lockfile_v4::manifest_from_files(package_id_hint, &snapshot.files, environment)?;
     lockfile_v4_validate_manifest_dependency_names(&manifest).map_err(HelperError::new)?;
     let mut dependencies = manifest_plan_dependencies_from_manifest(&manifest, &snapshot.source)?;
     manifest_graph_sort_dependencies(&mut dependencies);
@@ -2948,12 +2085,12 @@ fn manifest_graph_add_package(
         &snapshot,
     )?;
     let package_id = if is_root {
-        let id = lockfile_v4_package_graph_id_name(&manifest);
+        let id = lockfile_v4::package_graph_id_name(&manifest);
         name_to_suffix.insert(id.clone(), 1);
         id
     } else {
         manifest_graph_unique_id(
-            &lockfile_v4_package_graph_id_name(&manifest),
+            &lockfile_v4::package_graph_id_name(&manifest),
             name_to_suffix,
         )
     };
@@ -3232,7 +2369,7 @@ fn manifest_graph_resolve_package_groups_impl(
         });
     }
 
-    let root_move_toml = lockfile_v4_find_move_toml(&input.root.files, &input.environment)
+    let root_move_toml = lockfile_v4::find_move_toml(&input.root.files, &input.environment)
         .unwrap_or_default()
         .to_string();
     let validate_input = LockfileV4ValidateInput {

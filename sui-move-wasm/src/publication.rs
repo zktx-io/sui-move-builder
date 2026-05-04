@@ -29,7 +29,7 @@ pub(crate) fn root_publication_metadata_json(input_json: &str) -> String {
         }
     };
 
-    match crate::lockfile_v4_manifest_from_files("root", &input.files, &input.environment) {
+    match crate::lockfile_v4::manifest_from_files("root", &input.files, &input.environment) {
         Ok((manifest, _)) => serde_json::json!({
             "status": "ok",
             "packageName": manifest.name,
