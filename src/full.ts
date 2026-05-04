@@ -20,6 +20,7 @@ export type {
   MovePackagePublishSuccess,
   MovePackageResolvedDependencies,
   MovePackageResult,
+  MovePackageStageReport,
   MovePackageSuccess,
   MovePackageUpgradeInput,
   MovePackageUpgradeSuccess,
@@ -39,11 +40,13 @@ export { fetchMovePackageFromGitHub } from "./packageFetcher.js";
 import {
   asFailure,
   compilerModes,
+  emitMovePackageStageReports,
   loadWasm,
   resolveMovePackageDependenciesForTest,
   type MovePackageFailure,
   type MovePackageInput,
   type MovePackageResolvedDependencies,
+  type MovePackageStageReport,
 } from "./core.js";
 
 export type MovePackageTestInput = MovePackageInput;
@@ -60,7 +63,9 @@ export async function testMovePackage(
   input: MovePackageTestInput
 ): Promise<MovePackageTestSuccess | MovePackageFailure> {
   try {
-    let resolved: MovePackageResolvedDependencies;
+    let resolved: MovePackageResolvedDependencies & {
+      stageReports?: MovePackageStageReport[];
+    };
     try {
       resolved = input.resolvedDependencies
         ? input.resolvedDependencies
@@ -68,6 +73,7 @@ export async function testMovePackage(
     } catch (error) {
       return asFailure(error, "dependency_resolution");
     }
+    emitMovePackageStageReports(input.onProgress, resolved.stageReports);
 
     let mod;
     try {

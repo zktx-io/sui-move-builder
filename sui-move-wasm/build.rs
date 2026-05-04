@@ -1,5 +1,7 @@
 use std::{fs, path::PathBuf};
 
+const SYSTEM_GIT_REPO: &str = "https://github.com/MystenLabs/sui.git";
+
 fn package_version_from_lock(lock_contents: &str, package_name: &str) -> Option<String> {
     let mut in_pkg = false;
     for line in lock_contents.lines() {
@@ -59,12 +61,23 @@ fn framework_snapshot_manifest_path(manifest_dir: &std::path::Path) -> Option<Pa
 
 fn emit_system_package_snapshot(manifest_dir: &std::path::Path) {
     let Some(path) = framework_snapshot_manifest_path(manifest_dir) else {
+        println!(
+            "cargo:warning=sui-move-wasm could not find crates/sui-framework-snapshot/manifest.json"
+        );
         return;
     };
-    let Ok(contents) = fs::read_to_string(path) else {
+    let Ok(contents) = fs::read_to_string(&path) else {
+        println!(
+            "cargo:warning=sui-move-wasm could not read {}",
+            path.to_string_lossy()
+        );
         return;
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        println!(
+            "cargo:warning=sui-move-wasm could not parse {}",
+            path.to_string_lossy()
+        );
         return;
     };
     let Some(entries) = value.as_object() else {
@@ -84,6 +97,10 @@ fn emit_system_package_snapshot(manifest_dir: &std::path::Path) {
         return;
     };
 
+    println!(
+        "cargo:rustc-env=SUI_SYSTEM_PACKAGE_REPO={}",
+        SYSTEM_GIT_REPO
+    );
     println!("cargo:rustc-env=SUI_SYSTEM_PACKAGE_REV={}", rev);
     for package in packages {
         let name = package.get("name").and_then(|value| value.as_str());
@@ -104,6 +121,7 @@ fn emit_system_package_snapshot(manifest_dir: &std::path::Path) {
             _ => {}
         }
     }
+    println!("cargo:rerun-if-changed={}", path.to_string_lossy());
 }
 
 fn main() {

@@ -141,12 +141,27 @@ implicit-dependencies = false
 [addresses]
 legacy_root = "0x0"
 
+[dependencies]
+regular_dep = { local = "../regular-dep", modes = ["custom"] }
+
 [dev-dependencies]
 dev_dep = { local = "../dev-dep" }
 `;
 await writePackage(legacyRoot, {
   "Move.toml": legacyRootMoveToml,
   "sources/root.move": "module legacy_root::root {}",
+});
+await writePackage(path.join(legacyDir, "regular-dep"), {
+  "Move.toml": `
+[package]
+name = "RegularDep"
+version = "0.0.0"
+implicit-dependencies = false
+
+[addresses]
+regular_dep = "0x0"
+`,
+  "sources/regular_dep.move": "module regular_dep::fixture {}",
 });
 await writePackage(path.join(legacyDir, "dev-dep"), {
   "Move.toml": `
@@ -165,6 +180,64 @@ await assertCliDigest({
   packageName: "LegacyRoot",
   rootDir: legacyRoot,
   rootMoveToml: legacyRootMoveToml,
+});
+
+const legacyRegularSystemRoot = path.join(legacyDir, "regular-system-root");
+const legacyRegularSystemMoveToml = `
+[package]
+name = "LegacyRegularSystemRoot"
+version = "0.0.0"
+
+[addresses]
+legacy_regular_system_root = "0x0"
+
+[dependencies]
+Sui = { local = "../sui-framework" }
+`;
+await writePackage(legacyRegularSystemRoot, {
+  "Move.toml": legacyRegularSystemMoveToml,
+  "sources/root.move": "module legacy_regular_system_root::root {}",
+});
+await writePackage(path.join(legacyDir, "sui-framework"), {
+  "Move.toml": `
+[package]
+name = "Sui"
+version = "0.0.0"
+implicit-dependencies = false
+
+[addresses]
+sui = "0x0"
+`,
+  "sources/sui.move": "module sui::fixture {}",
+});
+await assertCliDigest({
+  label: "legacy regular system dependency digest",
+  packageName: "LegacyRegularSystemRoot",
+  rootDir: legacyRegularSystemRoot,
+  rootMoveToml: legacyRegularSystemMoveToml,
+});
+
+const legacyDevSystemRoot = path.join(legacyDir, "dev-system-root");
+const legacyDevSystemMoveToml = `
+[package]
+name = "LegacyDevSystemRoot"
+version = "0.0.0"
+
+[addresses]
+legacy_dev_system_root = "0x0"
+
+[dev-dependencies]
+Sui = { local = "../sui-framework" }
+`;
+await writePackage(legacyDevSystemRoot, {
+  "Move.toml": legacyDevSystemMoveToml,
+  "sources/root.move": "module legacy_dev_system_root::root {}",
+});
+await assertCliDigest({
+  label: "legacy dev system dependency digest",
+  packageName: "LegacyDevSystemRoot",
+  rootDir: legacyDevSystemRoot,
+  rootMoveToml: legacyDevSystemMoveToml,
 });
 
 console.log("[OK] WASM manifest_digest matches CLI-generated Move.lock digest");

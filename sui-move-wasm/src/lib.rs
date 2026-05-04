@@ -74,11 +74,14 @@ pub struct WasmCompilationOutput {
 
 mod manifest;
 mod package_model;
+mod stage_report;
+mod system_packages;
 use move_symbol_pool::Symbol;
 use package_model::{
     build_compiler_input, dependency_name_is_implicit, parse_hex_address_to_bytes, CompilerInput,
     CompilerInputMode, PackageGroup,
 };
+use stage_report::StageReport;
 
 fn package_version_from_lock(lock_contents: &str, package_name: &str) -> Option<String> {
     let mut in_pkg = false;
@@ -1061,6 +1064,7 @@ fn dependency_address_override_from_table(
     })
 }
 
+#[derive(Clone)]
 enum CombinedDependencyModeSource {
     FromTable,
     Fixed(Option<Vec<String>>),
@@ -1144,6 +1148,45 @@ fn combined_dependency_with_replacement(
     Ok(dep)
 }
 
+fn merge_dependency_table_into_defaults(
+    defaults: &mut BTreeMap<String, CombinedMoveDependency>,
+    dep_table: &toml::value::Table,
+    is_legacy: bool,
+    package_uses_implicit_dependencies: bool,
+    environment: &str,
+    modes: CombinedDependencyModeSource,
+) -> Result<(), String> {
+    for (name, value) in dep_table {
+        if package_uses_implicit_dependencies && dependency_name_is_implicit(name) {
+            return Err(format!(
+                "The `{}` dependency is implicitly provided and should not be defined in your manifest.",
+                name
+            ));
+        }
+        let table = value.as_table().ok_or_else(|| {
+            format!(
+                "Dependency '{}' must be a table with a supported source",
+                name
+            )
+        })?;
+        let dependency_name = if is_legacy {
+            lockfile_v4_normalize_legacy_name_to_identifier(name)
+        } else {
+            name.clone()
+        };
+        defaults.insert(
+            dependency_name.clone(),
+            combined_dependency_from_table_with_modes(
+                &dependency_name,
+                table,
+                environment,
+                modes.clone(),
+            )?,
+        );
+    }
+    Ok(())
+}
+
 fn replacement_dependency_from_combined(dep: &CombinedMoveDependency) -> ReplacementDependency {
     let dependency_info = match &dep.source {
         CombinedDependencySource::Git { git, rev, subdir } => {
@@ -1223,38 +1266,18 @@ fn combined_dependencies_from_move_toml(
 
     let mut defaults = BTreeMap::<String, CombinedMoveDependency>::new();
     if let Some(dep_table) = parsed.get("dependencies").and_then(|deps| deps.as_table()) {
-        for (name, value) in dep_table {
-            if package_uses_implicit_dependencies && dependency_name_is_implicit(name) {
-                return Err(format!(
-                    "The `{}` dependency is implicitly provided and should not be defined in your manifest.",
-                    name
-                ));
-            }
-            let table = value.as_table().ok_or_else(|| {
-                format!(
-                    "Dependency '{}' must be a table with a supported source",
-                    name
-                )
-            })?;
-            let dependency_name = if is_legacy {
-                lockfile_v4_normalize_legacy_name_to_identifier(name)
+        merge_dependency_table_into_defaults(
+            &mut defaults,
+            dep_table,
+            is_legacy,
+            package_uses_implicit_dependencies,
+            environment,
+            if is_legacy {
+                CombinedDependencyModeSource::Fixed(None)
             } else {
-                name.clone()
-            };
-            defaults.insert(
-                dependency_name.clone(),
-                combined_dependency_from_table_with_modes(
-                    &dependency_name,
-                    table,
-                    environment,
-                    if is_legacy {
-                        CombinedDependencyModeSource::Fixed(None)
-                    } else {
-                        CombinedDependencyModeSource::FromTable
-                    },
-                )?,
-            );
-        }
+                CombinedDependencyModeSource::FromTable
+            },
+        )?;
     }
 
     if is_legacy {
@@ -1262,30 +1285,14 @@ fn combined_dependencies_from_move_toml(
             .get("dev-dependencies")
             .and_then(|deps| deps.as_table())
         {
-            for (name, value) in dep_table {
-                if package_uses_implicit_dependencies && dependency_name_is_implicit(name) {
-                    return Err(format!(
-                        "The `{}` dependency is implicitly provided and should not be defined in your manifest.",
-                        name
-                    ));
-                }
-                let table = value.as_table().ok_or_else(|| {
-                    format!(
-                        "Dependency '{}' must be a table with a supported source",
-                        name
-                    )
-                })?;
-                let dependency_name = lockfile_v4_normalize_legacy_name_to_identifier(name);
-                defaults.insert(
-                    dependency_name.clone(),
-                    combined_dependency_from_table_with_modes(
-                        &dependency_name,
-                        table,
-                        environment,
-                        CombinedDependencyModeSource::Fixed(Some(vec!["test".to_string()])),
-                    )?,
-                );
-            }
+            merge_dependency_table_into_defaults(
+                &mut defaults,
+                dep_table,
+                true,
+                package_uses_implicit_dependencies,
+                environment,
+                CombinedDependencyModeSource::Fixed(Some(vec!["test".to_string()])),
+            )?;
         }
     }
 
@@ -1909,13 +1916,19 @@ fn lockfile_v4_plan_from_toml(
 #[wasm_bindgen]
 pub fn lockfile_v4_fetch_plan(move_lock_toml: &str, environment: &str) -> String {
     match lockfile_v4_plan_from_toml(move_lock_toml, environment) {
-        Ok(Some((root_id, lockfile_order, packages))) => serde_json::json!({
-            "status": "ok",
-            "rootId": root_id,
-            "lockfileOrder": lockfile_order,
-            "packages": packages,
-        })
-        .to_string(),
+        Ok(Some((root_id, lockfile_order, packages))) => {
+            let stage_reports = vec![StageReport::new("move_lock_fetch_plan", environment, &[])
+                .package_id(root_id.clone())
+                .node_count(packages.len())];
+            serde_json::json!({
+                "status": "ok",
+                "rootId": root_id,
+                "lockfileOrder": lockfile_order,
+                "packages": packages,
+                "stageReports": stage_reports,
+            })
+            .to_string()
+        }
         Ok(None) => lockfile_v4_missing(format!(
             "Move.lock V4 has no pinned.{} section",
             environment
@@ -4508,39 +4521,30 @@ fn system_package_git_source(
     dep_name: &str,
     system_name: &str,
 ) -> Result<ManifestPackagePlanSource, HelperError> {
-    let rev = option_env!("SUI_SYSTEM_PACKAGE_REV")
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            HelperError::with_code(
+    let source =
+        system_packages::system_package_source(system_name).map_err(|code| match code {
+            system_packages::SystemPackageSourceError::MissingSnapshot => HelperError::with_code(
                 "missing_system_package_snapshot",
                 format!(
                     "Dependency '{}.{}' uses system package '{}' but the pinned system package snapshot is unavailable",
                     package_name, dep_name, system_name
                 ),
-            )
-        })?;
-    let subdir = match system_name {
-        "std" => option_env!("SUI_SYSTEM_STDLIB_SUBDIR"),
-        "sui" => option_env!("SUI_SYSTEM_SUI_SUBDIR"),
-        "sui_system" => option_env!("SUI_SYSTEM_SUI_SYSTEM_SUBDIR"),
-        "bridge" => option_env!("SUI_SYSTEM_BRIDGE_SUBDIR"),
-        _ => None,
-    }
-    .filter(|value| !value.is_empty())
-    .ok_or_else(|| {
-        HelperError::with_code(
-            "unsupported_system_dependency",
-            format!(
-                "Dependency '{}.{}' has unsupported system package '{}'",
-                package_name, dep_name, system_name
             ),
-        )
-    })?;
+            system_packages::SystemPackageSourceError::UnsupportedSystemDependency => {
+                HelperError::with_code(
+                    "unsupported_system_dependency",
+                    format!(
+                        "Dependency '{}.{}' has unsupported system package '{}'",
+                        package_name, dep_name, system_name
+                    ),
+                )
+            }
+        })?;
 
     Ok(ManifestPackagePlanSource::Git {
-        git: "https://github.com/MystenLabs/sui.git".to_string(),
-        rev: rev.to_string(),
-        subdir: Some(subdir.to_string()),
+        git: source.git,
+        rev: source.rev,
+        subdir: Some(source.subdir),
         is_implicit: true,
     })
 }
@@ -4935,6 +4939,8 @@ fn manifest_graph_lockfile_order(root_id: &str, edges: &[LockfileV4ValidatedEdge
 fn manifest_graph_resolve_package_groups_impl(
     input: ManifestGraphInput,
 ) -> Result<serde_json::Value, HelperError> {
+    let environment = input.environment.clone();
+    let modes = input.modes.clone();
     let mut known_by_source = BTreeMap::new();
     for package in &input.packages {
         if matches!(package.source, LockfileV4Source::Root) {
@@ -4967,9 +4973,17 @@ fn manifest_graph_resolve_package_groups_impl(
     )?;
 
     if !requests.is_empty() {
+        let stage_reports =
+            vec![
+                StageReport::new("manifest_graph_fetch_plan", &environment, &modes)
+                    .package_id(root_id.clone())
+                    .node_count(nodes.len())
+                    .edge_count(edges.len()),
+            ];
         return Ok(serde_json::json!({
             "status": "needFetch",
             "requests": requests.into_values().collect::<Vec<_>>(),
+            "stageReports": stage_reports,
         }));
     }
 
@@ -4982,6 +4996,9 @@ fn manifest_graph_resolve_package_groups_impl(
 
     let lockfile_order = manifest_graph_lockfile_order(&root_id, &edges);
     let active_edges = lockfile_v4_active_edges(&edges, &input.modes);
+    let node_count = nodes.len();
+    let edge_count = edges.len();
+    let active_edge_count = active_edges.len();
     let active_aliases_by_from = active_edges.iter().fold(
         BTreeMap::<String, BTreeSet<String>>::new(),
         |mut acc, edge| {
@@ -5040,6 +5057,7 @@ fn manifest_graph_resolve_package_groups_impl(
         modes: input.modes,
         packages: validate_packages,
     };
+    let root_id_for_report = root_id.clone();
     let graph = LockfileV4ValidatedGraph {
         root_id,
         lockfile_order: lockfile_order.clone(),
@@ -5051,12 +5069,25 @@ fn manifest_graph_resolve_package_groups_impl(
         graph,
         &lockfile_order,
     )?;
+    let stage_reports = vec![
+        StageReport::new("manifest_graph", &environment, &modes)
+            .package_id(root_id_for_report)
+            .node_count(node_count)
+            .edge_count(edge_count),
+        StageReport::new("manifest_mode_filter", &environment, &modes)
+            .node_count(node_count)
+            .edge_count(edge_count)
+            .active_edge_count(active_edge_count),
+        StageReport::new("manifest_linkage", &environment, &modes)
+            .linked_node_count(groups.dependencies.len()),
+    ];
 
     Ok(serde_json::json!({
         "status": "ok",
         "rootFiles": groups.root_files,
         "dependencies": groups.dependencies,
         "lockfileDependencies": groups.lockfile_dependencies,
+        "stageReports": stage_reports,
     }))
 }
 
@@ -5125,14 +5156,34 @@ pub fn lockfile_v4_resolve_package_groups(input_json: &str) -> String {
         LockfileV4ValidationResult::Error(error) => return lockfile_v4_error(error),
     };
 
+    let active_edge_count = graph
+        .edges
+        .iter()
+        .filter(|edge| lockfile_v4_edge_matches_modes(edge, &input.modes))
+        .count();
+    let stage_reports = vec![
+        StageReport::new("move_lock_graph", &input.environment, &input.modes)
+            .package_id(graph.root_id.clone())
+            .node_count(graph.packages.len())
+            .edge_count(graph.edges.len())
+            .active_edge_count(active_edge_count),
+    ];
     match lockfile_v4_package_groups_from_validated(&input, graph) {
-        Ok(groups) => serde_json::json!({
-            "status": "ok",
-            "rootFiles": groups.root_files,
-            "dependencies": groups.dependencies,
-            "lockfileDependencies": groups.lockfile_dependencies,
-        })
-        .to_string(),
+        Ok(groups) => {
+            let mut reports = stage_reports;
+            reports.push(
+                StageReport::new("move_lock_linkage", &input.environment, &input.modes)
+                    .linked_node_count(groups.dependencies.len()),
+            );
+            serde_json::json!({
+                "status": "ok",
+                "rootFiles": groups.root_files,
+                "dependencies": groups.dependencies,
+                "lockfileDependencies": groups.lockfile_dependencies,
+                "stageReports": reports,
+            })
+            .to_string()
+        }
         Err(error) => lockfile_v4_error(error),
     }
 }

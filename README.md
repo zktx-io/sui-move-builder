@@ -233,6 +233,17 @@ if ("error" in result) {
 | `stripMetadata`               | `boolean`                            | Reserved for metadata stripping; currently passed through but not applied by the WASM compiler path |
 | `onProgress`                  | `(event) => void`                    | Callback for build progress events                                                                  |
 
+`onProgress` events include the high-level build lifecycle and internal graph trace events:
+
+| Event type          | Fields                                                                                                   |
+| ------------------- | -------------------------------------------------------------------------------------------------------- |
+| `resolve_start`     | Dependency resolution started                                                                            |
+| `stage_trace`       | `stage`, `environment`, `modes`, and optional graph count fields for Rust/WASM graph and lockfile stages |
+| `resolve_complete`  | `count` dependency packages selected for compiler input                                                  |
+| `compile_start`     | Compiler invocation started                                                                              |
+| `compile_complete`  | Compiler invocation completed                                                                            |
+| `lockfile_generate` | Move.lock V4 generation started                                                                          |
+
 ### Build Output Reference
 
 | Field           | Type       | Description                                                |

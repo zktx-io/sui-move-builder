@@ -20,6 +20,7 @@ export type {
   MovePackagePublishSuccess,
   MovePackageResolvedDependencies,
   MovePackageResult,
+  MovePackageStageReport,
   MovePackageSuccess,
   MovePackageUpgradeInput,
   MovePackageUpgradeSuccess,

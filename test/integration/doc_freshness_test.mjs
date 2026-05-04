@@ -24,6 +24,9 @@ const skippedDirectories = new Set([
   "node_modules",
   "pkg",
   "target",
+  "third-party",
+  "third_party",
+  "vendor",
 ]);
 
 const checkedExtensions = new Set([

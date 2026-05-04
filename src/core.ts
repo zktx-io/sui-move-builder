@@ -5,6 +5,7 @@ import {
   StructuredBuildError,
   structuredErrorCode,
 } from "./structuredError.js";
+import type { MovePackageStageReport } from "./stageReports.js";
 
 /** Build progress event types for tracking build status */
 export type MovePackageProgressEvent =
@@ -19,12 +20,15 @@ export type MovePackageProgressEvent =
   | { type: "resolve_complete"; count: number }
   | { type: "compile_start" }
   | { type: "compile_complete" }
-  | { type: "lockfile_generate" };
+  | { type: "lockfile_generate" }
+  | ({ type: "stage_trace" } & MovePackageStageReport);
 
 /** Callback function for receiving build progress events */
 export type MovePackageProgressCallback = (
   event: MovePackageProgressEvent
 ) => void;
+
+export type { MovePackageStageReport } from "./stageReports.js";
 
 export interface MovePackageResolvedDependencies {
   /** JSON string of resolved files for the root package */
@@ -34,6 +38,11 @@ export interface MovePackageResolvedDependencies {
   /** JSON string of all dependencies including diamond duplicates (for lockfile) */
   lockfileDependencies: string;
 }
+
+type MovePackageResolvedDependenciesInternal =
+  MovePackageResolvedDependencies & {
+    stageReports?: MovePackageStageReport[];
+  };
 
 export type MovePackageIntent = "dump" | "publish" | "upgrade";
 
@@ -507,12 +516,14 @@ export async function initMovePackageBuilder(options?: {
 export async function resolveMovePackageDependencies(
   input: Omit<MovePackageInput, "resolvedDependencies">
 ): Promise<MovePackageResolvedDependencies> {
-  return resolveMovePackageDependenciesInternal(input);
+  const resolved = await resolveMovePackageDependenciesInternal(input);
+  emitMovePackageStageReports(input.onProgress, resolved.stageReports);
+  return stripMovePackageStageReports(resolved);
 }
 
 export async function resolveMovePackageDependenciesForTest(
   input: Omit<MovePackageInput, "resolvedDependencies">
-): Promise<MovePackageResolvedDependencies> {
+): Promise<MovePackageResolvedDependenciesInternal> {
   return resolveMovePackageDependenciesInternal({
     ...input,
     includeTestMode: true,
@@ -521,7 +532,7 @@ export async function resolveMovePackageDependenciesForTest(
 
 async function resolveMovePackageDependenciesInternal(
   input: InternalDependencyResolutionInput
-): Promise<MovePackageResolvedDependencies> {
+): Promise<MovePackageResolvedDependenciesInternal> {
   const moveToml = input.files["Move.toml"] || "";
   // CLI does not mutate Move.toml; use as-is.
 
@@ -568,7 +579,30 @@ async function resolveMovePackageDependenciesInternal(
     files: resolved.files,
     dependencies: resolved.dependencies,
     lockfileDependencies: resolved.lockfileDependencies,
+    ...(resolved.stageReports ? { stageReports: resolved.stageReports } : {}),
   };
+}
+
+function stripMovePackageStageReports(
+  resolved: MovePackageResolvedDependenciesInternal
+): MovePackageResolvedDependencies {
+  return {
+    files: resolved.files,
+    dependencies: resolved.dependencies,
+    lockfileDependencies: resolved.lockfileDependencies,
+  };
+}
+
+export function emitMovePackageStageReports(
+  onProgress: MovePackageProgressCallback | undefined,
+  reports: MovePackageStageReport[] | undefined
+): void {
+  if (!onProgress || !reports) {
+    return;
+  }
+  for (const report of reports) {
+    onProgress({ type: "stage_trace", ...report });
+  }
 }
 
 async function compileMovePackage(
@@ -635,7 +669,7 @@ async function compileMovePackage(
     input.onProgress?.({ type: "resolve_start" });
 
     // Use pre-resolved dependencies if provided, otherwise resolve them
-    let resolved: MovePackageResolvedDependencies;
+    let resolved: MovePackageResolvedDependenciesInternal;
     try {
       resolved = input.resolvedDependencies
         ? input.resolvedDependencies
@@ -646,6 +680,7 @@ async function compileMovePackage(
     } catch (error) {
       return asFailure(error, "dependency_resolution");
     }
+    emitMovePackageStageReports(input.onProgress, resolved.stageReports);
 
     // Emit resolve_complete event
     let depCount = 0;

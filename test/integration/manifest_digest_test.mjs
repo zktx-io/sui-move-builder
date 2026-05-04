@@ -204,6 +204,54 @@ assertEqual(
   "legacy dev-dependencies should be included with test mode"
 );
 
+const legacyDependencyModesMoveToml = `
+[package]
+name = "LegacyPkg"
+version = "0.0.0"
+implicit-dependencies = false
+
+[addresses]
+legacy_pkg = "0x0"
+
+[dependencies]
+RegularDep = { local = "../regular-dep", modes = ["custom"] }
+`;
+assertEqual(
+  digestFromMoveToml(legacyDependencyModesMoveToml, "LegacyPkg"),
+  digestFromJson([
+    {
+      name: "RegularDep",
+      local: "../regular-dep",
+      use_environment: "mainnet",
+    },
+  ]),
+  "legacy regular dependency modes should not be included"
+);
+
+const legacyDevSystemDependencyMoveToml = `
+[package]
+name = "LegacyPkg"
+version = "0.0.0"
+
+[addresses]
+legacy_pkg = "0x0"
+
+[dev-dependencies]
+Sui = { local = "../sui-framework" }
+`;
+assertEqual(
+  digestFromMoveToml(legacyDevSystemDependencyMoveToml, "LegacyPkg"),
+  digestFromJson([
+    {
+      name: "Sui",
+      local: "../sui-framework",
+      modes: ["test"],
+      use_environment: "mainnet",
+    },
+  ]),
+  "legacy dev system dependency should disable implicit deps and remain explicit"
+);
+
 if (digestFromMoveToml("[package", "Pkg") !== "") {
   throw new Error("malformed Move.toml should return an empty digest");
 }

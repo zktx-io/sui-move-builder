@@ -9,6 +9,7 @@ import type {
   MovePackageFetcher,
   MovePackageFetchLocalContext,
 } from "./fetcher.js";
+import type { MovePackageStageReport } from "./stageReports.js";
 import { StructuredBuildError } from "./structuredError.js";
 
 // Load from shared config (synchronized with scripts/build-wasm.mjs)
@@ -64,6 +65,7 @@ interface LockfileV4FetchPlanResponse {
   rootId?: string;
   lockfileOrder?: string[];
   packages?: LockfileV4PlanPackage[];
+  stageReports?: MovePackageStageReport[];
 }
 
 interface LockfileV4ResolvePackageGroupsResponse {
@@ -75,6 +77,7 @@ interface LockfileV4ResolvePackageGroupsResponse {
   rootFiles?: Record<string, string>;
   dependencies?: unknown[];
   lockfileDependencies?: unknown[];
+  stageReports?: MovePackageStageReport[];
 }
 
 interface ManifestGraphPackageGroupsResponse {
@@ -85,6 +88,7 @@ interface ManifestGraphPackageGroupsResponse {
   rootFiles?: Record<string, string>;
   dependencies?: unknown[];
   lockfileDependencies?: unknown[];
+  stageReports?: MovePackageStageReport[];
 }
 
 interface ManifestGraphFetchRequest {
@@ -136,6 +140,7 @@ export class Resolver {
     files: string;
     dependencies: string;
     lockfileDependencies: string;
+    stageReports?: MovePackageStageReport[];
   }> {
     const resolvedFromLockfileV4 = await this.resolveFromLockfileV4(rootFiles);
     if (resolvedFromLockfileV4) {
@@ -223,6 +228,7 @@ export class Resolver {
     files: string;
     dependencies: string;
     lockfileDependencies: string;
+    stageReports?: MovePackageStageReport[];
   }> {
     if (!this.lockfileV4Helpers?.manifestGraphResolvePackageGroups) {
       throw new Error(
@@ -233,6 +239,7 @@ export class Resolver {
     const packages: ManifestGraphFetchedPackage[] = [];
     const fetchedRequests = new Set<string>();
     const rootSource = this.packageSourceToRustSource(this.rootSource, "root");
+    const stageReports: MovePackageStageReport[] = [];
 
     for (let iteration = 0; iteration < 1024; iteration++) {
       const resolved = this.parseManifestGraphPackageGroupsResponse(
@@ -249,6 +256,7 @@ export class Resolver {
           })
         )
       );
+      this.appendStageReports(stageReports, resolved.stageReports);
 
       if (resolved.status === "ok") {
         if (
@@ -264,6 +272,7 @@ export class Resolver {
           files: JSON.stringify(resolved.rootFiles),
           dependencies: JSON.stringify(resolved.dependencies),
           lockfileDependencies: JSON.stringify(resolved.lockfileDependencies),
+          ...(stageReports.length > 0 ? { stageReports } : {}),
         };
       }
 
@@ -527,6 +536,7 @@ export class Resolver {
     files: string;
     dependencies: string;
     lockfileDependencies: string;
+    stageReports?: MovePackageStageReport[];
   } | null> {
     if (!this.lockfileV4Helpers) {
       return null;
@@ -540,6 +550,11 @@ export class Resolver {
     const plan = this.parseLockfileV4Response<LockfileV4FetchPlanResponse>(
       this.lockfileV4Helpers.fetchPlan(moveLockContent, this.network),
       "fetch plan"
+    );
+    const stageReports: MovePackageStageReport[] = [];
+    this.appendStageReports(
+      stageReports,
+      this.normalizeFetchPlanStageReports(plan.stageReports)
     );
     if (plan.status === "missing") {
       return null;
@@ -596,6 +611,7 @@ export class Resolver {
         ),
         "package-group resolution"
       );
+    this.appendStageReports(stageReports, resolved.stageReports);
 
     if (resolved.status === "out_of_date") {
       return null;
@@ -621,7 +637,33 @@ export class Resolver {
       files: JSON.stringify(resolved.rootFiles),
       dependencies: JSON.stringify(resolved.dependencies),
       lockfileDependencies: JSON.stringify(resolved.lockfileDependencies),
+      ...(stageReports.length > 0 ? { stageReports } : {}),
     };
+  }
+
+  private appendStageReports(
+    target: MovePackageStageReport[],
+    reports: MovePackageStageReport[] | undefined
+  ): void {
+    if (!Array.isArray(reports)) {
+      return;
+    }
+    for (const report of reports) {
+      target.push(report);
+    }
+  }
+
+  private normalizeFetchPlanStageReports(
+    reports: MovePackageStageReport[] | undefined
+  ): MovePackageStageReport[] | undefined {
+    if (!Array.isArray(reports)) {
+      return undefined;
+    }
+    return reports.map((report) =>
+      report.stage === "move_lock_fetch_plan"
+        ? { ...report, modes: [...this.modes] }
+        : report
+    );
   }
 
   /**
@@ -687,6 +729,7 @@ export async function resolve(
   files: string;
   dependencies: string;
   lockfileDependencies: string;
+  stageReports?: MovePackageStageReport[];
 }> {
   const resolver = new Resolver(
     fetcher,

@@ -92,6 +92,17 @@ function extractSharedConfiguration(text) {
   }
 }
 
+function extractRustStringConstant(text, constantName) {
+  const pattern = new RegExp(
+    `(?:pub(?:\\([^)]*\\))?\\s+)?const\\s+${constantName}\\s*:\\s*&str\\s*=\\s*"([^"]+)"`
+  );
+  const match = text.match(pattern);
+  if (!match) {
+    throw new Error(`Missing Rust string constant: ${constantName}`);
+  }
+  return match[1];
+}
+
 const text = await readFile(pipelinePath, "utf8");
 const sharedConfig = extractSharedConfiguration(text);
 for (const key of ["version", "tag", "commit"]) {
@@ -183,6 +194,30 @@ if (await pathExists(sourceRoot)) {
         );
       }
     }
+  }
+  const buildRs = await readFile(
+    path.join(repoRoot, "sui-move-wasm/build.rs"),
+    "utf8"
+  );
+  const systemPackageVersions = await readFile(
+    path.join(
+      sourceRoot,
+      "crates/sui-package-management/src/system_package_versions.rs"
+    ),
+    "utf8"
+  );
+  const wasmSystemGitRepo = extractRustStringConstant(
+    buildRs,
+    "SYSTEM_GIT_REPO"
+  );
+  const cliSystemGitRepo = extractRustStringConstant(
+    systemPackageVersions,
+    "SYSTEM_GIT_REPO"
+  );
+  if (wasmSystemGitRepo !== cliSystemGitRepo) {
+    throw new Error(
+      `sui-move-wasm build.rs SYSTEM_GIT_REPO must match pinned CLI source: expected ${cliSystemGitRepo}, got ${wasmSystemGitRepo}`
+    );
   }
   console.log(`[OK] checked ${checkedSourceRefs} pinned CLI source references`);
 } else {
