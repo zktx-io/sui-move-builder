@@ -55,13 +55,10 @@ function parseLockfileV4GenerateResponse(
  */
 export function generateMoveLockV4FromJson(
   depsJson: string,
-  rootPackageName: string,
   environment: string,
-  rootDepAliasToPackageName?: Record<string, string>,
   existingLockfile?: string, // ORIGINAL: root_package.rs:269-283 - CLI reads existing lockfile and preserves other environments
   rustGenerateFn?: LockfileV4GenerateFn,
-  rootFiles?: Record<string, string>,
-  modes: string[] = []
+  rootFiles?: Record<string, string>
 ): string {
   if (!rustGenerateFn) {
     throw new Error("Rust lockfile_v4_generate helper is required");
@@ -83,25 +80,24 @@ export function generateMoveLockV4FromJson(
         local?: string;
       };
       manifestDeps?: string[];
-      /** Maps Move.toml deps key (alias) → resolved package name */
       depAliasToPackageName?: Record<string, string>;
+      rootDependencyAliases?: string[];
     }>;
 
     const input = {
       environment,
       existingLockfile,
-      modes,
       root: {
-        id: rootPackageName,
+        id: "root",
         source: { type: "root" },
         files: rootFiles || {},
-        depAliasToPackageName: rootDepAliasToPackageName || {},
       },
       packages: deps.map((dep) => ({
         id: dep.name,
         source: dep.source || { type: "unsupported" },
         files: dep.files || {},
         depAliasToPackageName: dep.depAliasToPackageName || {},
+        rootDependencyAliases: dep.rootDependencyAliases || [],
       })),
     };
 

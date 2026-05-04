@@ -5,8 +5,10 @@ use move_compiler::{
     shared::{NumericalAddress, PackageConfig, PackagePaths},
 };
 use move_core_types::account_address::AccountAddress;
+use move_core_types::parsing::parser::NumberFormat;
 use move_symbol_pool::Symbol;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use sui_types::{BRIDGE_ADDRESS, SUI_SYSTEM_ADDRESS};
 
@@ -19,6 +21,8 @@ struct PackageGroupManifest {
 #[derive(Deserialize)]
 pub(crate) struct PackageGroup {
     pub(crate) name: String,
+    #[serde(default, rename = "displayName")]
+    display_name: Option<String>,
     pub(crate) files: BTreeMap<String, String>,
     #[serde(default)]
     edition: Option<String>,
@@ -30,6 +34,25 @@ pub(crate) struct PackageGroup {
     manifest: Option<PackageGroupManifest>,
     #[serde(default, rename = "rootDependencyAliases")]
     root_dependency_aliases: Vec<String>,
+    #[serde(default)]
+    source: Option<PackageGroupSource>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum PackageGroupSource {
+    Root,
+    Git {
+        git: String,
+        rev: String,
+        #[serde(default)]
+        subdir: Option<String>,
+    },
+    Local {
+        local: String,
+    },
+    #[serde(other)]
+    Unsupported,
 }
 
 pub(crate) enum CompilerInputMode {
@@ -78,6 +101,7 @@ struct RootPackageSnapshot {
     name: String,
     edition: Edition,
     flavor: Flavor,
+    is_legacy: bool,
     named_address_map: BTreeMap<String, NumericalAddress>,
     root_address_names: BTreeSet<String>,
     dependency_aliases: BTreeSet<String>,
@@ -85,7 +109,7 @@ struct RootPackageSnapshot {
 
 struct ResolvedPackageSnapshot {
     package_id: String,
-    manifest_name: Option<String>,
+    display_name: String,
     edition: Edition,
     flavor: Flavor,
     named_address_map: BTreeMap<String, NumericalAddress>,
@@ -129,6 +153,17 @@ fn dependency_aliases_from_move_toml(move_toml_content: &str) -> BTreeSet<String
         .and_then(|deps| deps.as_table())
         .map(|deps| deps.keys().cloned().collect())
         .unwrap_or_default()
+}
+
+fn move_toml_uses_legacy_manifest(move_toml_content: &str) -> bool {
+    let Ok(value) = toml::from_str::<toml::Value>(move_toml_content) else {
+        return false;
+    };
+    value
+        .get("addresses")
+        .or_else(|| value.get("dev-addresses"))
+        .or_else(|| value.get("dev-dependencies"))
+        .is_some()
 }
 
 fn package_manifest_name(pkg_group: &PackageGroup) -> Option<String> {
@@ -189,19 +224,6 @@ pub(crate) fn parse_edition(edition_str: &str) -> Edition {
     }
 }
 
-pub(crate) fn is_system_package_name(package_name: &str) -> bool {
-    let lower = package_name.to_ascii_lowercase();
-    lower == "sui"
-        || lower.starts_with("sui_")
-        || lower == "suisystem"
-        || lower.starts_with("suisystem_")
-        || lower == "bridge"
-        || lower.starts_with("bridge_")
-        || lower == "std"
-        || lower == "movestdlib"
-        || lower.starts_with("movestdlib_")
-}
-
 pub(crate) fn dependency_name_is_implicit(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower == "sui" || lower == "std" || lower == "movestdlib"
@@ -252,12 +274,66 @@ fn zero_numerical_address() -> Option<NumericalAddress> {
     numerical_address("0x0")
 }
 
+fn numerical_address_from_bytes(bytes: &[u8; 32]) -> NumericalAddress {
+    NumericalAddress::new(*bytes, NumberFormat::Hex)
+}
+
 fn source_address_is_unpublished(addr_opt: Option<&String>) -> bool {
     match addr_opt.map(|addr| addr.trim()) {
         None => true,
         Some("_") => true,
         _ => false,
     }
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum LockfileDependencyInfoForHash {
+    Git {
+        git: String,
+        subdir: std::path::PathBuf,
+        rev: String,
+    },
+    Local {
+        local: std::path::PathBuf,
+    },
+    Root {
+        root: bool,
+    },
+}
+
+fn lockfile_dependency_info_for_hash(
+    source: Option<&PackageGroupSource>,
+) -> Option<LockfileDependencyInfoForHash> {
+    match source {
+        Some(PackageGroupSource::Git { git, rev, subdir }) => {
+            Some(LockfileDependencyInfoForHash::Git {
+                git: git.clone(),
+                subdir: std::path::PathBuf::from(subdir.clone().unwrap_or_default()),
+                rev: rev.clone(),
+            })
+        }
+        Some(PackageGroupSource::Local { local }) => Some(LockfileDependencyInfoForHash::Local {
+            local: std::path::PathBuf::from(local),
+        }),
+        Some(PackageGroupSource::Root) | None => {
+            Some(LockfileDependencyInfoForHash::Root { root: true })
+        }
+        Some(PackageGroupSource::Unsupported) => None,
+    }
+}
+
+fn dummy_address_for_package_group(pkg_group: &PackageGroup) -> Option<NumericalAddress> {
+    let lockfile_info = lockfile_dependency_info_for_hash(pkg_group.source.as_ref())?;
+    let document = toml_edit::ser::to_document(&lockfile_info).ok()?;
+    let digest = sha2::Sha256::digest(document.to_string().as_bytes());
+    let digest_bytes = digest.as_slice();
+    let mut first_eight = [0u8; 8];
+    first_eight.copy_from_slice(&digest_bytes[..8]);
+    let truncated = (u64::from_be_bytes(first_eight) as u16).to_be_bytes();
+    let mut bytes = [0u8; 32];
+    bytes[30..].copy_from_slice(&truncated);
+    Some(NumericalAddress::new(bytes, NumberFormat::Hex))
 }
 
 fn manifest_has_unpublished_addresses(manifest: &SourceManifest) -> bool {
@@ -285,9 +361,13 @@ fn package_group_has_unpublished_addresses(pkg_group: &PackageGroup) -> bool {
 }
 
 fn parse_source_manifest(files: &BTreeMap<String, String>) -> Option<SourceManifest> {
-    let toml_key = files.keys().find(|path| path.ends_with("Move.toml"))?;
-    let move_toml_content = files.get(toml_key)?;
+    let move_toml_content = source_manifest_content(files)?;
     toml::from_str::<SourceManifest>(move_toml_content).ok()
+}
+
+fn source_manifest_content(files: &BTreeMap<String, String>) -> Option<&str> {
+    let toml_key = files.keys().find(|path| path.ends_with("Move.toml"))?;
+    files.get(toml_key).map(String::as_str)
 }
 
 fn address_map_from_manifest(
@@ -324,13 +404,15 @@ fn root_package_snapshot(
         name: "root".to_string(),
         edition: Edition::LEGACY,
         flavor: Flavor::Sui,
+        is_legacy: false,
         named_address_map: BTreeMap::new(),
         root_address_names: BTreeSet::new(),
         dependency_aliases: BTreeSet::new(),
     };
 
-    if let Some(move_toml_content) = files.get("Move.toml") {
+    if let Some(move_toml_content) = source_manifest_content(files) {
         snapshot.dependency_aliases = dependency_aliases_from_move_toml(move_toml_content);
+        snapshot.is_legacy = move_toml_uses_legacy_manifest(move_toml_content);
     }
 
     if let Some(manifest) = parse_source_manifest(files) {
@@ -383,18 +465,6 @@ fn resolved_package_snapshot(
     set_unpublished_deps_to_zero: bool,
 ) -> ResolvedPackageSnapshot {
     let manifest = parse_source_manifest(&pkg_group.files);
-    let manifest_name = pkg_group
-        .manifest
-        .as_ref()
-        .and_then(|manifest| manifest.name.as_ref())
-        .filter(|name| !name.is_empty())
-        .cloned()
-        .or_else(|| {
-            manifest
-                .as_ref()
-                .map(|manifest| manifest.package.name.clone())
-        });
-
     let mut edition = manifest
         .as_ref()
         .and_then(|manifest| manifest.package.edition.as_ref())
@@ -419,16 +489,28 @@ fn resolved_package_snapshot(
                 }
                 named_address_map.insert(name.clone(), address);
             } else if set_unpublished_deps_to_zero && addr_str.trim() == "_" {
-                if let Some(zero) = zero_numerical_address() {
+                if let Some(dummy) = dummy_address_for_package_group(pkg_group) {
                     if name == &pkg_group.name && fallback_dep_id.is_none() {
-                        fallback_dep_id = Some([0u8; 32]);
+                        fallback_dep_id = Some(dummy.into_bytes());
                     }
-                    named_address_map.insert(name.clone(), zero);
+                    named_address_map.insert(name.clone(), dummy);
                 }
             }
         }
     } else if let Some(manifest) = manifest.as_ref() {
-        named_address_map = address_map_from_manifest(manifest, set_unpublished_deps_to_zero);
+        named_address_map = address_map_from_manifest(manifest, false);
+        if set_unpublished_deps_to_zero {
+            if let (Some(addresses), Some(dummy)) = (
+                &manifest.addresses,
+                dummy_address_for_package_group(pkg_group),
+            ) {
+                for (name, addr_opt) in addresses {
+                    if source_address_is_unpublished(addr_opt.as_ref()) {
+                        named_address_map.insert(name.as_str().to_string(), dummy);
+                    }
+                }
+            }
+        }
 
         let mut found_address_id = false;
         if let Some(addresses) = &manifest.addresses {
@@ -440,11 +522,13 @@ fn resolved_package_snapshot(
                         && set_unpublished_deps_to_zero
                         && source_address_is_unpublished(Some(addr))
                     {
-                        fallback_dep_id = Some([0u8; 32]);
+                        fallback_dep_id = dummy_address_for_package_group(pkg_group)
+                            .map(|addr| addr.into_bytes());
                         found_address_id = true;
                     }
                 } else if set_unpublished_deps_to_zero && source_address_is_unpublished(None) {
-                    fallback_dep_id = Some([0u8; 32]);
+                    fallback_dep_id =
+                        dummy_address_for_package_group(pkg_group).map(|addr| addr.into_bytes());
                     found_address_id = true;
                 }
             }
@@ -465,7 +549,10 @@ fn resolved_package_snapshot(
 
     ResolvedPackageSnapshot {
         package_id: pkg_group.name.clone(),
-        manifest_name,
+        display_name: pkg_group
+            .display_name
+            .clone()
+            .unwrap_or_else(|| pkg_group.name.clone()),
         edition,
         flavor,
         named_address_map,
@@ -555,28 +642,13 @@ fn package_paths_for_compiler(
     }
 }
 
-fn merge_dependency_addresses(
-    root_named_address_map: &mut BTreeMap<String, NumericalAddress>,
-    dependency_named_address_map: &BTreeMap<String, NumericalAddress>,
-) {
-    for (name, addr) in dependency_named_address_map {
-        if !root_named_address_map.contains_key(name) {
-            root_named_address_map.insert(name.clone(), *addr);
-        }
-    }
-}
-
 fn dependency_output_id_entry(snapshot: &ResolvedPackageSnapshot) -> Option<(String, [u8; 32])> {
     let bytes = snapshot.dependency_id_for_output?;
     if !should_emit_dependency_id(&bytes, snapshot.is_explicit_root_dependency) {
         return None;
     }
 
-    let sort_name = snapshot
-        .manifest_name
-        .clone()
-        .unwrap_or_else(|| snapshot.package_id.clone());
-    Some((sort_name, bytes))
+    Some((snapshot.display_name.clone(), bytes))
 }
 
 fn dependency_addresses_for_compiler(
@@ -585,6 +657,61 @@ fn dependency_addresses_for_compiler(
     let mut named_address_map = snapshot.named_address_map.clone();
     ensure_std_and_sui_addresses(&mut named_address_map);
     named_address_map
+}
+
+fn insert_root_named_address(
+    named_address_map: &mut BTreeMap<String, NumericalAddress>,
+    name: String,
+    address: NumericalAddress,
+) -> Result<(), String> {
+    if let Some(existing) = named_address_map.get(&name) {
+        if existing != &address {
+            return Err(format!("Duplicate named address '{}'", name));
+        }
+        return Ok(());
+    }
+    named_address_map.insert(name, address);
+    Ok(())
+}
+
+fn dependency_address_for_root_alias(
+    snapshot: &ResolvedPackageSnapshot,
+) -> Option<NumericalAddress> {
+    snapshot
+        .dependency_id_for_output
+        .as_ref()
+        .map(numerical_address_from_bytes)
+        .or_else(|| {
+            snapshot
+                .named_address_map
+                .get(&snapshot.display_name)
+                .cloned()
+        })
+        .or_else(|| {
+            snapshot
+                .named_address_map
+                .get(&snapshot.package_id)
+                .cloned()
+        })
+}
+
+fn root_dependency_aliases_for_package(
+    pkg_group: &PackageGroup,
+    snapshot: &ResolvedPackageSnapshot,
+    root_dependency_aliases: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut aliases = BTreeSet::new();
+    aliases.extend(pkg_group.root_dependency_aliases.iter().cloned());
+    if root_dependency_aliases.contains(&pkg_group.name) {
+        aliases.insert(pkg_group.name.clone());
+    }
+    if root_dependency_aliases.contains(&snapshot.display_name) {
+        aliases.insert(snapshot.display_name.clone());
+    }
+    if root_dependency_aliases.contains(&snapshot.package_id) {
+        aliases.insert(snapshot.package_id.clone());
+    }
+    aliases
 }
 
 fn dependency_package_paths(
@@ -677,7 +804,21 @@ pub(crate) fn build_compiler_input(
         }
 
         let dependency_named_address_map = dependency_addresses_for_compiler(&snapshot);
-        merge_dependency_addresses(&mut root_named_address_map, &dependency_named_address_map);
+        if root_snapshot.is_legacy && snapshot.is_explicit_root_dependency {
+            for (name, address) in &snapshot.named_address_map {
+                insert_root_named_address(&mut root_named_address_map, name.clone(), *address)?;
+            }
+        } else if snapshot.is_explicit_root_dependency {
+            if let Some(address) = dependency_address_for_root_alias(&snapshot) {
+                for alias in root_dependency_aliases_for_package(
+                    pkg_group,
+                    &snapshot,
+                    &root_snapshot.dependency_aliases,
+                ) {
+                    insert_root_named_address(&mut root_named_address_map, alias, address)?;
+                }
+            }
+        }
         dep_package_paths.push(dependency_package_paths(
             pkg_group,
             &snapshot,

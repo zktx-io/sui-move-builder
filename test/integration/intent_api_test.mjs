@@ -169,15 +169,10 @@ expectSuccess(nonZeroRootDumpResult, "non-zero root dumpMovePackage");
 const nonZeroRootPublishResult = await prepareMovePackagePublish(
   baseInput(nonZeroRootFiles)
 );
-expectSuccess(
+expectValidationFailure(
   nonZeroRootPublishResult,
   "non-zero root prepareMovePackagePublish"
 );
-if (nonZeroRootPublishResult.intent !== "publish") {
-  throw new Error(
-    `non-zero root publish intent mismatch: ${nonZeroRootPublishResult.intent}`
-  );
-}
 
 const publishedFiles = fixtureFiles({ publishedAt: "0x123" });
 const publishedPublishResult = await prepareMovePackagePublish(

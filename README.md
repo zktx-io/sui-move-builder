@@ -283,7 +283,7 @@ Dependencies are resolved from the package inputs and, where possible, follow th
 2. **Falls back to manifests**: If the lockfile path is missing or cannot be used, dependencies are resolved from `Move.toml` files.
 3. **Handles V3 publish data**: Supported V3 `Move.lock` publication records can be migrated into `Published.toml` output.
 4. **Handles monorepos**: Local dependencies inside git-sourced packages are converted to git subdirectories.
-5. **Adds implicit framework dependencies**: The root package gets an implicit Sui framework dependency when it does not declare one.
+5. **Adds implicit framework dependencies**: The root package gets implicit `sui` and `std` dependencies when it does not declare either one.
 6. **Generates lockfile metadata**: V4 output includes computed manifest digests, and V4 pin loading checks manifest digests through the Rust/WASM helper before trusting a lockfile.
 
 ```ts

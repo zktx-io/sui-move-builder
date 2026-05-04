@@ -42,8 +42,73 @@ fn workspace_package_version(toml_contents: &str) -> Option<String> {
     None
 }
 
+fn framework_snapshot_manifest_path(manifest_dir: &std::path::Path) -> Option<PathBuf> {
+    for ancestor in manifest_dir.ancestors() {
+        for candidate in [
+            ancestor.join("crates/sui-framework-snapshot/manifest.json"),
+            ancestor.join("source/crates/sui-framework-snapshot/manifest.json"),
+            ancestor.join(".sui-build/source/crates/sui-framework-snapshot/manifest.json"),
+        ] {
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn emit_system_package_snapshot(manifest_dir: &std::path::Path) {
+    let Some(path) = framework_snapshot_manifest_path(manifest_dir) else {
+        return;
+    };
+    let Ok(contents) = fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return;
+    };
+    let Some(entries) = value.as_object() else {
+        return;
+    };
+    let Some((_, latest)) = entries
+        .iter()
+        .filter_map(|(key, value)| key.parse::<u64>().ok().map(|version| (version, value)))
+        .max_by_key(|(version, _)| *version)
+    else {
+        return;
+    };
+    let Some(rev) = latest.get("git_revision").and_then(|value| value.as_str()) else {
+        return;
+    };
+    let Some(packages) = latest.get("packages").and_then(|value| value.as_array()) else {
+        return;
+    };
+
+    println!("cargo:rustc-env=SUI_SYSTEM_PACKAGE_REV={}", rev);
+    for package in packages {
+        let name = package.get("name").and_then(|value| value.as_str());
+        let path = package.get("path").and_then(|value| value.as_str());
+        match (name, path) {
+            (Some("MoveStdlib"), Some(path)) => {
+                println!("cargo:rustc-env=SUI_SYSTEM_STDLIB_SUBDIR={}", path);
+            }
+            (Some("Sui"), Some(path)) => {
+                println!("cargo:rustc-env=SUI_SYSTEM_SUI_SUBDIR={}", path);
+            }
+            (Some("SuiSystem"), Some(path)) => {
+                println!("cargo:rustc-env=SUI_SYSTEM_SUI_SYSTEM_SUBDIR={}", path);
+            }
+            (Some("Bridge"), Some(path)) => {
+                println!("cargo:rustc-env=SUI_SYSTEM_BRIDGE_SUBDIR={}", path);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    emit_system_package_snapshot(&manifest_dir);
     let repo_root = manifest_dir.join("../..");
     let lock_path = repo_root.join("Cargo.lock");
     if let Ok(lock_contents) = fs::read_to_string(&lock_path) {

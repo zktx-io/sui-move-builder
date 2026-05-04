@@ -1,6 +1,5 @@
 import { MovePackageFetcher, GitHubMovePackageFetcher } from "./fetcher.js";
 import { resolve as resolveMoveToml } from "./resolver.js";
-import { parseToml } from "./tomlParser.js";
 import { generateMoveLockV4FromJson } from "./lockfileGenerator.js";
 import {
   StructuredBuildError,
@@ -386,38 +385,6 @@ function parseCompileResult(
   }
 }
 
-function logDependencyAddresses(depsJson: string): void {
-  try {
-    const deps = JSON.parse(depsJson) as Array<{
-      name: string;
-      files: Record<string, string>;
-      addressMapping?: Record<string, string>;
-    }>;
-    for (const dep of deps) {
-      // Prefer resolved address mapping
-      const addr =
-        dep.addressMapping?.[dep.name] ??
-        (() => {
-          const moveTomlEntry = Object.entries(dep.files).find(([path]) =>
-            path.endsWith("Move.toml")
-          );
-          if (!moveTomlEntry) return undefined;
-          const parsed = parseToml(moveTomlEntry[1]);
-          return (
-            (parsed.addresses && parsed.addresses[dep.name]) ||
-            parsed.package?.published_at ||
-            parsed.package?.["published-at"]
-          );
-        })();
-      if (addr !== undefined) {
-        // Address resolved
-      }
-    }
-  } catch {
-    // Logging is best-effort; ignore errors
-  }
-}
-
 function parseRootPublicationMetadata(output: string): RootPublicationMetadata {
   const parsed = JSON.parse(output) as {
     status?: string;
@@ -462,6 +429,7 @@ type InternalDependencyResolutionInput = Omit<
   "resolvedDependencies"
 > & {
   includeTestMode?: boolean;
+  skipLegacyPublicationMigration?: boolean;
 };
 
 function packageSelectionModes(
@@ -565,13 +533,15 @@ async function resolveMovePackageDependenciesInternal(
 
   const mod = await loadWasm(input.wasm);
   const files = { ...input.files, "Move.toml": moveToml };
-  applyLegacyPublicationMigration(
-    {
-      ...input,
-      files,
-    },
-    mod
-  );
+  if (!input.skipLegacyPublicationMigration) {
+    applyLegacyPublicationMigration(
+      {
+        ...input,
+        files,
+      },
+      mod
+    );
+  }
   const resolved = await resolveMoveToml(
     moveToml,
     files,
@@ -669,7 +639,10 @@ async function compileMovePackage(
     try {
       resolved = input.resolvedDependencies
         ? input.resolvedDependencies
-        : await resolveMovePackageDependencies(input);
+        : await resolveMovePackageDependenciesInternal({
+            ...input,
+            skipLegacyPublicationMigration: true,
+          });
     } catch (error) {
       return asFailure(error, "dependency_resolution");
     }
@@ -683,22 +656,6 @@ async function compileMovePackage(
       // Ignore
     }
     input.onProgress?.({ type: "resolve_complete", count: depCount });
-
-    // Log dependency addresses passed to compiler (best-effort)
-    logDependencyAddresses(resolved.dependencies);
-
-    let rootPackageName = "Package";
-    try {
-      const moveToml = input.files["Move.toml"];
-      if (moveToml) {
-        const parsed = parseToml(moveToml);
-        if (parsed.package?.name) {
-          rootPackageName = parsed.package.name;
-        }
-      }
-    } catch {
-      // Ignore parse errors; lockfile generation will fall back to the default package name.
-    }
 
     // Emit compile_start event
     input.onProgress?.({ type: "compile_start" });
@@ -735,25 +692,6 @@ async function compileMovePackage(
     // Emit lockfile_generate event
     input.onProgress?.({ type: "lockfile_generate" });
 
-    let rootDepAliasToPackageName: Record<string, string> | undefined;
-
-    // Extract rootDepAliasToPackageName from resolved dependencies
-    // First entry in dependencies array is root package (or find by name match)
-    try {
-      const depsArray = JSON.parse(resolved.dependencies) as Array<{
-        name: string;
-        depAliasToPackageName?: Record<string, string>;
-      }>;
-
-      // Find root package entry
-      const rootEntry = depsArray.find((d) => d.name === rootPackageName);
-      if (rootEntry?.depAliasToPackageName) {
-        rootDepAliasToPackageName = rootEntry.depAliasToPackageName;
-      }
-    } catch {
-      // Ignore parsing errors
-    }
-
     // Generate Move.lock V4
     // ORIGINAL: root_package.rs:272-282 - Pass existing lockfile to preserve other environments
     // Use lockfileDependencies which includes ALL packages (no linkage filtering)
@@ -762,13 +700,10 @@ async function compileMovePackage(
       const existingLockfile = input.files["Move.lock"];
       moveLock = generateMoveLockV4FromJson(
         resolved.lockfileDependencies,
-        rootPackageName,
         environment,
-        rootDepAliasToPackageName,
         existingLockfile, // Preserve other environments from existing lockfile
         mod.lockfile_v4_generate,
-        input.files,
-        packageSelectionModes(input)
+        input.files
       );
     } catch (error) {
       return asFailure(error, "lockfile_generation");

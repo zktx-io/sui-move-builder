@@ -320,7 +320,7 @@ console.log("[OK] V4 lockfile generation records inactive mode deps");
 const missingImplicitResult = await buildWith(rootFiles(), [], "mainnet");
 assertError(
   missingImplicitResult,
-  /implicit dependency 'sui'/,
+  /cannot resolve dependency 'sui'/,
   "missing implicit framework packages"
 );
 

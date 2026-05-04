@@ -45,6 +45,7 @@ name = "${name}"
 version = "0.0.0"
 published-at = "${publishedAt}"
 edition = "2024"
+implicit-dependencies = false
 
 [addresses]
 ${address} = "0x0"
@@ -70,12 +71,26 @@ const workspace = {
     address: "bridge",
     publishedAt: BRIDGE_ID,
   }),
+  "../legacy-source-scope": {
+    "Move.toml": `
+[package]
+name = "LegacySourceScope"
+version = "0.0.0"
+implicit-dependencies = false
+
+[addresses]
+not_self = "0x42"
+`,
+    "sources/a/b/c/d/inside.move": "module inside::legacy_dep {}",
+    "vendor/sources/vendor.move": "module vendor::not_package_source {}",
+  },
   "../missing-source": {
     "Move.toml": `
 [package]
 name = "MissingSource"
 version = "0.0.0"
 edition = "2024"
+implicit-dependencies = false
 
 [addresses]
 missing_source = "0x0"
@@ -152,9 +167,9 @@ const dep = envDeps.find((item) => item.name === "Dep");
 if (!dep) {
   throw new Error("Manifest fallback should resolve Move.testnet.toml deps");
 }
-if (dep.addressMapping.Dep !== DEP_ORIGINAL) {
+if (dep.addressMapping.dep !== DEP_ORIGINAL) {
   throw new Error(
-    `Published.toml original-id should be compile address, got ${dep.addressMapping.Dep}`
+    `Published.toml original-id should be compile address, got ${dep.addressMapping.dep}`
   );
 }
 if (dep.publishedIdForOutput !== DEP_PUBLISHED) {
@@ -196,6 +211,71 @@ if (!bridge?.rootDependencyAliases?.includes("MyBridge")) {
   throw new Error("Manifest fallback should preserve explicit root aliases");
 }
 console.log("[OK] manifest fallback preserves explicit system aliases");
+
+const explicitSuiRepoWithoutSubdirFetcher = {
+  async fetch(gitUrl, rev, subdir = "") {
+    if (
+      gitUrl !== "https://github.com/MystenLabs/sui.git" ||
+      rev !== "framework-rev" ||
+      subdir !== ""
+    ) {
+      throw new Error(`Unexpected git fetch: ${gitUrl} ${rev} ${subdir}`);
+    }
+    return {
+      "README.md": "repo root",
+    };
+  },
+  getResolvedSha() {
+    return undefined;
+  },
+};
+
+await assertRejects(
+  () =>
+    resolveMovePackageDependencies({
+      files: rootFiles({
+        dependencies: `
+implicit-dependencies = false
+
+[dependencies]
+SuiFramework = { git = "https://github.com/MystenLabs/sui.git", rev = "framework-rev" }
+`,
+      }),
+      network: "mainnet",
+      fetcher: explicitSuiRepoWithoutSubdirFetcher,
+    }),
+  /did not provide Move\.toml/,
+  "explicit Sui git dependency without subdir should not infer framework package subdir"
+);
+
+console.log(
+  "[OK] manifest fallback does not infer subdir for explicit Sui git deps"
+);
+
+const legacyScopeResolved = await resolve(
+  rootFiles({
+    dependencies: `
+[dependencies]
+Legacy = { local = "../legacy-source-scope" }
+`,
+  }),
+  "mainnet"
+);
+const legacyScopeDep = parseDeps(legacyScopeResolved).find((item) =>
+  item.rootDependencyAliases?.includes("Legacy")
+);
+if (legacyScopeDep?.manifest?.name !== "inside") {
+  throw new Error(
+    `Legacy package name fallback should only inspect package sources, got ${legacyScopeDep?.manifest?.name}`
+  );
+}
+if (legacyScopeDep?.manifest?.name === "vendor") {
+  throw new Error(
+    `Legacy package name fallback should ignore nested non-package sources, got ${legacyScopeDep.manifest.name}`
+  );
+}
+
+console.log("[OK] legacy package name fallback uses package sources only");
 
 const v3Resolved = await resolve(
   rootFiles({

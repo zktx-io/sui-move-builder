@@ -21,7 +21,7 @@ The development WASM build keeps four areas separate:
 ## 2) Dependency Resolution
 
 - **CLI**: Builds a dependency graph from usable `Move.lock` pins when available, otherwise from manifests. Applies Sui flavor implicit dependencies and dev-mode behavior.
-- **Here (JS + Rust/WASM)**: `resolveMoveToml` (`src/resolver.ts`) uses Rust/WASM for usable V4 lockfiles: Rust parses the active environment, creates the fetch plan, validates root/dependency pin digests, undefined edges, local source pins, and same-name package IDs, then returns compiler and lockfile package groups. TypeScript performs host fetching/snapshot loading and wraps the returned groups. Manifest fallback uses a JS fetch loop, but Rust/WASM owns per-package planning, dependency edge construction, same-name suffixing, cycle detection, linkage/compiler order, lockfile order, and final compiler/lockfile package-group construction. V0/V1/V2/V3 lockfile graphs are not used as pinned graph sources; supported packages fall back to manifest resolution, and supported V3 publication data can be migrated separately. The caller's `Move.toml` is not mutated. The root package may receive an implicit Sui framework dependency when missing; `MoveStdlib`, `SuiSystem`, and `Bridge` are not all injected as explicit JS dependencies. Git fetch is handled through `GitHubMovePackageFetcher` or a supplied `MovePackageFetcher`; local dependencies from local/root packages require a host-provided `fetchLocal` snapshot loader.
+- **Here (JS + Rust/WASM)**: `resolveMoveToml` (`src/resolver.ts`) uses Rust/WASM for usable V4 lockfiles: Rust parses the active environment, creates the fetch plan, validates root/dependency pin digests, undefined edges, local source pins, and same-name package IDs, then returns compiler and lockfile package groups. TypeScript performs host fetching/snapshot loading and wraps the returned groups. Manifest fallback uses a JS fetch loop, but Rust/WASM owns per-package planning, dependency edge construction, same-name suffixing, cycle detection, linkage/compiler order, lockfile order, and final compiler/lockfile package-group construction. V0/V1/V2/V3 lockfile graphs are not used as pinned graph sources; supported packages fall back to manifest resolution, and supported V3 publication data can be migrated separately. The caller's `Move.toml` is not mutated. The root package may receive implicit `sui` and `std` dependencies when missing; implicit dependencies use pinned framework sources, while explicit git dependencies use their declared source without package-name subdir inference. Git fetch is handled through `GitHubMovePackageFetcher` or a supplied `MovePackageFetcher`; local dependencies from local/root packages require a host-provided `fetchLocal` snapshot loader.
 
 ## 2.1) Package File Loading Boundary
 
@@ -372,7 +372,15 @@ CLI converts git branch/tag revisions to 40-character SHA during pinning:
 ///  - the revisions for git dependencies are replaced with 40-character shas
 ```
 
-**WASM behavior**: `resolver.ts` calls `getResolvedSha()` after fetching to convert tags/branches to SHA.
+**WASM behavior**: `resolver.ts` calls `getResolvedSha()` after fetching manifest and V4 lockfile sources to convert tags/branches to SHA.
+
+### 16.1.1 Pinned Lockfile Dependencies
+
+**CLI Source**: `dependency/pin.rs::Pinned::from_lockfile`
+
+CLI loads pinned lockfile dependencies after linkage checks and restores them with the dependency override flag set.
+
+**WASM behavior**: V4 lockfile edges use the same pinned-edge override meaning during linkage.
 
 ### 16.2 Lockfile Dependency Source
 

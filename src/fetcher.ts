@@ -179,42 +179,38 @@ export class GitHubMovePackageFetcher extends MovePackageFetcher {
       }
     }
 
-    const modes = new Map<string, string>();
-
     const files: Record<string, string> = {};
     const fetchPromises: Promise<void>[] = [];
+    const treeItems = treeData.tree as any[];
+    const directorySymlinks: Array<{ repoPath: string; relativePath: string }> =
+      [];
 
-    for (const item of treeData.tree as any[]) {
+    for (const item of treeItems) {
       if (item.type !== "blob") continue;
 
-      let relativePath: string = item.path;
-      if (subdir) {
-        // Check for exact subdir match with trailing slash to avoid prefix collisions.
-        // For example, "packages/a" should not match "packages/a_v2".
-        const subdirWithSlash = subdir.endsWith("/") ? subdir : subdir + "/";
-        if (!item.path.startsWith(subdirWithSlash)) {
-          continue;
-        }
-        relativePath = item.path.slice(subdirWithSlash.length);
-      }
+      const relativePath = this.relativePathForSubdir(item.path, subdir);
+      if (relativePath === null) continue;
 
       if (
-        !relativePath.endsWith(".move") &&
-        relativePath !== "Move.toml" &&
-        relativePath !== "Move.lock" &&
-        relativePath !== "Published.toml" &&
-        !relativePath.match(/^Move\.(mainnet|testnet|devnet)\.toml$/)
+        this.isGitSymlinkMode(item.mode) &&
+        this.isPackageSourcePath(relativePath) &&
+        !this.isIncludedPackageFile(relativePath)
       ) {
+        directorySymlinks.push({ repoPath: item.path, relativePath });
         continue;
       }
 
-      // Store mode for Move.toml to detect symlinks (120000)
-      if (relativePath === "Move.toml" && item.mode) {
-        modes.set("Move.toml", item.mode);
+      if (!this.isIncludedPackageFile(relativePath)) {
+        continue;
       }
 
-      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${rev}/${item.path}`;
-      const p = this.fetchRequiredContent(rawUrl).then((content) => {
+      const p = this.fetchGitTreeFile(
+        owner,
+        repo,
+        rev,
+        item.path,
+        item.mode
+      ).then((content) => {
         files[relativePath] = content;
       });
       fetchPromises.push(p);
@@ -222,24 +218,144 @@ export class GitHubMovePackageFetcher extends MovePackageFetcher {
 
     await Promise.all(fetchPromises);
 
-    // Handle symlinks: Check valid mode 120000 or 120755
-    // ORIGINAL CLI SOURCE:
-    // Rust's `std::fs` matches this behavior transparently.
-    // In `external-crates/move/crates/move-package/src/source_package/layout.rs`, the CLI uses standard file I/O
-    // which follows symlinks. Here we emulate that by checking the git tree mode (120000).
-    if (files["Move.toml"] && modes.get("Move.toml") === "120000") {
-      const content = files["Move.toml"].trim();
+    for (const symlink of directorySymlinks) {
+      const target = await this.fetchRawGitPathContent(
+        owner,
+        repo,
+        rev,
+        symlink.repoPath
+      );
+      const targetPath = this.resolveGitSymlinkTarget(symlink.repoPath, target);
+      const targetPrefix = targetPath.endsWith("/")
+        ? targetPath
+        : `${targetPath}/`;
+      const directoryPromises: Promise<void>[] = [];
 
-      const targetFile = content;
-      const targetPath = subdir
-        ? `${subdir}/${targetFile}`.replace(/\/+/g, "/")
-        : targetFile;
-      const targetUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${rev}/${targetPath}`;
-      files["Move.toml"] = await this.fetchRequiredContent(targetUrl);
-      // files[targetFile] = actualContent; // Do not expose duplicate dirty TOML
+      for (const item of treeItems) {
+        if (item.type !== "blob" || !item.path.startsWith(targetPrefix)) {
+          continue;
+        }
+        const targetRelativePath = item.path.slice(targetPrefix.length);
+        const relativePath = `${symlink.relativePath}/${targetRelativePath}`;
+        if (!this.isIncludedPackageFile(relativePath)) {
+          continue;
+        }
+
+        const p = this.fetchGitTreeFile(
+          owner,
+          repo,
+          rev,
+          item.path,
+          item.mode
+        ).then((content) => {
+          files[relativePath] = content;
+        });
+        directoryPromises.push(p);
+      }
+
+      await Promise.all(directoryPromises);
     }
 
     return files;
+  }
+
+  private isIncludedPackageFile(relativePath: string): boolean {
+    return (
+      relativePath.endsWith(".move") ||
+      relativePath === "Move.toml" ||
+      relativePath === "Move.lock" ||
+      relativePath === "Published.toml" ||
+      /^Move\.[^.\\/]+\.toml$/.test(relativePath)
+    );
+  }
+
+  private isPackageSourcePath(relativePath: string): boolean {
+    const normalized = relativePath.replace(/\/+$/, "");
+    return ["sources", "scripts", "examples", "tests"].some(
+      (sourceRoot) =>
+        normalized === sourceRoot || normalized.startsWith(`${sourceRoot}/`)
+    );
+  }
+
+  private isGitSymlinkMode(mode: unknown): boolean {
+    return mode === "120000";
+  }
+
+  private relativePathForSubdir(
+    repoPath: string,
+    subdir?: string
+  ): string | null {
+    if (!subdir) return repoPath;
+    const subdirWithSlash = subdir.endsWith("/") ? subdir : subdir + "/";
+    if (!repoPath.startsWith(subdirWithSlash)) {
+      return null;
+    }
+    return repoPath.slice(subdirWithSlash.length);
+  }
+
+  private async fetchGitTreeFile(
+    owner: string,
+    repo: string,
+    rev: string,
+    repoPath: string,
+    mode?: string
+  ): Promise<string> {
+    if (!this.isGitSymlinkMode(mode)) {
+      return this.fetchRawGitPathContent(owner, repo, rev, repoPath);
+    }
+
+    const target = await this.fetchRawGitPathContent(
+      owner,
+      repo,
+      rev,
+      repoPath
+    );
+    const targetPath = this.resolveGitSymlinkTarget(repoPath, target);
+    return this.fetchRawGitPathContent(owner, repo, rev, targetPath);
+  }
+
+  private fetchRawGitPathContent(
+    owner: string,
+    repo: string,
+    rev: string,
+    repoPath: string
+  ): Promise<string> {
+    const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${rev}/${repoPath}`;
+    return this.fetchRequiredContent(rawUrl);
+  }
+
+  private resolveGitSymlinkTarget(linkPath: string, target: string): string {
+    const trimmedTarget = target.trim();
+    if (trimmedTarget.startsWith("/")) {
+      return this.normalizeGitPath(trimmedTarget.slice(1));
+    }
+    const basePath = this.dirnameGitPath(linkPath);
+    return this.normalizeGitPath(
+      basePath ? `${basePath}/${trimmedTarget}` : trimmedTarget
+    );
+  }
+
+  private dirnameGitPath(repoPath: string): string {
+    const index = repoPath.lastIndexOf("/");
+    return index === -1 ? "" : repoPath.slice(0, index);
+  }
+
+  private normalizeGitPath(repoPath: string): string {
+    const parts: string[] = [];
+    for (const part of repoPath.split("/")) {
+      if (!part || part === ".") continue;
+      if (part === "..") {
+        if (parts.length === 0) {
+          throw new Error(
+            `Git symlink target escapes repository root: ${repoPath}`
+          );
+        }
+        parts.pop();
+      } else {
+        parts.push(part);
+      }
+    }
+    return parts.join("/");
   }
 
   async fetchFile(

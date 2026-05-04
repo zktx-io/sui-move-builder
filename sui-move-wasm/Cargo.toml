@@ -240,5 +240,8 @@ colored = "2.0.0"
 # Workspace dependencies supply the pinned WASM-compatible dependency set.
 
 
+[build-dependencies]
+serde_json = "1.0.64"
+
 [dev-dependencies]
 wasm-bindgen-test = "0.3"

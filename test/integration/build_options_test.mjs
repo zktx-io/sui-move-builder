@@ -1,7 +1,8 @@
+import { loadWasmBindings } from "./wasm_helpers.mjs";
+
 const {
   dumpMovePackage,
   initMovePackageBuilder,
-  prepareMovePackagePublish,
   prepareMovePackageUpgrade,
   resolveMovePackageDependencies,
 } = await import(new URL("../../dist/full/index.js", import.meta.url));
@@ -23,6 +24,28 @@ function expectFailure(result, label, category) {
       `${label} should fail with ${category}, got ${result.category}`
     );
   }
+}
+
+function expectRawCompileSuccess(result, label) {
+  const success =
+    typeof result.success === "function" ? result.success() : result.success;
+  const output =
+    typeof result.output === "function" ? result.output() : result.output;
+  if (!success) {
+    throw new Error(`${label} should succeed: ${output}`);
+  }
+  return JSON.parse(output);
+}
+
+function rawCompile(mod, files, resolvedDependencies, intent) {
+  return expectRawCompileSuccess(
+    mod.compile(
+      resolvedDependencies.files,
+      resolvedDependencies.dependencies,
+      JSON.stringify({ compileIntent: intent })
+    ),
+    `raw ${intent} compile`
+  );
 }
 
 function depGroup({
@@ -210,28 +233,15 @@ const upgradeResult = await prepareMovePackageUpgrade({
   files: publishedRootFiles,
   resolvedDependencies: publishedResolved,
 });
-const publishResult = await prepareMovePackagePublish({
-  files: {
-    ...publishedRootFiles,
-    "Move.toml": publishedRootFiles["Move.toml"].replace(
-      'published-at = "0x123"',
-      ""
-    ),
-  },
-  resolvedDependencies: resolvedDependenciesFor(
-    {
-      ...publishedRootFiles,
-      "Move.toml": publishedRootFiles["Move.toml"].replace(
-        'published-at = "0x123"',
-        ""
-      ),
-    },
-    []
-  ),
-});
+const wasm = await loadWasmBindings("full");
+const publishResult = rawCompile(
+  wasm,
+  publishedRootFiles,
+  publishedResolved,
+  "publish"
+);
 expectSuccess(dumpResult, "dump root_as_zero");
 expectSuccess(upgradeResult, "upgrade root_as_zero");
-expectSuccess(publishResult, "publish root address");
 if (dumpResult.modules[0] !== upgradeResult.modules[0]) {
   throw new Error("dump and upgrade should compile root as 0x0");
 }
@@ -245,6 +255,7 @@ const modeDepFiles = {
 name = "ModeDep"
 version = "0.0.0"
 edition = "2024"
+implicit-dependencies = false
 published-at = "0x42"
 
 [addresses]
@@ -263,6 +274,7 @@ const modeRootFiles = {
 name = "sui_mode_fixture"
 version = "0.0.0"
 edition = "2024"
+implicit-dependencies = false
 
 [addresses]
 sui_mode_fixture = "0x0"

@@ -108,6 +108,21 @@ Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-fram
 `;
 assertEqual(
   digestFromMoveToml(explicitSuiMoveToml),
+  "",
+  "explicit Sui dependency with implicit deps enabled should fail"
+);
+
+const explicitSuiWithoutImplicitMoveToml = `
+[package]
+name = "Pkg"
+edition = "2024"
+implicit-dependencies = false
+
+[dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework-rev" }
+`;
+assertEqual(
+  digestFromMoveToml(explicitSuiWithoutImplicitMoveToml),
   digestFromJson([
     {
       name: "Sui",
@@ -117,7 +132,7 @@ assertEqual(
       use_environment: "mainnet",
     },
   ]),
-  "explicit Sui dependency should suppress implicit sui/std injection"
+  "explicit Sui dependency with implicit deps disabled should be included"
 );
 
 const emptySuiPackageToml = `
@@ -137,15 +152,16 @@ name = "MoveStdlib"
 edition = "2024"
 `;
 assertEqual(
-  digestFromMoveToml(emptySuffixedStdToml, "MoveStdlib_1"),
+  digestFromMoveToml(emptySuffixedStdToml, "MoveStdlib"),
   digestFromJson([]),
-  "suffixed MoveStdlib package should not receive implicit sui/std dependencies"
+  "MoveStdlib package should not receive implicit sui/std dependencies"
 );
 
 const systemDepMoveToml = `
 [package]
 name = "Pkg"
 edition = "2024"
+implicit-dependencies = false
 
 [dependencies]
 std = { system = "std" }
@@ -156,7 +172,7 @@ assertEqual(
     {
       name: "std",
       system: "std",
-      is_override: true,
+      is_override: false,
       use_environment: "mainnet",
     },
   ]),

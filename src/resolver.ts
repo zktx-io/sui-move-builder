@@ -5,7 +5,6 @@
  * manifest/lockfile package-group construction for compiler input.
  */
 
-import { parseToml } from "./tomlParser.js";
 import type {
   MovePackageFetcher,
   MovePackageFetchLocalContext,
@@ -101,6 +100,11 @@ interface ManifestGraphFetchedPackage {
   files: Record<string, string>;
 }
 
+interface FetchedDependencySource {
+  source: LockfileV4PlanSource;
+  files: Record<string, string>;
+}
+
 export class Resolver {
   private fetcher: MovePackageFetcher;
   private network: "mainnet" | "testnet" | "devnet";
@@ -126,36 +130,16 @@ export class Resolver {
    * Main resolve function using 3-layer architecture
    */
   async resolve(
-    rootMoveToml: string,
+    _rootMoveToml: string,
     rootFiles: Record<string, string>
   ): Promise<{
     files: string;
     dependencies: string;
     lockfileDependencies: string;
   }> {
-    const networkTomlName = `Move.${this.network}.toml`;
-    const selectedRootMoveToml = rootFiles[networkTomlName] || rootMoveToml;
-
-    // Parse root Move.toml
-    const rootParsed = parseToml(selectedRootMoveToml);
-    const rootPackageName = rootParsed.package?.name || "RootPackage";
-
-    const resolvedFromLockfileV4 = await this.resolveFromLockfileV4(
-      rootFiles,
-      rootPackageName
-    );
+    const resolvedFromLockfileV4 = await this.resolveFromLockfileV4(rootFiles);
     if (resolvedFromLockfileV4) {
       return resolvedFromLockfileV4;
-    }
-
-    if (rootFiles["Move.lock"]) {
-      const parsedLockfile = parseToml(rootFiles["Move.lock"]) as any;
-      const lockfileVersion = parsedLockfile.move?.version;
-      if (Number(lockfileVersion) > 4) {
-        throw new Error(
-          `Move.lock version ${lockfileVersion} is newer than the supported V4 schema`
-        );
-      }
     }
 
     return this.resolveManifestGraphPackageGroups(rootFiles);
@@ -337,7 +321,10 @@ export class Resolver {
           `Dependency '${request.dependencyName}' from ${this.describeLockfileV4Source(source)} returned no files`
         );
       }
-      const resolvedSha = this.fetcher.getResolvedSha(source.git, source.rev);
+      const resolvedSha =
+        typeof this.fetcher.getResolvedSha === "function"
+          ? this.fetcher.getResolvedSha(source.git, source.rev)
+          : undefined;
       if (resolvedSha) {
         source.rev = resolvedSha;
       }
@@ -535,8 +522,7 @@ export class Resolver {
   }
 
   private async resolveFromLockfileV4(
-    rootFiles: Record<string, string>,
-    rootPackageName: string
+    rootFiles: Record<string, string>
   ): Promise<{
     files: string;
     dependencies: string;
@@ -572,30 +558,33 @@ export class Resolver {
 
     for (const packagePlan of plan.packages) {
       let files: Record<string, string>;
+      let source = packagePlan.source;
       if (packagePlan.source.type === "root") {
         files = rootFiles;
       } else {
-        const source = this.lockfileV4SourceToDependencySource(
+        const dependencySource = this.lockfileV4SourceToDependencySource(
           packagePlan.source,
           packagePlan.id
         );
-        files = await this.fetchFromSource(
-          source,
+        const fetched = await this.fetchFromSource(
+          dependencySource,
           packagePlan.id,
-          rootPackageName,
+          plan.rootId || "root",
           this.rootSource || { type: "local" }
         );
+        files = fetched.files;
+        source = fetched.source;
       }
 
       packagesWithFiles.push({
         ...packagePlan,
+        source,
         files,
       });
     }
 
     const validationInput = {
       environment: this.network,
-      rootPackageName,
       rootMoveToml: rootFiles["Move.toml"] || "",
       modes: this.modes,
       packages: packagesWithFiles,
@@ -643,7 +632,7 @@ export class Resolver {
     dependencyName: string,
     parentPackageName: string,
     parentSource: DependencySource
-  ): Promise<Record<string, string>> {
+  ): Promise<FetchedDependencySource> {
     if (source.type === "git" && source.git && source.rev) {
       const files = await this.fetcher.fetch(
         source.git,
@@ -655,15 +644,30 @@ export class Resolver {
           `Dependency '${dependencyName}' from ${this.describeSource(source)} returned no files`
         );
       }
-      return files;
+      const resolvedSha =
+        typeof this.fetcher.getResolvedSha === "function"
+          ? this.fetcher.getResolvedSha(source.git, source.rev)
+          : undefined;
+      return {
+        source: {
+          type: "git",
+          git: source.git,
+          rev: resolvedSha || source.rev,
+          subdir: source.subdir,
+        },
+        files,
+      };
     }
     if (source.type === "local" && source.local) {
-      return this.fetchLocalPackage(
-        source.local,
-        dependencyName,
-        parentPackageName,
-        parentSource
-      );
+      return {
+        source: { type: "local", local: source.local },
+        files: await this.fetchLocalPackage(
+          source.local,
+          dependencyName,
+          parentPackageName,
+          parentSource
+        ),
+      };
     }
     throw new Error(
       `Dependency '${dependencyName}' has unsupported source ${this.describeSource(source)}`
@@ -671,9 +675,6 @@ export class Resolver {
   }
 }
 
-/**
- * Main resolve function (backward compatible)
- */
 export async function resolve(
   rootMoveTomlContent: string,
   rootSourceFiles: Record<string, string>,

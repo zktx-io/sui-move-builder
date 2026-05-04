@@ -1,8 +1,12 @@
 import { loadWasmBindings } from "./wasm_helpers.mjs";
 
-const { resolveMovePackageDependencies } = await import(
-  new URL("../../dist/full/index.js", import.meta.url)
-);
+const {
+  dumpMovePackage,
+  initMovePackageBuilder,
+  resolveMovePackageDependencies,
+} = await import(new URL("../../dist/full/index.js", import.meta.url));
+
+await initMovePackageBuilder();
 
 const wasm = await loadWasmBindings("full");
 function digest(moveToml, packageName) {
@@ -23,8 +27,17 @@ const staleRev = "rev-old";
 // pin mismatch instead of falling back on the root pin.
 const rootManifestDigest =
   "8A2CED4251918E3C036CD40CC98A4B39E4A58E7F0C47432ABF66C83AF0FA454E";
-const depManifestDigest =
-  "E41BBD67BE8940D26C79D78B028477EF5B33BA217A1282C78ACB344CF8A5ECF6";
+const fixtureDepMoveToml = `
+[package]
+name = "Dep"
+version = "0.0.0"
+edition = "2024"
+implicit-dependencies = false
+
+[addresses]
+Dep = "0x0"
+`;
+const depManifestDigest = digest(fixtureDepMoveToml, "Dep");
 
 const rootMoveToml = `
 [package]
@@ -65,15 +78,7 @@ class FixtureFetcher {
       throw new Error(`Unexpected fetch: ${gitUrl} ${rev} ${subdir}`);
     }
     return {
-      "Move.toml": `
-[package]
-name = "Dep"
-version = "0.0.0"
-edition = "2024"
-
-[addresses]
-Dep = "0x0"
-`,
+      "Move.toml": fixtureDepMoveToml,
       "sources/dep.move": "module 0x0::dep {}",
     };
   }
@@ -174,6 +179,75 @@ await assertRejects(
 
 console.log("[OK] malformed v4 lockfile graph structure is rejected");
 
+const resolvedShaRev = "refs/tags/v1";
+const resolvedSha = "resolved-sha-for-v1";
+const resolvedShaRootMoveToml = `
+[package]
+name = "Sui"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+Dep = { git = "${depGit}", subdir = "${depSubdir}", rev = "${resolvedShaRev}" }
+
+[addresses]
+sui = "0x2"
+`;
+const resolvedShaMoveLock = `
+[move]
+version = 4
+
+[pinned.mainnet.Sui]
+source = { root = true }
+use_environment = "mainnet"
+manifest_digest = "${digest(resolvedShaRootMoveToml, "Sui")}"
+deps = { Dep = "Dep" }
+
+[pinned.mainnet.Dep]
+source = { git = "${depGit}", subdir = "${depSubdir}", rev = "${resolvedShaRev}" }
+use_environment = "mainnet"
+manifest_digest = "${depManifestDigest}"
+deps = {}
+`;
+
+class ResolvedShaFetcher {
+  async fetch(gitUrl, rev, subdir = "") {
+    if (gitUrl !== depGit || rev !== resolvedShaRev || subdir !== depSubdir) {
+      throw new Error(`Unexpected fetch: ${gitUrl} ${rev} ${subdir}`);
+    }
+    return {
+      "Move.toml": fixtureDepMoveToml,
+      "sources/dep.move": "module 0x0::dep {}",
+    };
+  }
+
+  getResolvedSha(gitUrl, rev) {
+    if (gitUrl === depGit && rev === resolvedShaRev) {
+      return resolvedSha;
+    }
+    return undefined;
+  }
+}
+
+const resolvedShaResult = await resolveMovePackageDependencies({
+  files: {
+    "Move.toml": resolvedShaRootMoveToml,
+    "Move.lock": resolvedShaMoveLock,
+    "sources/root.move": "module 0x2::root {}",
+  },
+  network: "mainnet",
+  fetcher: new ResolvedShaFetcher(),
+});
+const resolvedShaDeps = JSON.parse(resolvedShaResult.lockfileDependencies);
+const resolvedShaDep = resolvedShaDeps.find((dep) => dep.name === "Dep");
+if (resolvedShaDep?.source?.rev !== resolvedSha) {
+  throw new Error(
+    `Expected V4 lockfile fetch source rev ${resolvedSha}, got ${resolvedShaDep?.source?.rev}`
+  );
+}
+
+console.log("[OK] v4 lockfile fetch records resolved git SHA");
+
 const implicitRootMoveToml = `
 [package]
 name = "App"
@@ -273,6 +347,7 @@ const oldDepMoveToml = `
 name = "Dep"
 version = "0.0.0"
 edition = "2024"
+implicit-dependencies = false
 
 [addresses]
 Dep = "0x0"
@@ -282,6 +357,7 @@ const changedDepMoveToml = `
 name = "Dep"
 version = "0.0.0"
 edition = "2024"
+implicit-dependencies = false
 
 [dependencies]
 Other = { local = "../other" }
@@ -367,9 +443,7 @@ const sameNameDepMoveToml = `
 name = "Dep"
 version = "0.0.0"
 edition = "2024"
-
-[addresses]
-Dep = "0x0"
+implicit-dependencies = false
 `;
 const sameNameRootMoveToml = `
 [package]
@@ -378,11 +452,8 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
-DepA = { git = "${depAGit}", rev = "${sameNameRevA}" }
-DepB = { git = "${depBGit}", rev = "${sameNameRevB}" }
-
-[addresses]
-sui = "0x2"
+DepA = { git = "${depAGit}", rev = "${sameNameRevA}", rename-from = "Dep" }
+DepB = { git = "${depBGit}", rev = "${sameNameRevB}", rename-from = "Dep" }
 `;
 const sameNameMoveLock = `
 [move]
@@ -467,22 +538,18 @@ const systemMoveToml = `
 name = "SuiSystem"
 version = "0.0.0"
 edition = "2024"
+implicit-dependencies = false
 published-at = "0x3"
-
-[addresses]
-sui_system = "0x3"
 `;
 const explicitSystemRootMoveToml = `
 [package]
 name = "App"
 version = "0.0.0"
 edition = "2024"
+implicit-dependencies = false
 
 [dependencies]
-SystemAlias = { git = "${systemGit}", rev = "${systemRev}" }
-
-[addresses]
-app = "0x0"
+SystemAlias = { git = "${systemGit}", rev = "${systemRev}", rename-from = "SuiSystem" }
 `;
 const explicitSystemMoveLock = `
 [move]
@@ -541,6 +608,7 @@ const envRootMoveToml = `
 name = "EnvApp"
 version = "0.0.0"
 edition = "2024"
+implicit-dependencies = false
 
 [addresses]
 env_app = "0x0"
@@ -550,6 +618,7 @@ const envOverrideMoveToml = `
 name = "EnvApp"
 version = "0.0.0"
 edition = "2024"
+implicit-dependencies = false
 
 [dependencies]
 Dep = { git = "${depGit}", subdir = "${depSubdir}", rev = "${currentRev}" }
@@ -604,9 +673,6 @@ edition = "2024"
 
 [dependencies]
 Dep = { local = "../dep" }
-
-[addresses]
-sui = "0x2"
 `;
 const localDepMoveToml = sameNameDepMoveToml;
 const localMoveLock = `
@@ -707,6 +773,243 @@ deps = {}
 );
 
 console.log("[OK] v4 dependency snapshot missing Move.toml is rejected");
+
+const linkSuiMoveToml = `
+[package]
+name = "Sui"
+version = "0.0.0"
+edition = "2024"
+published-at = "0x2"
+
+[addresses]
+sui = "0x2"
+`;
+const linkWrapperMoveToml = `
+[package]
+name = "Wrapper"
+version = "0.0.0"
+edition = "2024"
+published-at = "0x43"
+
+[dependencies]
+Sui = { local = "../sui-copy" }
+
+[addresses]
+wrapper = "0x43"
+`;
+const linkRootMoveToml = `
+[package]
+name = "App"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+Sui = { local = "../sui", override = true }
+Wrapper = { local = "../wrapper" }
+
+[addresses]
+app = "0x0"
+`;
+const linkMoveLock = `
+[move]
+version = 4
+
+[pinned.mainnet.App]
+source = { root = true }
+use_environment = "mainnet"
+manifest_digest = "${digest(linkRootMoveToml, "App")}"
+deps = { Sui = "Sui", Wrapper = "Wrapper" }
+
+[pinned.mainnet.Sui]
+source = { local = "../sui" }
+use_environment = "mainnet"
+manifest_digest = "${digest(linkSuiMoveToml, "Sui")}"
+deps = {}
+
+[pinned.mainnet.Wrapper]
+source = { local = "../wrapper" }
+use_environment = "mainnet"
+manifest_digest = "${digest(linkWrapperMoveToml, "Wrapper")}"
+deps = { Sui = "Sui_1" }
+
+[pinned.mainnet.Sui_1]
+source = { local = "../sui-copy" }
+use_environment = "mainnet"
+manifest_digest = "${digest(linkSuiMoveToml, "Sui")}"
+deps = {}
+`;
+
+class LinkageFetcher {
+  async fetch() {
+    throw new Error("unexpected git fetch");
+  }
+
+  async fetchLocal(localPath) {
+    if (localPath === "../sui" || localPath === "../sui-copy") {
+      return {
+        "Move.toml": linkSuiMoveToml,
+        "sources/sui.move": "module sui::fixture {}",
+      };
+    }
+    if (localPath === "../wrapper") {
+      return {
+        "Move.toml": linkWrapperMoveToml,
+        "sources/wrapper.move": "module wrapper::fixture {}",
+      };
+    }
+    throw new Error(`Unexpected local path: ${localPath}`);
+  }
+}
+
+const linkedResolved = await resolveMovePackageDependencies({
+  files: {
+    "Move.toml": linkRootMoveToml,
+    "Move.lock": linkMoveLock,
+    "sources/root.move": "module app::root {}",
+  },
+  network: "mainnet",
+  fetcher: new LinkageFetcher(),
+});
+const linkedCompileDeps = JSON.parse(linkedResolved.dependencies);
+const linkedLockfileDeps = JSON.parse(linkedResolved.lockfileDependencies);
+if (linkedCompileDeps.some((dep) => dep.name === "Sui_1")) {
+  throw new Error("linked compiler graph should not include duplicate Sui pin");
+}
+if (!linkedLockfileDeps.some((dep) => dep.name === "Sui_1")) {
+  throw new Error(
+    "unfiltered lockfile graph should preserve duplicate Sui pin"
+  );
+}
+
+console.log(
+  "[OK] v4 linkage keeps compiler graph linked and lockfile graph unfiltered"
+);
+
+const pythMoveToml = `
+[package]
+name = "Pyth"
+version = "0.0.0"
+edition = "2024"
+published-at = "0x42"
+implicit-dependencies = false
+
+[addresses]
+pyth = "0x42"
+`;
+const legacyWrapperMoveToml = `
+[package]
+name = "Wrapper"
+version = "0.0.0"
+edition = "2024"
+published-at = "0x43"
+implicit-dependencies = false
+
+[dependencies]
+Pyth = { local = "../pyth" }
+
+[addresses]
+wrapper = "0x43"
+`;
+const legacyRootMoveToml = `
+[package]
+name = "LegacyRoot"
+version = "0.0.0"
+edition = "2024"
+implicit-dependencies = false
+
+[dependencies]
+Wrapper = { local = "../wrapper" }
+
+[addresses]
+legacy_root = "0x0"
+`;
+const legacyTransitiveMoveLock = `
+[move]
+version = 4
+
+[pinned.mainnet.LegacyRoot]
+source = { root = true }
+use_environment = "mainnet"
+manifest_digest = "${digest(legacyRootMoveToml, "LegacyRoot")}"
+deps = { Wrapper = "Wrapper" }
+
+[pinned.mainnet.Wrapper]
+source = { local = "../wrapper" }
+use_environment = "mainnet"
+manifest_digest = "${digest(legacyWrapperMoveToml, "Wrapper")}"
+deps = { Pyth = "Pyth" }
+
+[pinned.mainnet.Pyth]
+source = { local = "../pyth" }
+use_environment = "mainnet"
+manifest_digest = "${digest(pythMoveToml, "Pyth")}"
+deps = {}
+`;
+
+class LegacyTransitiveFetcher {
+  async fetch() {
+    throw new Error("unexpected git fetch");
+  }
+
+  async fetchLocal(localPath) {
+    if (localPath === "../wrapper") {
+      return {
+        "Move.toml": legacyWrapperMoveToml,
+        "sources/wrapper.move": `
+module wrapper::fixture {
+    public fun value(): u64 { pyth::fixture::value() }
+}
+`,
+      };
+    }
+    if (localPath === "../pyth") {
+      return {
+        "Move.toml": pythMoveToml,
+        "sources/pyth.move": `
+module pyth::fixture {
+    public fun value(): u64 { 42 }
+}
+`,
+      };
+    }
+    throw new Error(`Unexpected local path: ${localPath}`);
+  }
+}
+
+const legacyRootFiles = {
+  "Move.toml": legacyRootMoveToml,
+  "Move.lock": legacyTransitiveMoveLock,
+  "sources/root.move": `
+module legacy_root::root {
+    public fun value(): u64 { pyth::fixture::value() }
+}
+`,
+};
+const legacyBuild = await dumpMovePackage({
+  files: legacyRootFiles,
+  fetcher: new LegacyTransitiveFetcher(),
+  network: "mainnet",
+});
+if ("error" in legacyBuild) {
+  throw new Error(
+    `legacy transitive named addresses should compile: ${legacyBuild.error}`
+  );
+}
+if (
+  legacyBuild.dependencies.map((dep) => dep.toLowerCase()).join(",") !==
+  [
+    "0x0000000000000000000000000000000000000000000000000000000000000042",
+    "0x0000000000000000000000000000000000000000000000000000000000000043",
+  ].join(",")
+) {
+  throw new Error(
+    "legacy transitive dependency IDs should use CLI package-name order"
+  );
+}
+
+console.log(
+  "[OK] legacy package named addresses include transitive dependencies"
+);
 
 async function assertRejects(operation, pattern, message) {
   try {
