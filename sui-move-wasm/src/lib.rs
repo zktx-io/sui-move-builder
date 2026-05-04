@@ -85,6 +85,7 @@ pub struct WasmCompilationOutput {
 
 mod compiler_support;
 mod helper;
+mod lockfile_v4;
 mod manifest;
 mod manifest_digest;
 mod package_model;
@@ -94,6 +95,12 @@ mod system_packages;
 #[cfg(feature = "verification")]
 mod verification;
 use helper::HelperError;
+use lockfile_v4::{
+    LockfileV4GenerateInput, LockfileV4PackageGroup, LockfileV4PackageGroupManifest,
+    LockfileV4PackageGroups, LockfileV4PackageManifest, LockfileV4Source, LockfileV4ValidateInput,
+    LockfileV4ValidatePackage, LockfileV4ValidatedEdge, LockfileV4ValidatedGraph,
+    LockfileV4ValidatedPackage, LockfileV4ValidationResult,
+};
 use manifest_digest::{CombinedDependencySource, CombinedMoveDependency, ManifestPackagePlanSubst};
 #[cfg(feature = "testing")]
 use move_symbol_pool::Symbol;
@@ -326,7 +333,7 @@ pub fn verification_resolve_package_groups(input_json: &str) -> String {
         VerificationResolvePackageGroupsInput::LockfileFetchPlan {
             move_lock_toml,
             environment,
-        } => match lockfile_v4_plan_from_toml(&move_lock_toml, &environment) {
+        } => match lockfile_v4::plan_from_toml(&move_lock_toml, &environment) {
             Ok(Some((root_id, lockfile_order, packages))) => {
                 let stage_reports =
                     vec![StageReport::new("move_lock_fetch_plan", &environment, &[])
@@ -646,80 +653,6 @@ pub fn compute_manifest_digest(deps_json: &str) -> String {
     manifest_digest::compute_manifest_digest(deps_json)
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-enum LockfileV4Source {
-    Root,
-    Git {
-        git: String,
-        rev: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        subdir: Option<String>,
-    },
-    Local {
-        local: String,
-    },
-    #[serde(other)]
-    Unsupported,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LockfileV4PlanPackage {
-    id: String,
-    source: LockfileV4Source,
-    #[serde(default)]
-    deps: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    manifest_digest: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LockfileV4ValidateInput {
-    environment: String,
-    root_move_toml: String,
-    #[serde(default)]
-    modes: Vec<String>,
-    packages: Vec<LockfileV4ValidatePackage>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LockfileV4ValidatePackage {
-    id: String,
-    source: LockfileV4Source,
-    #[serde(default)]
-    deps: BTreeMap<String, String>,
-    #[serde(default)]
-    manifest_digest: Option<String>,
-    #[serde(default)]
-    files: BTreeMap<String, String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LockfileV4GenerateInput {
-    environment: String,
-    #[serde(default)]
-    existing_lockfile: Option<String>,
-    root: LockfileV4GeneratePackage,
-    packages: Vec<LockfileV4GeneratePackage>,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LockfileV4GeneratePackage {
-    id: String,
-    source: LockfileV4Source,
-    #[serde(default)]
-    files: BTreeMap<String, String>,
-    #[serde(default)]
-    dep_alias_to_package_name: BTreeMap<String, String>,
-    #[serde(default)]
-    root_dependency_aliases: Vec<String>,
-}
-
 struct LockfileV4GenerateResolvedPackage {
     id: String,
     source: LockfileV4Source,
@@ -727,113 +660,6 @@ struct LockfileV4GenerateResolvedPackage {
     graph_id_name: String,
     combined_dependencies: Vec<CombinedMoveDependency>,
     dep_alias_to_package_name: BTreeMap<String, String>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LockfileV4ValidatedGraph {
-    root_id: String,
-    lockfile_order: Vec<String>,
-    packages: Vec<LockfileV4ValidatedPackage>,
-    edges: Vec<LockfileV4ValidatedEdge>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LockfileV4ValidatedPackage {
-    id: String,
-    source: LockfileV4Source,
-    manifest: LockfileV4PackageManifest,
-    #[serde(default)]
-    dep_alias_to_package_name: BTreeMap<String, String>,
-    #[serde(default)]
-    active_dep_alias_to_package_name: BTreeMap<String, String>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LockfileV4PackageManifest {
-    name: String,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "legacyName")]
-    legacy_name: Option<String>,
-    version: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    edition: Option<String>,
-    #[serde(default, rename = "isLegacy")]
-    is_legacy: bool,
-    #[serde(skip_serializing_if = "manifest_plan_is_true")]
-    implicit_dependencies: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    published_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    original_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    latest_published_id: Option<String>,
-    addresses: BTreeMap<String, String>,
-    dependencies: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    dev_dependencies: Option<serde_json::Value>,
-    #[serde(skip_serializing)]
-    combined_dependencies: Vec<CombinedMoveDependency>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LockfileV4ValidatedEdge {
-    from: String,
-    to: String,
-    alias: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    modes: Vec<String>,
-    #[serde(
-        rename = "isOverride",
-        default,
-        skip_serializing_if = "manifest_plan_is_false"
-    )]
-    is_override: bool,
-}
-
-enum LockfileV4ValidationResult {
-    Ok(LockfileV4ValidatedGraph),
-    OutOfDate(String),
-    Error(String),
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LockfileV4PackageGroups {
-    root_files: BTreeMap<String, String>,
-    dependencies: Vec<LockfileV4PackageGroup>,
-    lockfile_dependencies: Vec<LockfileV4PackageGroup>,
-}
-
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct LockfileV4PackageGroup {
-    name: String,
-    display_name: String,
-    files: BTreeMap<String, String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    edition: Option<String>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    address_mapping: BTreeMap<String, String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    published_id_for_output: Option<String>,
-    source: LockfileV4Source,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    manifest_deps: Vec<String>,
-    manifest: LockfileV4PackageGroupManifest,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    dep_alias_to_package_name: BTreeMap<String, String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    root_dependency_aliases: Vec<String>,
-}
-
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct LockfileV4PackageGroupManifest {
-    name: String,
-    dependencies: serde_json::Value,
 }
 
 #[derive(Clone, Serialize)]
@@ -913,10 +739,6 @@ fn manifest_plan_is_false(value: &bool) -> bool {
     !*value
 }
 
-fn manifest_plan_is_true(value: &bool) -> bool {
-    *value
-}
-
 fn lockfile_v4_error_response(error: String, code: Option<&'static str>) -> String {
     helper::error_response(error, code)
 }
@@ -951,154 +773,10 @@ fn lockfile_v4_missing(reason: impl Into<String>) -> String {
     .to_string()
 }
 
-fn lockfile_v4_parse_source(
-    environment: &str,
-    package_id: &str,
-    source_value: Option<&toml::Value>,
-) -> Result<LockfileV4Source, HelperError> {
-    let source = source_value
-        .and_then(|value| value.as_table())
-        .ok_or_else(|| {
-            HelperError::new(format!(
-                "Move.lock V4 pinned.{}.{} has no source",
-                environment, package_id
-            ))
-        })?;
-
-    if source.contains_key("root") {
-        return Ok(LockfileV4Source::Root);
-    }
-
-    if let Some(git) = source.get("git").and_then(|value| value.as_str()) {
-        let rev = source
-            .get("rev")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| {
-                HelperError::new(format!(
-                    "Move.lock V4 pinned.{}.{} git source is missing rev",
-                    environment, package_id
-                ))
-            })?;
-        return Ok(LockfileV4Source::Git {
-            git: git.to_string(),
-            rev: rev.to_string(),
-            subdir: source
-                .get("subdir")
-                .and_then(|value| value.as_str())
-                .map(|value| value.to_string()),
-        });
-    }
-
-    if let Some(local) = source.get("local").and_then(|value| value.as_str()) {
-        return Ok(LockfileV4Source::Local {
-            local: local.to_string(),
-        });
-    }
-
-    Err(HelperError::with_code(
-        "unsupported_dependency_source",
-        format!(
-            "Move.lock V4 pinned.{}.{} has unsupported source",
-            environment, package_id
-        ),
-    ))
-}
-
-fn lockfile_v4_parse_deps(pin: &toml::Table) -> BTreeMap<String, String> {
-    let mut deps = BTreeMap::new();
-    if let Some(dep_table) = pin.get("deps").and_then(|value| value.as_table()) {
-        for (alias, target) in dep_table {
-            if let Some(target_id) = target.as_str() {
-                deps.insert(alias.clone(), target_id.to_string());
-            }
-        }
-    }
-    deps
-}
-
-fn lockfile_v4_plan_from_toml(
-    move_lock_toml: &str,
-    environment: &str,
-) -> Result<Option<(String, Vec<String>, Vec<LockfileV4PlanPackage>)>, HelperError> {
-    let parsed = move_lock_toml.parse::<toml::Value>().map_err(|error| {
-        HelperError::with_code(
-            "malformed_lockfile",
-            format!("Failed to parse Move.lock: {}", error),
-        )
-    })?;
-    if let Some(version) = parsed
-        .get("move")
-        .and_then(|move_section| move_section.get("version"))
-        .and_then(|value| value.as_integer())
-    {
-        if version > 4 {
-            return Err(HelperError::with_code(
-                "unsupported_lockfile_version",
-                format!(
-                    "Move.lock version {} is newer than the supported V4 schema",
-                    version
-                ),
-            ));
-        }
-    }
-
-    let pinned_env = match parsed
-        .get("pinned")
-        .and_then(|pinned| pinned.get(environment))
-        .and_then(|value| value.as_table())
-    {
-        Some(table) => table,
-        None => return Ok(None),
-    };
-
-    let mut root_ids = vec![];
-    let mut lockfile_order = vec![];
-    let mut packages = vec![];
-
-    for (package_id, pin_value) in pinned_env {
-        let pin = pin_value.as_table().ok_or_else(|| {
-            HelperError::new(format!(
-                "Move.lock V4 pinned.{}.{} is not a table",
-                environment, package_id
-            ))
-        })?;
-        let source = lockfile_v4_parse_source(environment, package_id, pin.get("source"))?;
-        if matches!(source, LockfileV4Source::Root) {
-            root_ids.push(package_id.clone());
-        }
-        lockfile_order.push(package_id.clone());
-        packages.push(LockfileV4PlanPackage {
-            id: package_id.clone(),
-            source,
-            deps: lockfile_v4_parse_deps(pin),
-            manifest_digest: pin
-                .get("manifest_digest")
-                .or_else(|| pin.get("manifest-digest"))
-                .and_then(|value| value.as_str())
-                .map(|value| value.to_string()),
-        });
-    }
-
-    if root_ids.is_empty() {
-        return Err(HelperError::new(format!(
-            "Move.lock V4 pinned.{} has no root package entry",
-            environment
-        )));
-    }
-    if root_ids.len() > 1 {
-        return Err(HelperError::new(format!(
-            "Move.lock V4 pinned.{} has multiple root package entries",
-            environment
-        )));
-    }
-
-    Ok(Some((root_ids.remove(0), lockfile_order, packages)))
-}
-
 #[cfg(not(feature = "verification"))]
 #[wasm_bindgen]
 pub fn lockfile_v4_fetch_plan(move_lock_toml: &str, environment: &str) -> String {
-    match lockfile_v4_plan_from_toml(move_lock_toml, environment) {
+    match lockfile_v4::plan_from_toml(move_lock_toml, environment) {
         Ok(Some((root_id, lockfile_order, packages))) => {
             let stage_reports = vec![StageReport::new("move_lock_fetch_plan", environment, &[])
                 .package_id(root_id.clone())
