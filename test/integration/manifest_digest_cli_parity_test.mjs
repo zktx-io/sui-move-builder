@@ -18,6 +18,7 @@ assertSuiCliVersion(suiCli, suiVersion.version);
 
 const wasm = await loadWasmBindings("full");
 const workDir = await mkdtemp(path.join(tmpdir(), "sui-move-digest-"));
+const strictCliParity = suiCliMatchesPinnedVersion();
 
 function moveTomlDigest(moveToml, packageName, environment = "mainnet") {
   return wasm.compute_manifest_digest_from_move_toml(
@@ -25,6 +26,10 @@ function moveTomlDigest(moveToml, packageName, environment = "mainnet") {
     packageName,
     environment
   );
+}
+
+function digestFromJson(deps) {
+  return wasm.compute_manifest_digest(JSON.stringify({ deps }));
 }
 
 function rootManifestDigest(moveLock) {
@@ -43,6 +48,15 @@ function rootManifestDigest(moveLock) {
   throw new Error("CLI Move.lock has no root pin for mainnet");
 }
 
+function suiCliMatchesPinnedVersion() {
+  const result = spawnSync(suiCli, ["--version"], {
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+  });
+  const versionOutput = `${result.stdout || ""}\n${result.stderr || ""}`.trim();
+  return result.status === 0 && versionOutput.includes(suiVersion.version);
+}
+
 async function writePackage(packageDir, files) {
   for (const [relativePath, content] of Object.entries(files)) {
     const filePath = path.join(packageDir, relativePath);
@@ -51,7 +65,7 @@ async function writePackage(packageDir, files) {
   }
 }
 
-async function cliRootDigest(packageDir) {
+function runCliRootDigest(packageDir) {
   const command = [
     "move",
     "build",
@@ -66,14 +80,23 @@ async function cliRootDigest(packageDir) {
     maxBuffer: 1024 * 1024 * 16,
   });
   if (result.error || result.status !== 0) {
-    throw new Error(
-      formatSuiCliFailure({
+    return {
+      ok: false,
+      error: formatSuiCliFailure({
         label: "sui move build failed for digest fixture",
         command: [suiCli, ...command],
         packageDir,
         result,
-      })
-    );
+      }),
+    };
+  }
+  return { ok: true };
+}
+
+async function cliRootDigest(packageDir) {
+  const result = runCliRootDigest(packageDir);
+  if (!result.ok) {
+    throw new Error(result.error);
   }
   return rootManifestDigest(
     await readFile(path.join(packageDir, "Move.lock"), "utf8")
@@ -86,6 +109,37 @@ async function assertCliDigest({ label, packageName, rootDir, rootMoveToml }) {
   if (cliDigest !== wasmDigest) {
     throw new Error(
       `${label}: expected WASM manifest_digest ${wasmDigest} to match CLI ${cliDigest}`
+    );
+  }
+}
+
+async function assertCliDigestWhenPinned({
+  label,
+  packageName,
+  rootDir,
+  rootMoveToml,
+}) {
+  const wasmDigest = moveTomlDigest(rootMoveToml, packageName);
+  const cliResult = runCliRootDigest(rootDir);
+  if (!cliResult.ok) {
+    if (strictCliParity) {
+      throw new Error(cliResult.error);
+    }
+    console.warn(`${label}: CLI fixture skipped because ${cliResult.error}`);
+    return;
+  }
+
+  const cliDigest = rootManifestDigest(
+    await readFile(path.join(rootDir, "Move.lock"), "utf8")
+  );
+  if (cliDigest !== wasmDigest) {
+    if (strictCliParity) {
+      throw new Error(
+        `${label}: expected WASM manifest_digest ${wasmDigest} to match CLI ${cliDigest}`
+      );
+    }
+    console.warn(
+      `${label}: CLI ${cliDigest} differs from WASM ${wasmDigest} with non-pinned local CLI`
     );
   }
 }
@@ -186,6 +240,50 @@ await assertCliDigest({
   packageName: "LegacyRoot",
   rootDir: legacyRoot,
   rootMoveToml: legacyRootMoveToml,
+});
+
+const legacyCollisionRoot = path.join(legacyDir, "normalized-collision-root");
+const legacyCollisionMoveToml = `
+[package]
+name = "LegacyCollisionRoot"
+version = "0.0.0"
+implicit-dependencies = false
+
+[addresses]
+legacy_collision_root = "0x0"
+
+[dependencies]
+same-name = { local = "../regular-dep" }
+
+[dev-dependencies]
+same_name = { local = "../dev-dep" }
+`;
+await writePackage(legacyCollisionRoot, {
+  "Move.toml": legacyCollisionMoveToml,
+  "sources/root.move": "module legacy_collision_root::root {}",
+});
+const legacyCollisionWasmDigest = moveTomlDigest(
+  legacyCollisionMoveToml,
+  "LegacyCollisionRoot"
+);
+const legacyCollisionExpectedDigest = digestFromJson([
+  {
+    name: "same_name",
+    local: "../dev-dep",
+    modes: ["test"],
+    use_environment: "mainnet",
+  },
+]);
+if (legacyCollisionWasmDigest !== legacyCollisionExpectedDigest) {
+  throw new Error(
+    `legacy normalized dependency collision: expected WASM manifest_digest ${legacyCollisionExpectedDigest}, got ${legacyCollisionWasmDigest}`
+  );
+}
+await assertCliDigestWhenPinned({
+  label: "legacy normalized dependency collision digest",
+  packageName: "LegacyCollisionRoot",
+  rootDir: legacyCollisionRoot,
+  rootMoveToml: legacyCollisionMoveToml,
 });
 
 const legacyRegularSystemRoot = path.join(legacyDir, "regular-system-root");

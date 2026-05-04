@@ -1,11 +1,20 @@
-import { MovePackageFetcher, GitHubMovePackageFetcher } from "./fetcher.js";
-import { resolve as resolveMoveToml } from "./resolver.js";
+import type { MovePackageFetcher } from "./fetcher.js";
 import { generateMoveLockV4FromJson } from "./lockfileGenerator.js";
-import {
-  StructuredBuildError,
-  structuredErrorCode,
-} from "./structuredError.js";
+import { structuredErrorCode } from "./structuredError.js";
 import type { MovePackageStageReport } from "./stageReports.js";
+import {
+  applyLegacyPublicationMigrationToFiles,
+  compilerModes,
+  emitMovePackageStageReports,
+  resolveSnapshotDependencies,
+  stripMovePackageStageReports,
+  type MovePackageResolvedDependenciesInternal,
+} from "./dependencyResolution.js";
+
+export {
+  compilerModes,
+  emitMovePackageStageReports,
+} from "./dependencyResolution.js";
 
 /** Build progress event types for tracking build status */
 export type MovePackageProgressEvent =
@@ -38,11 +47,6 @@ export interface MovePackageResolvedDependencies {
   /** JSON string of all dependencies including diamond duplicates (for lockfile) */
   lockfileDependencies: string;
 }
-
-type MovePackageResolvedDependenciesInternal =
-  MovePackageResolvedDependencies & {
-    stageReports?: MovePackageStageReport[];
-  };
 
 export type MovePackageIntent = "dump" | "publish" | "upgrade";
 
@@ -298,54 +302,18 @@ function ensureCompileResult(result: unknown): {
   throw new Error("Unexpected compile result shape from wasm");
 }
 
-type LegacyPublicationMigrationResponse =
-  | {
-      status: "ok";
-      publishedToml?: string;
-      moveLock?: string;
-    }
-  | { status: "error"; error?: string; code?: string };
-
-function parseLegacyPublicationMigrationResponse(
-  raw: string
-): LegacyPublicationMigrationResponse {
-  const parsed = JSON.parse(raw) as unknown;
-  if (
-    !parsed ||
-    typeof parsed !== "object" ||
-    typeof (parsed as { status?: unknown }).status !== "string"
-  ) {
-    throw new Error(
-      "Rust legacy_publication_migration returned an invalid response"
-    );
-  }
-  return parsed as LegacyPublicationMigrationResponse;
-}
-
 function applyLegacyPublicationMigration(
-  input: MovePackageInput | MovePackageUpgradeInput,
+  files: Record<string, string>,
   mod: WasmModule
 ): string | undefined {
-  if (!input.files["Move.lock"]) {
-    return undefined;
-  }
-
-  const response = parseLegacyPublicationMigrationResponse(
-    mod.legacy_publication_migration(JSON.stringify({ files: input.files }))
+  return applyLegacyPublicationMigrationToFiles(
+    files,
+    (migrationFiles) =>
+      mod.legacy_publication_migration(
+        JSON.stringify({ files: migrationFiles })
+      ),
+    "Rust legacy_publication_migration"
   );
-  if (response.status !== "ok") {
-    throw new StructuredBuildError(
-      response.error || "Legacy publication migration failed",
-      response.code
-    );
-  }
-  if (response.publishedToml) {
-    input.files["Published.toml"] = response.publishedToml;
-  }
-  if (response.moveLock) {
-    input.files["Move.lock"] = response.moveLock;
-  }
-  return response.publishedToml;
 }
 
 function parseCompileResult(
@@ -425,30 +393,6 @@ function rootPublicationMetadata(
       })
     )
   );
-}
-
-export function compilerModes(
-  input: Pick<MovePackageInput, "modes">
-): string[] {
-  return input.modes ?? [];
-}
-
-type InternalDependencyResolutionInput = Omit<
-  MovePackageInput,
-  "resolvedDependencies"
-> & {
-  includeTestMode?: boolean;
-  skipLegacyPublicationMigration?: boolean;
-};
-
-function packageSelectionModes(
-  input: Pick<MovePackageInput, "modes"> & { includeTestMode?: boolean }
-): string[] {
-  const modes = [...compilerModes(input)];
-  if (input.includeTestMode && !modes.includes("test")) {
-    modes.push("test");
-  }
-  return modes;
 }
 
 function validatePackageIntent(
@@ -531,78 +475,24 @@ export async function resolveMovePackageDependenciesForTest(
 }
 
 async function resolveMovePackageDependenciesInternal(
-  input: InternalDependencyResolutionInput
-): Promise<MovePackageResolvedDependenciesInternal> {
-  const moveToml = input.files["Move.toml"] || "";
-  // CLI does not mutate Move.toml; use as-is.
-
-  const inferredRootGit =
-    input.rootGit ||
-    ((input.files as any).__rootGit as
-      | { git: string; rev: string; subdir?: string }
-      | undefined);
-
-  const mod = await loadWasm(input.wasm);
-  const files = { ...input.files, "Move.toml": moveToml };
-  if (!input.skipLegacyPublicationMigration) {
-    applyLegacyPublicationMigration(
-      {
-        ...input,
-        files,
-      },
-      mod
-    );
+  input: Omit<MovePackageInput, "resolvedDependencies"> & {
+    includeTestMode?: boolean;
+    skipLegacyPublicationMigration?: boolean;
   }
-  const resolved = await resolveMoveToml(
-    moveToml,
-    files,
-    input.fetcher ?? new GitHubMovePackageFetcher(input.githubToken),
-    input.network,
-    inferredRootGit
-      ? {
-          type: "git",
-          git: inferredRootGit.git,
-          rev: inferredRootGit.rev,
-          subdir: inferredRootGit.subdir,
-        }
-      : undefined,
+): Promise<MovePackageResolvedDependenciesInternal> {
+  const mod = await loadWasm(input.wasm);
+  return resolveSnapshotDependencies(
+    input,
     {
       fetchPlan: mod.lockfile_v4_fetch_plan,
       resolvePackageGroups: mod.lockfile_v4_resolve_package_groups,
       manifestGraphResolvePackageGroups:
         mod.manifest_graph_resolve_package_groups,
     },
-    packageSelectionModes(input)
+    (files) => {
+      applyLegacyPublicationMigration(files, mod);
+    }
   );
-
-  return {
-    files: resolved.files,
-    dependencies: resolved.dependencies,
-    lockfileDependencies: resolved.lockfileDependencies,
-    ...(resolved.stageReports ? { stageReports: resolved.stageReports } : {}),
-  };
-}
-
-function stripMovePackageStageReports(
-  resolved: MovePackageResolvedDependenciesInternal
-): MovePackageResolvedDependencies {
-  return {
-    files: resolved.files,
-    dependencies: resolved.dependencies,
-    lockfileDependencies: resolved.lockfileDependencies,
-  };
-}
-
-export function emitMovePackageStageReports(
-  onProgress: MovePackageProgressCallback | undefined,
-  reports: MovePackageStageReport[] | undefined
-): void {
-  if (!onProgress || !reports) {
-    return;
-  }
-  for (const report of reports) {
-    onProgress({ type: "stage_trace", ...report });
-  }
 }
 
 async function compileMovePackage(
@@ -649,7 +539,7 @@ async function compileMovePackage(
 
     let migratedPublishedToml: string | undefined;
     try {
-      migratedPublishedToml = applyLegacyPublicationMigration(input, mod);
+      migratedPublishedToml = applyLegacyPublicationMigration(input.files, mod);
     } catch (error) {
       return asFailure(error, "lockfile_generation");
     }
@@ -770,7 +660,10 @@ async function compileMovePackage(
   }
 }
 
-/** Prepare CLI dump-style bytecode output for a Move package. */
+/**
+ * Prepare CLI dump-style bytecode output for a Move package.
+ * Browser WASM builds use declared host/crypto/network compatibility boundaries; see SECURITY.md.
+ */
 export async function dumpMovePackage(
   input: MovePackageInput
 ): Promise<MovePackageDumpSuccess | MovePackageFailure> {

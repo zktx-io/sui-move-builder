@@ -69,6 +69,17 @@ import {
 
 `verifyMovePackageProvenance` accepts the same package snapshot and dependency resolution inputs as the build APIs, plus a reference artifact containing base64 Move modules and optional dependency IDs, package digest, root package address, or declared toolchain metadata. It returns one of `verified`, `toolchain_mismatch`, `mismatch`, `build_failure`, or `invalid_reference`. `verified` means the caller-provided source rebuilds to the caller-provided reference under the pinned Sui toolchain. `toolchain_mismatch` means the reference bytecode header does not match the pinned toolchain output, so this WASM artifact cannot prove or disprove provenance for that reference. Declared `reference.toolchainVersion` and `reference.buildConfig` are returned as evidence when provided; they do not replace bytecode comparison. If source compiles with a root address of `0x0` but the reference contains a published package address, pass that published address as `reference.rootAddress` or `reference.packageId`. The verification WASM does not fetch RPC, GitHub, transaction, or filesystem data; callers provide the source and reference bytes.
 
+Verification failures may include `failureStage`. `verified`, `mismatch`, and `toolchain_mismatch` results do not include `failureStage`.
+
+| `failureStage`          | Current meaning                                                                               |
+| ----------------------- | --------------------------------------------------------------------------------------------- |
+| `wasm_init`             | The verification WASM module could not initialize.                                            |
+| `dependency_resolution` | Source snapshot dependency resolution failed before Rust verification ran.                    |
+| `input_validation`      | Rust rejected the verification input or caller-provided reference artifact.                   |
+| `compile`               | Rust compilation of the caller-provided source snapshot failed.                               |
+| `compiler_output`       | Rust could not parse or normalize current build output JSON, digest, or bytecode module data. |
+| `verification_output`   | The JS wrapper could not call the verifier or could not parse the verifier JSON response.     |
+
 ## Quick start (Node.js or browser)
 
 ```ts
@@ -450,6 +461,7 @@ const result2 = await dumpMovePackage({
 - V0/V1/V2/V3 `Move.lock` graph sections are not used as pinned graph sources. Supported packages fall back to manifest resolution; V3 publication migration is supported where covered by tests.
 - Publish and upgrade APIs prepare bytecode payload data only. Transaction signing, gas selection, PTB construction, dry-run, execution, and file persistence are outside the WASM package boundary.
 - CLI parity is verified for selected fixtures, not for every Sui package-manager path. Some compiler and test-runner behavior is still implemented through local compatibility glue.
+- Browser-compatible WASM builds use declared compatibility replacements for host, networking, randomness, TLS/X.509, and cryptography-adjacent crates. See [SECURITY.md](./SECURITY.md) for the current runtime boundary and compat inventory.
 
 ## Best Practices
 

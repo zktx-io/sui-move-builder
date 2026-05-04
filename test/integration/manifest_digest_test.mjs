@@ -204,6 +204,34 @@ assertEqual(
   "legacy dev-dependencies should be included with test mode"
 );
 
+const legacyNormalizedCollisionMoveToml = `
+[package]
+name = "LegacyPkg"
+version = "0.0.0"
+implicit-dependencies = false
+
+[addresses]
+legacy_pkg = "0x0"
+
+[dependencies]
+same-name = { local = "../regular-dep" }
+
+[dev-dependencies]
+same_name = { local = "../dev-dep" }
+`;
+assertEqual(
+  digestFromMoveToml(legacyNormalizedCollisionMoveToml, "LegacyPkg"),
+  digestFromJson([
+    {
+      name: "same_name",
+      local: "../dev-dep",
+      modes: ["test"],
+      use_environment: "mainnet",
+    },
+  ]),
+  "legacy dev-dependencies should determine the normalized collision key"
+);
+
 const legacyDependencyModesMoveToml = `
 [package]
 name = "LegacyPkg"

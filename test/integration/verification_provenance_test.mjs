@@ -138,6 +138,30 @@ function expectStatus(result, status, label) {
   }
 }
 
+function expectFailureStage(result, stage, label) {
+  if (result.failureStage !== stage) {
+    throw new Error(
+      `${label}: expected failureStage ${stage}, got ${result.failureStage}: ${JSON.stringify(
+        result,
+        null,
+        2
+      )}`
+    );
+  }
+}
+
+function expectNoFailureStage(result, label) {
+  if (result.failureStage !== undefined) {
+    throw new Error(
+      `${label}: expected no failureStage, got ${result.failureStage}: ${JSON.stringify(
+        result,
+        null,
+        2
+      )}`
+    );
+  }
+}
+
 function withHeaderVersion(base64, version) {
   const bytes = Buffer.from(base64, "base64");
   bytes.writeUInt32LE(version, 4);
@@ -147,15 +171,13 @@ function withHeaderVersion(base64, version) {
 const files = fixtureFiles();
 const reference = await dumpReference(files);
 
-expectStatus(
-  await verify(files, {
-    modules: reference.modules,
-    dependencies: reference.dependencies,
-    digest: reference.digest,
-  }),
-  "verified",
-  "current reference"
-);
+const verifiedReference = await verify(files, {
+  modules: reference.modules,
+  dependencies: reference.dependencies,
+  digest: reference.digest,
+});
+expectStatus(verifiedReference, "verified", "current reference");
+expectNoFailureStage(verifiedReference, "verified reference");
 
 const metadataReference = await verify(files, {
   modules: reference.modules,
@@ -204,6 +226,7 @@ expectStatus(
   "toolchain_mismatch",
   "v6 reference header"
 );
+expectNoFailureStage(metadataToolchainMismatch, "toolchain mismatch reference");
 if (
   metadataToolchainMismatch.toolchainEvidence?.source !==
   "metadata+binary_header"
@@ -222,14 +245,12 @@ if (
 }
 
 const changedReference = await dumpReference(fixtureFiles({ value: 2 }));
-expectStatus(
-  await verify(files, {
-    modules: changedReference.modules,
-    dependencies: changedReference.dependencies,
-  }),
-  "mismatch",
-  "same toolchain changed module"
-);
+const mismatchResult = await verify(files, {
+  modules: changedReference.modules,
+  dependencies: changedReference.dependencies,
+});
+expectStatus(mismatchResult, "mismatch", "same toolchain changed module");
+expectNoFailureStage(mismatchResult, "same toolchain changed module");
 
 const publishedAddress =
   "0x0000000000000000000000000000000000000000000000000000000000000042";
@@ -246,24 +267,62 @@ expectStatus(
   "published root address substitution"
 );
 
+const malformedReferenceResult = await verify(files, {
+  modules: ["AA=="],
+});
 expectStatus(
-  await verify(files, {
-    modules: ["AA=="],
-  }),
+  malformedReferenceResult,
   "invalid_reference",
   "malformed reference"
+);
+expectFailureStage(
+  malformedReferenceResult,
+  "input_validation",
+  "Rust input_validation failureStage should pass through TS unchanged"
 );
 
 const badFiles = {
   ...files,
   "sources/main.move": "module verify_fixture::main { public fun broken( }",
 };
-expectStatus(
-  await verify(badFiles, {
+const compileFailureResult = await verify(badFiles, {
+  modules: reference.modules,
+});
+expectStatus(compileFailureResult, "build_failure", "source compile failure");
+expectFailureStage(compileFailureResult, "compile", "source compile failure");
+
+const dependencyFailureFiles = {
+  ...files,
+  "Move.toml": `
+[package]
+name = "VerifyFixture"
+version = "0.0.0"
+edition = "2024"
+
+[addresses]
+verify_fixture = "0x0"
+
+[dependencies]
+MissingLocal = { local = "../missing-local" }
+`,
+};
+const dependencyFailureResult = await verifier.verifyMovePackageProvenance({
+  files: dependencyFailureFiles,
+  network: "mainnet",
+  silenceWarnings: true,
+  reference: {
     modules: reference.modules,
-  }),
+  },
+});
+expectStatus(
+  dependencyFailureResult,
   "build_failure",
-  "source compile failure"
+  "dependency resolution failure"
+);
+expectFailureStage(
+  dependencyFailureResult,
+  "dependency_resolution",
+  "dependency resolution failure"
 );
 
 console.log("[OK] verification provenance checks passed");

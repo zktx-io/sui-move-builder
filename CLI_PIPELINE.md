@@ -13,6 +13,68 @@ The development WASM build keeps four areas separate:
 
 `npm run prepare:wasm` is the step that may fetch/update source, recreate the worktree, apply the active compatibility overlay, and write `.sui-build/patch-state.json`. It removes any stale patch state at startup and writes a new patch-state file only after successful preparation. `npm run build:wasm:prepared:lite`, `npm run build:wasm:prepared:full`, `npm run build:wasm:prepared:verification`, and `npm run build:wasm:prepared` validate that final marker against the current version, compat overlay path, paths, and required prepared files before building `dist/lite`, `dist/full`, `dist/verification`, or all three; they should not be used as porting steps for a new upstream version. Full prepared builds run a Binaryen `wasm-opt` strip pass after `wasm-bindgen` unless `SUI_WASM_SKIP_WASM_OPT=1` is set. `npm run build:wasm` runs prepare and the prepared all-profile build.
 
+## Runtime Execution Flows
+
+These diagrams describe the runtime build and test paths that the parity tables below reference. They do not cover transaction execution, signing, gas selection, filesystem output management, docgen, disassembly, or bytecode-only dependency loading because those paths are not exposed by this package.
+
+### Sui CLI Flow
+
+```mermaid
+flowchart TD
+  C0["sui move build/test command"] --> C1["RootPackage::load reads package root"]
+  C1 --> C2["PackageGraphBuilder loads V4 lockfile pins or manifests"]
+  C2 --> C3["Sui flavor applies environments, implicit deps, and modes"]
+  C3 --> C4["Linkage selects compiler graph and lockfile graph"]
+  C4 --> C5["BuildPlan creates compiler PackagePaths"]
+  C5 --> C6["Move compiler builds package modules"]
+  C6 --> C7["Sui verifier checks non-test bytecode"]
+  C7 --> C8["sui-move-build emits modules, deps, digest, and Move.lock"]
+  C6 --> C9["sui move test builds unit-test plan and runs tests"]
+```
+
+### Sui Move Builder WASM Flow
+
+```mermaid
+flowchart TD
+  W0["JS public API receives package snapshot"] --> W1["TypeScript filters package files and loads WASM"]
+  W1 --> W2["TypeScript fetcher loads git/local dependency snapshots"]
+  W2 --> W3["Rust/WASM lockfile or manifest graph helpers build package groups"]
+  W3 --> W4["Rust package_model builds VFS PackagePaths"]
+  W4 --> W5["Pinned Move compiler crates build package modules"]
+  W5 --> W6["Pinned verifier crates check non-test bytecode"]
+  W6 --> W7["Rust/WASM emits modules, deps, digest, warnings"]
+  W3 --> W8["Rust/WASM generates Move.lock V4"]
+  W5 --> W9["Full WASM runs root-owned unit tests"]
+  W5 --> W10["Verification WASM compares rebuilt bytecode to references"]
+```
+
+### WASM Variant Boundaries
+
+| Variant      | Build feature           | Public entrypoint                        | Runtime responsibility                                                                  | Side-effect boundary                                                                                                               |
+| ------------ | ----------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Lite         | `--no-default-features` | `@zktx.io/sui-move-builder`              | Build, publish preparation, upgrade preparation, dependency resolution, version reports | Uses the lite `dist/lite` WASM artifact and does not expose `testMovePackage` or provenance APIs.                                  |
+| Full         | `testing`               | `@zktx.io/sui-move-builder/full`         | Lite API plus `testMovePackage`                                                         | Uses the full `dist/full` WASM artifact; unit-test execution is full-only and root-test ownership is checked by integration tests. |
+| Verification | `verification`          | `@zktx.io/sui-move-builder/verification` | Source provenance rebuild and bytecode/reference comparison                             | Uses the verification `dist/verification` WASM artifact and returns verification status without publish, upgrade, or test APIs.    |
+
+## Version-Up Sequence Map
+
+Use this ordered map with the structure table below when porting the pinned Sui version. The `Reuse level` column names the current implementation shape; version-up work should prefer a pinned upstream call before expanding a local implementation.
+
+| Order | CLI sequence                                                                                              | WASM sequence                                                                                   | Reuse level                          | Current validation                                     | Version-up checkpoint                                                                        |
+| ----- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| 1     | Command dispatch selects build, publish, upgrade, or test behavior from `crates/sui/src/sui_commands.rs`. | JS entrypoints select dump, publish, upgrade, test, or verification wrappers.                   | TS host boundary                     | Intent API, runtime smoke, API surface checks          | Re-check public method set and keep transaction execution outside this package.              |
+| 2     | `RootPackage::load` reads the package root from disk.                                                     | `MovePackageInput.files` supplies the root snapshot; JS keeps host I/O outside Rust.            | TS host boundary                     | Package-loading tests                                  | Re-check accepted files and missing `Move.toml` failure behavior.                            |
+| 3     | Package manager loads V4 lockfile pins or falls back to manifests.                                        | Rust/WASM helpers plan V4 fetches or manifest graph fetches while TS fetches snapshots.         | Rust self-impl + TS host boundary    | Lockfile graph, manifest fallback, stage observability | Re-check lockfile schema, source forms, digest validation, same-name package IDs.            |
+| 4     | Sui flavor applies active environment, implicit deps, replacements, and modes.                            | Rust/WASM graph helpers apply environment, implicit framework rev, replacements, and modes.     | Rust self-impl                       | Manifest digest, build-options, unit-test-modes        | Re-check `Move.<env>.toml`, implicit Sui/Std, dev/test modes, and unsupported source errors. |
+| 5     | Linkage selects compiler dependencies and lockfile graph packages.                                        | Rust/WASM graph helpers produce compiler package groups and lockfile package groups.            | Rust self-impl                       | Output-deps, parity, lockfile generation               | Re-check override conflicts, original/latest IDs, system dependency filtering, cycles.       |
+| 6     | `BuildPlan` and source discovery build `PackagePaths`.                                                    | `package_model.rs` builds VFS `PackagePaths` from supplied snapshots.                           | Rust self-impl                       | Source-discovery, compiler-lint, audit tests           | Re-check source roots, source ordering, edition/flavor, lint setup, package configs.         |
+| 7     | Move compiler builds modules using pinned compiler crates.                                                | WASM calls pinned Move compiler crates through `Compiler::from_package_paths`.                  | Vendor pass-through                  | Parity and audit tests                                 | Re-check compiler API drift and exposed compiler flags.                                      |
+| 8     | Sui verifier validates non-test bytecode.                                                                 | WASM calls pinned Move verifier and Sui verifier crates.                                        | Vendor pass-through                  | Parity and audit tests                                 | Re-check verifier config and protocol version behavior.                                      |
+| 9     | CLI serializes modules, dependency IDs, digest, and lockfile.                                             | WASM serializes modules/deps/digest and calls Rust/WASM Move.lock V4 generator.                 | Vendor pass-through + Rust self-impl | Parity, lockfile generation, manifest digest parity    | Re-check module order, digest inputs, dependency order, multi-environment preservation.      |
+| 10    | `sui move test` compiles test-mode sources and runs the unit-test runner.                                 | Full WASM compiles test-mode snapshots and constructs the test plan with the root package name. | Vendor pass-through                  | Unit-test-output-parity, unit-test-ownership           | Re-check full-only export, dependency test exclusion, runner stdout, user modes.             |
+| 11    | CLI publication helpers update `Published.toml` after successful publish or upgrade data is available.    | JS extracts external execution result fields and Rust/WASM renders `Published.toml`.            | Rust self-impl + TS host boundary    | Published TOML recording tests                         | Re-check result extraction, chain ID fields, publish vs upgrade metadata preservation.       |
+| 12    | CLI source validation compares source rebuilds against reference artifacts.                               | Verification WASM rebuilds from snapshots and compares modules, deps, digest, and headers.      | Rust self-impl                       | Verification provenance and artifact audits            | Re-check bytecode deserialization, root address substitution, status precedence.             |
+
 ## CLI Structure vs WASM Structure
 
 This table is the starting point for parity-sensitive work. Before changing a stage, confirm whether it is a direct upstream call, a Rust/WASM implementation of upstream package-manager behavior, a TypeScript host boundary, or an unsupported CLI-only path.
@@ -112,6 +174,7 @@ These areas are local compatibility boundaries rather than full reuse of the ups
 - **Test ownership and modes**: full WASM tests construct the test plan with the root package name. Dependency package tests are compiled in test mode but are not executed as root tests. User `modes` are passed to the test compiler path. This is covered by `node test/integration/run.mjs unit-test-ownership` and `node test/integration/run.mjs unit-test-modes`.
 - **Failure observability**: JS build/test wrappers attach a broad `MovePackageFailure.category` based on the stage that failed. Rust/WASM helper failures may also carry `MovePackageFailure.code`; host loader, compiler, and test runner details remain in the original error string.
 - **Prepare patching**: recursive Cargo patching remains broad, but active compatibility sources and intentional empty stubs are manifest-declared and required patch targets now fail when missing.
+- **Compatibility-hollow package manager crates**: `move-package-alt` and `move-package-alt-compilation` are `stubTemplates`, not `emptyStubCrates`. The prepared WASM build includes only placeholder symbols from those crates; `sui-move-wasm/src` does not call their package graph, lockfile, digest, or build-plan entrypoints. Supported package-manager behavior is implemented in local Rust/WASM helpers and fixture-covered at the stages listed in this document.
 
 ### Upstream Package-Manager Boundaries
 

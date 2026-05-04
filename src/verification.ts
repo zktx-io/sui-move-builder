@@ -1,19 +1,18 @@
 import {
   asFailure,
-  compilerModes,
   loadWasm,
   type MovePackageInput,
   type MovePackageResolvedDependencies,
   type WasmModule,
 } from "./core.js";
-import { GitHubMovePackageFetcher } from "./fetcher.js";
 import {
-  resolve as resolveMoveToml,
-  type DependencySource,
-  type LockfileV4Helpers,
-} from "./resolver.js";
-import type { MovePackageStageReport } from "./stageReports.js";
-import { StructuredBuildError } from "./structuredError.js";
+  applyLegacyPublicationMigrationToFiles,
+  compilerModes,
+  emitMovePackageStageReports,
+  resolveSnapshotDependencies,
+  stripMovePackageStageReports,
+} from "./dependencyResolution.js";
+import { type LockfileV4Helpers } from "./resolver.js";
 
 export type VerificationStatus =
   | "verified"
@@ -21,6 +20,14 @@ export type VerificationStatus =
   | "mismatch"
   | "build_failure"
   | "invalid_reference";
+
+export type VerificationFailureStage =
+  | "wasm_init"
+  | "dependency_resolution"
+  | "input_validation"
+  | "compile"
+  | "compiler_output"
+  | "verification_output";
 
 export interface ReferenceArtifact {
   modules: string[];
@@ -95,6 +102,7 @@ export interface VerificationCurrentBuild {
 
 export interface MovePackageProvenanceResult {
   status: VerificationStatus;
+  failureStage?: VerificationFailureStage;
   currentBuild?: VerificationCurrentBuild;
   referenceSummary?: VerificationArtifactSummary;
   currentSummary?: VerificationArtifactSummary;
@@ -138,6 +146,11 @@ export async function getPinnedSuiVersion(options?: {
   return mod.sui_version();
 }
 
+/**
+ * Rebuild source and compare it to caller-provided reference bytecode.
+ * Browser WASM builds use declared host/crypto/network compatibility boundaries; see SECURITY.md.
+ * `failureStage` is a failure-only diagnostic and is absent from verified, mismatch, and toolchain-mismatch results.
+ */
 export async function verifyMovePackageProvenance(
   input: MovePackageProvenanceInput
 ): Promise<MovePackageProvenanceResult> {
@@ -146,7 +159,7 @@ export async function verifyMovePackageProvenance(
     mod = (await loadWasm(input.wasm)) as unknown as VerificationWasmModule;
   } catch (error) {
     const failure = asFailure(error, "wasm_init");
-    return buildFailure(failure.error);
+    return buildFailure(failure.error, "wasm_init");
   }
 
   let resolved;
@@ -156,7 +169,7 @@ export async function verifyMovePackageProvenance(
       (await resolveVerificationDependencies(input, mod));
   } catch (error) {
     const failure = asFailure(error, "dependency_resolution");
-    return buildFailure(failure.error);
+    return buildFailure(failure.error, "dependency_resolution");
   }
 
   let raw: string;
@@ -178,77 +191,27 @@ export async function verifyMovePackageProvenance(
       })
     );
   } catch (error) {
-    const failure = asFailure(error, "compile");
-    return buildFailure(failure.error);
+    const failure = asFailure(error, "compiler_output");
+    return buildFailure(failure.error, "verification_output");
   }
 
   try {
     return JSON.parse(raw) as MovePackageProvenanceResult;
   } catch (error) {
     const failure = asFailure(error, "compiler_output");
-    return buildFailure(failure.error);
+    return buildFailure(failure.error, "verification_output");
   }
 }
 
-function buildFailure(error: string): MovePackageProvenanceResult {
+function buildFailure(
+  error: string,
+  failureStage: VerificationFailureStage
+): MovePackageProvenanceResult {
   return {
     status: "build_failure",
+    failureStage,
     error,
   };
-}
-
-type LegacyPublicationMigrationResponse =
-  | {
-      status: "ok";
-      publishedToml?: string;
-      moveLock?: string;
-    }
-  | { status: "error"; error?: string; code?: string };
-
-function parseLegacyPublicationMigrationResponse(
-  raw: string
-): LegacyPublicationMigrationResponse {
-  const parsed = JSON.parse(raw) as unknown;
-  if (
-    !parsed ||
-    typeof parsed !== "object" ||
-    typeof (parsed as { status?: unknown }).status !== "string"
-  ) {
-    throw new Error(
-      "Rust verification resolver returned an invalid legacy publication migration response"
-    );
-  }
-  return parsed as LegacyPublicationMigrationResponse;
-}
-
-function applyVerificationLegacyPublicationMigration(
-  files: Record<string, string>,
-  mod: VerificationWasmModule
-): void {
-  if (!files["Move.lock"]) {
-    return;
-  }
-
-  const response = parseLegacyPublicationMigrationResponse(
-    mod.verification_resolve_package_groups(
-      JSON.stringify({
-        operation: "legacyPublicationMigration",
-        input: { files },
-      })
-    )
-  );
-  if (response.status !== "ok") {
-    throw new StructuredBuildError(
-      response.error || "Legacy publication migration failed",
-      response.code
-    );
-  }
-  if (response.publishedToml) {
-    files["Published.toml"] = response.publishedToml;
-  }
-  if (response.moveLock) {
-    files["Move.lock"] = response.moveLock;
-  }
 }
 
 function verificationResolverHelpers(
@@ -280,54 +243,27 @@ function verificationResolverHelpers(
   };
 }
 
-function emitVerificationStageReports(
-  onProgress: MovePackageInput["onProgress"],
-  reports: MovePackageStageReport[] | undefined
-): void {
-  if (!onProgress || !reports) {
-    return;
-  }
-  for (const report of reports) {
-    onProgress({ type: "stage_trace", ...report });
-  }
-}
-
 async function resolveVerificationDependencies(
   input: Omit<MovePackageProvenanceInput, "resolvedDependencies">,
   mod: VerificationWasmModule
 ): Promise<MovePackageResolvedDependencies> {
-  const moveToml = input.files["Move.toml"] || "";
-  const inferredRootGit =
-    input.rootGit ||
-    ((input.files as any).__rootGit as
-      | { git: string; rev: string; subdir?: string }
-      | undefined);
-  const rootSource: DependencySource | undefined = inferredRootGit
-    ? {
-        type: "git",
-        git: inferredRootGit.git,
-        rev: inferredRootGit.rev,
-        subdir: inferredRootGit.subdir,
-      }
-    : undefined;
-
-  const files = { ...input.files, "Move.toml": moveToml };
-  applyVerificationLegacyPublicationMigration(files, mod);
-
-  const resolved = await resolveMoveToml(
-    moveToml,
-    files,
-    input.fetcher ?? new GitHubMovePackageFetcher(input.githubToken),
-    input.network,
-    rootSource,
+  const resolved = await resolveSnapshotDependencies(
+    input,
     verificationResolverHelpers(mod),
-    compilerModes(input)
+    (files) => {
+      applyLegacyPublicationMigrationToFiles(
+        files,
+        (migrationFiles) =>
+          mod.verification_resolve_package_groups(
+            JSON.stringify({
+              operation: "legacyPublicationMigration",
+              input: { files: migrationFiles },
+            })
+          ),
+        "Rust verification resolver"
+      );
+    }
   );
-  emitVerificationStageReports(input.onProgress, resolved.stageReports);
-
-  return {
-    files: resolved.files,
-    dependencies: resolved.dependencies,
-    lockfileDependencies: resolved.lockfileDependencies,
-  };
+  emitMovePackageStageReports(input.onProgress, resolved.stageReports);
+  return stripMovePackageStageReports(resolved);
 }

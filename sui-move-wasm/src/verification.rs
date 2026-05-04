@@ -64,6 +64,8 @@ struct BuildOutput {
 struct VerificationOutput {
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    failure_stage: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     current_build: Option<BuildOutput>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reference_summary: Option<ArtifactSummary>,
@@ -175,11 +177,17 @@ struct ToolchainMetadata {
     build_config: Option<ReferenceBuildConfig>,
 }
 
+const FAILURE_STAGE_INPUT_VALIDATION: &str = "input_validation";
+const FAILURE_STAGE_COMPILE: &str = "compile";
+const FAILURE_STAGE_COMPILER_OUTPUT: &str = "compiler_output";
+const FAILURE_STAGE_VERIFICATION_OUTPUT: &str = "verification_output";
+
 pub(crate) fn verify_against_reference(input_json: &str) -> String {
     let output = match verify_against_reference_impl(input_json) {
         Ok(output) => output,
         Err(error) => VerificationOutput {
             status: "invalid_reference",
+            failure_stage: Some(FAILURE_STAGE_INPUT_VALIDATION),
             current_build: None,
             reference_summary: None,
             current_summary: None,
@@ -190,10 +198,12 @@ pub(crate) fn verify_against_reference(input_json: &str) -> String {
         },
     };
     serde_json::to_string(&output).unwrap_or_else(|error| {
-        format!(
-            r#"{{"status":"invalid_reference","error":"failed to serialize verification result: {}"}}"#,
-            json_escape(&error.to_string())
-        )
+        serde_json::json!({
+            "status": "invalid_reference",
+            "failureStage": FAILURE_STAGE_VERIFICATION_OUTPUT,
+            "error": format!("failed to serialize verification result: {}", error),
+        })
+        .to_string()
     })
 }
 
@@ -228,6 +238,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
         Err(error) => {
             return Ok(VerificationOutput {
                 status: "invalid_reference",
+                failure_stage: Some(FAILURE_STAGE_INPUT_VALIDATION),
                 current_build: None,
                 reference_summary: None,
                 current_summary: None,
@@ -250,6 +261,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
     if !compile_result.success() {
         return Ok(VerificationOutput {
             status: "build_failure",
+            failure_stage: Some(FAILURE_STAGE_COMPILE),
             current_build: None,
             reference_summary: Some(reference.summary),
             current_summary: None,
@@ -265,6 +277,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
         Err(error) => {
             return Ok(VerificationOutput {
                 status: "build_failure",
+                failure_stage: Some(FAILURE_STAGE_COMPILER_OUTPUT),
                 current_build: None,
                 reference_summary: Some(reference.summary),
                 current_summary: None,
@@ -277,7 +290,22 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
     };
 
     let current_dependencies = normalize_string_dependencies(&current_build.dependencies);
-    let current_digest = normalize_digest_value(&current_build.digest)?;
+    let current_digest = match normalize_digest_value(&current_build.digest) {
+        Ok(digest) => digest,
+        Err(error) => {
+            return Ok(VerificationOutput {
+                status: "build_failure",
+                failure_stage: Some(FAILURE_STAGE_COMPILER_OUTPUT),
+                current_build: Some(current_build),
+                reference_summary: Some(reference.summary),
+                current_summary: None,
+                toolchain_evidence: None,
+                differences: Vec::new(),
+                bytecode_diffs: Vec::new(),
+                error: Some(format!("Invalid current build digest: {}", error)),
+            })
+        }
+    };
     let current = match parse_artifact(
         "current",
         current_build.modules.clone(),
@@ -293,6 +321,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
         Err(error) => {
             return Ok(VerificationOutput {
                 status: "build_failure",
+                failure_stage: Some(FAILURE_STAGE_COMPILER_OUTPUT),
                 current_build: Some(current_build),
                 reference_summary: Some(reference.summary),
                 current_summary: None,
@@ -308,6 +337,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
     if let Some(toolchain_evidence) = toolchain_evidence {
         return Ok(VerificationOutput {
             status: "toolchain_mismatch",
+            failure_stage: None,
             current_build: Some(current_build),
             reference_summary: Some(reference.summary),
             current_summary: Some(current.summary),
@@ -321,6 +351,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
     if let Some(error) = first_reference_deserialization_error(&reference) {
         return Ok(VerificationOutput {
             status: "invalid_reference",
+            failure_stage: Some(FAILURE_STAGE_INPUT_VALIDATION),
             current_build: Some(current_build),
             reference_summary: Some(reference.summary),
             current_summary: Some(current.summary),
@@ -345,6 +376,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
 
     Ok(VerificationOutput {
         status,
+        failure_stage: None,
         current_build: Some(current_build),
         reference_summary: Some(reference.summary),
         current_summary: Some(current.summary),
@@ -602,14 +634,23 @@ fn compare_modules(
 
     let reference_modules = sorted_modules(reference);
     let current_modules = sorted_modules(current);
-    for index in 0..reference_modules.len().min(current_modules.len()) {
+    let shared_len = reference_modules.len().min(current_modules.len());
+    for index in 0..shared_len {
         let reference_module = reference_modules[index];
         let current_module = current_modules[index];
         if !modules_equal(reference_module, current_module) {
             differences.push(format!("module bytecode differs at sorted index {}", index));
             bytecode_diffs.push(bytecode_diff(None, reference_module, current_module));
-            return;
         }
+    }
+    for index in shared_len..reference_modules.len() {
+        differences.push(format!("extra reference module at sorted index {}", index));
+    }
+    for index in shared_len..current_modules.len() {
+        differences.push(format!(
+            "extra currentBuild module at sorted index {}",
+            index
+        ));
     }
 }
 
@@ -780,8 +821,4 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hex::encode(hasher.finalize())
-}
-
-fn json_escape(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
 }

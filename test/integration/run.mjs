@@ -10,6 +10,7 @@ const repoRoot = path.resolve(
 const semanticCases = [
   "dist-load",
   "compat-manifest",
+  "security-doc",
   "cli-pipeline-table",
   "doc-freshness",
   "parity-failure-classification",
@@ -35,6 +36,7 @@ const semanticCases = [
 const caseFiles = new Map([
   ["dist-load", "runtime_smoke.mjs"],
   ["compat-manifest", "compat_manifest_test.mjs"],
+  ["security-doc", "security_doc_test.mjs"],
   ["cli-pipeline-table", "cli_pipeline_table_test.mjs"],
   ["doc-freshness", "doc_freshness_test.mjs"],
   ["parity-failure-classification", "parity_failure_classification_test.mjs"],

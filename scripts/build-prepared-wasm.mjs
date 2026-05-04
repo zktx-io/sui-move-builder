@@ -216,6 +216,12 @@ async function main() {
       CARGO_PROFILE_RELEASE_STRIP: "debuginfo",
     };
 
+    const profileEnvs = new Map([
+      ["lite", liteEnv],
+      ["full", fullEnv],
+      ["verification", liteEnv],
+    ]);
+
     const wasmBindgenCmd = await requirePreparedWasmBindgen(context);
 
     for (const profile of profiles) {
@@ -241,7 +247,10 @@ async function main() {
         buildArgs.push("--no-default-features");
       }
 
-      const env = profile.name === "full" ? fullEnv : liteEnv;
+      const env = profileEnvs.get(profile.name);
+      if (!env) {
+        throw new Error(`No build environment configured for ${profile.name}`);
+      }
       await run("cargo", buildArgs, { cwd: crateDir, env });
 
       console.log(`Linking '${profile.name}' with wasm-bindgen...`);
