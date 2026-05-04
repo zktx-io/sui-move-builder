@@ -8,6 +8,7 @@ import {
   LocalSuiFetcher,
   assertSuiCliVersion,
   createParityContext,
+  formatSuiCliFailure,
   isInsideDir,
   pathExists,
   prepareParityWorktree,
@@ -79,29 +80,29 @@ async function resolvePackageArgs(workDir) {
 }
 
 function runSuiCliBuild(packageDir, outputDir) {
-  const result = spawnSync(
-    suiCli,
-    ["move", "build", "--path", packageDir, "--install-dir", outputDir],
-    {
-      cwd: repoRoot,
-      encoding: "utf8",
-      maxBuffer: 100 * 1024 * 1024,
-      timeout: Number(process.env.SUI_PARITY_CLI_TIMEOUT_MS || 180000),
-    }
-  );
+  const command = [
+    "move",
+    "build",
+    "--path",
+    packageDir,
+    "--install-dir",
+    outputDir,
+  ];
+  const result = spawnSync(suiCli, command, {
+    cwd: repoRoot,
+    encoding: "utf8",
+    maxBuffer: 100 * 1024 * 1024,
+    timeout: Number(process.env.SUI_PARITY_CLI_TIMEOUT_MS || 180000),
+  });
 
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
+  if (result.error || result.status !== 0) {
     throw new Error(
-      [
-        `Sui CLI build failed in ${packageDir}`,
-        result.stderr?.trim(),
-        result.stdout?.trim(),
-      ]
-        .filter(Boolean)
-        .join("\n")
+      formatSuiCliFailure({
+        label: `Sui CLI build failed in ${packageDir}`,
+        command: [suiCli, ...command],
+        packageDir,
+        result,
+      })
     );
   }
 

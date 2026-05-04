@@ -197,9 +197,13 @@ export function assertSuiCliVersion(suiCli, expectedVersion) {
   if (result.error || result.status !== 0) {
     const detail = result.error?.message || result.stderr?.trim();
     throw new Error(
-      `Unable to run '${suiCli} --version'. Set SUI_CLI to an installed Sui binary.${
-        detail ? `\n${detail}` : ""
-      }`
+      [
+        `Unable to run '${suiCli} --version'. Set SUI_CLI to an installed Sui binary.`,
+        "Category: missing local tool",
+        detail,
+      ]
+        .filter(Boolean)
+        .join("\n")
     );
   }
 
@@ -213,6 +217,52 @@ export function assertSuiCliVersion(suiCli, expectedVersion) {
     );
   }
   console.log(`[CLI] ${versionOutput}`);
+}
+
+export function classifySuiCliFailure(result) {
+  if (isMissingSuiCli(result)) {
+    return "missing local tool";
+  }
+
+  if (isNetworkSuiCliFailure(result)) {
+    return "network";
+  }
+
+  return "CLI build failure";
+}
+
+function isMissingSuiCli(result) {
+  return result?.error?.code === "ENOENT";
+}
+
+function isNetworkSuiCliFailure(result) {
+  if (result?.error?.code === "ETIMEDOUT") {
+    return true;
+  }
+
+  const output = [result?.error?.message, result?.stdout, result?.stderr]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+
+  return /tcp connect error|could not resolve|failed to fetch package|connection (timed out|refused|reset)|operation timed out|temporary failure in name resolution|failed to clone|unable to access|network (error|failure|timeout)/.test(
+    output
+  );
+}
+
+export function formatSuiCliFailure({ label, command, packageDir, result }) {
+  const category = classifySuiCliFailure(result);
+  return [
+    label,
+    `Category: ${category}`,
+    command ? `Command: ${command.join(" ")}` : undefined,
+    packageDir ? `Package: ${packageDir}` : undefined,
+    result?.error?.message,
+    result?.stderr?.trim(),
+    result?.stdout?.trim(),
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export async function prepareParityWorktree(suiBuildConfig, parityWorkDir) {

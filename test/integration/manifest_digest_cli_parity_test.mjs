@@ -4,7 +4,11 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { assertSuiCliVersion, resolveSuiCli } from "./parity_helpers.mjs";
+import {
+  assertSuiCliVersion,
+  formatSuiCliFailure,
+  resolveSuiCli,
+} from "./parity_helpers.mjs";
 import { loadWasmBindings } from "./wasm_helpers.mjs";
 
 const require = createRequire(import.meta.url);
@@ -48,25 +52,27 @@ async function writePackage(packageDir, files) {
 }
 
 async function cliRootDigest(packageDir) {
-  const result = spawnSync(
-    suiCli,
-    [
-      "move",
-      "build",
-      "--path",
-      packageDir,
-      "--build-env",
-      "mainnet",
-      "--silence-warnings",
-    ],
-    {
-      encoding: "utf8",
-      maxBuffer: 1024 * 1024 * 16,
-    }
-  );
+  const command = [
+    "move",
+    "build",
+    "--path",
+    packageDir,
+    "--build-env",
+    "mainnet",
+    "--silence-warnings",
+  ];
+  const result = spawnSync(suiCli, command, {
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024 * 16,
+  });
   if (result.error || result.status !== 0) {
     throw new Error(
-      `sui move build failed for digest fixture\n${result.error?.message ?? ""}\n${result.stdout}\n${result.stderr}`.trim()
+      formatSuiCliFailure({
+        label: "sui move build failed for digest fixture",
+        command: [suiCli, ...command],
+        packageDir,
+        result,
+      })
     );
   }
   return rootManifestDigest(

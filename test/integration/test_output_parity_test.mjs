@@ -4,7 +4,11 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { assertSuiCliVersion, resolveSuiCli } from "./parity_helpers.mjs";
+import {
+  assertSuiCliVersion,
+  formatSuiCliFailure,
+  resolveSuiCli,
+} from "./parity_helpers.mjs";
 import { resolvedTestDependencies } from "./test_fixture_helpers.mjs";
 
 const { initMovePackageBuilder, testMovePackage } = await import(
@@ -58,13 +62,15 @@ function runnerOutput(stdout) {
   return normalized.slice(start);
 }
 
-function expectCliStatus(result, expectPassed, label) {
-  if (result.error) {
-    throw result.error;
-  }
-  if (expectPassed && result.status !== 0) {
+function expectCliStatus(result, expectPassed, label, packageDir) {
+  if (result.error || (expectPassed && result.status !== 0)) {
     throw new Error(
-      `${label}: CLI test failed:\n${result.stdout}${result.stderr}`
+      formatSuiCliFailure({
+        label: `${label}: CLI test failed`,
+        command: [suiCli, ...cliArgs(packageDir)],
+        packageDir,
+        result,
+      })
     );
   }
   if (!expectPassed && result.status === 0) {
@@ -87,7 +93,7 @@ async function assertOutputParity({ label, files, expectPassed }) {
     encoding: "utf8",
     maxBuffer: 1024 * 1024 * 10,
   });
-  expectCliStatus(cliResult, expectPassed, label);
+  expectCliStatus(cliResult, expectPassed, label, packageDir);
 
   const wasmResult = await runWasm(files);
   if ("error" in wasmResult) {
