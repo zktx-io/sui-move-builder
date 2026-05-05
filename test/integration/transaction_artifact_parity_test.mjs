@@ -50,6 +50,7 @@ const fixtures = [
     txDigest: "B2eHopwUuSgMhJNHQA6LNMkQYVKesPe6M6MorbiwiaGX",
     expectedKind: "publish",
     expectedStatus: "toolchain_mismatch",
+    expectedVerdict: "format_drift",
   },
   {
     name: "apps-kiosk",
@@ -60,6 +61,7 @@ const fixtures = [
     txDigest: "LexwBJLt1jMwhNsNCkU4jiWwZPaAeqwhgLy2RPZbd2n",
     expectedKind: "upgrade",
     expectedStatus: "toolchain_mismatch",
+    expectedVerdict: "format_drift",
   },
 ];
 

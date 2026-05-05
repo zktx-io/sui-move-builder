@@ -153,6 +153,18 @@ function expectStatus(result, status, label) {
   }
 }
 
+function expectVerdict(result, verdict, label) {
+  if (result.verdict !== verdict) {
+    throw new Error(
+      `${label}: expected verdict ${verdict}, got ${result.verdict}: ${JSON.stringify(
+        result,
+        null,
+        2
+      )}`
+    );
+  }
+}
+
 function expectFailureStage(result, stage, label) {
   if (result.failureStage !== stage) {
     throw new Error(
@@ -192,6 +204,7 @@ const verifiedReference = await verify(files, {
   digest: reference.digest,
 });
 expectStatus(verifiedReference, "verified", "current reference");
+expectVerdict(verifiedReference, "exact_bytecode_match", "current reference");
 expectNoFailureStage(verifiedReference, "verified reference");
 
 const metadataReference = await verify(files, {
@@ -201,6 +214,11 @@ const metadataReference = await verify(files, {
   buildConfig: { edition: "2024", flavor: "sui" },
 });
 expectStatus(metadataReference, "verified", "metadata does not override bytes");
+expectVerdict(
+  metadataReference,
+  "exact_bytecode_match",
+  "metadata does not override bytes"
+);
 if (
   metadataReference.referenceSummary?.toolchainVersion !== "0.0.0-metadata-only"
 ) {
@@ -219,15 +237,13 @@ expectStatus(
   "reference without digest"
 );
 
-expectStatus(
-  await verify(files, {
-    modules: reference.modules,
-    dependencies: reference.dependencies,
-    digest: new Array(32).fill(0),
-  }),
-  "mismatch",
-  "wrong digest"
-);
+const wrongDigestResult = await verify(files, {
+  modules: reference.modules,
+  dependencies: reference.dependencies,
+  digest: new Array(32).fill(0),
+});
+expectStatus(wrongDigestResult, "mismatch", "wrong digest");
+expectVerdict(wrongDigestResult, "semantic_mismatch", "wrong digest");
 
 const v6ReferenceModule = withHeaderVersion(reference.modules[0], 6);
 const metadataToolchainMismatch = await verify(files, {
@@ -239,9 +255,25 @@ const metadataToolchainMismatch = await verify(files, {
 expectStatus(
   metadataToolchainMismatch,
   "toolchain_mismatch",
-  "v6 reference header"
+  "synthetic_header_only reference"
+);
+expectVerdict(
+  metadataToolchainMismatch,
+  "header_only_toolchain_drift",
+  "synthetic_header_only reference"
 );
 expectNoFailureStage(metadataToolchainMismatch, "toolchain mismatch reference");
+if (
+  metadataToolchainMismatch.bytecodeDiffs?.[0]?.sameExceptVersionWord !== true
+) {
+  throw new Error(
+    `synthetic_header_only should differ only in the version word: ${JSON.stringify(
+      metadataToolchainMismatch,
+      null,
+      2
+    )}`
+  );
+}
 if (
   metadataToolchainMismatch.toolchainEvidence?.source !==
   "metadata+binary_header"
@@ -265,38 +297,162 @@ const mismatchResult = await verify(files, {
   dependencies: changedReference.dependencies,
 });
 expectStatus(mismatchResult, "mismatch", "same toolchain changed module");
+expectVerdict(
+  mismatchResult,
+  "semantic_mismatch",
+  "same toolchain changed module"
+);
 expectNoFailureStage(mismatchResult, "same toolchain changed module");
+if (!mismatchResult.bytecodeDiffs?.some((diff) => diff.identity?.matches)) {
+  throw new Error(
+    `same-toolchain mismatch should include bytecode identity evidence: ${JSON.stringify(
+      mismatchResult,
+      null,
+      2
+    )}`
+  );
+}
 
 const publishedAddress =
   "0x0000000000000000000000000000000000000000000000000000000000000042";
+const zeroAddress =
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
 const publishedFiles = fixtureFiles({
   address: publishedAddress,
   publishedAt: publishedAddress,
 });
 const publishedReference = await publishReference(publishedFiles);
+const publishedRootSubstitutionResult = await verify(files, {
+  modules: publishedReference.modules,
+  dependencies: publishedReference.dependencies,
+  rootAddress: publishedAddress,
+});
 expectStatus(
-  await verify(files, {
-    modules: publishedReference.modules,
-    dependencies: publishedReference.dependencies,
-    rootAddress: publishedAddress,
-  }),
+  publishedRootSubstitutionResult,
   "verified",
   "published root address substitution"
 );
+expectVerdict(
+  publishedRootSubstitutionResult,
+  "root_address_substitution_match",
+  "published root address substitution"
+);
+if (
+  publishedRootSubstitutionResult.referenceSummary?.perModule?.[0]?.sha256 ===
+  publishedRootSubstitutionResult.currentSummary?.perModule?.[0]?.sha256
+) {
+  throw new Error(
+    `root substitution should not be reported as raw byte equality: ${JSON.stringify(
+      publishedRootSubstitutionResult,
+      null,
+      2
+    )}`
+  );
+}
+if (
+  !publishedRootSubstitutionResult.bytecodeDiffs?.some(
+    (diff) =>
+      diff.classification === "root_address_substitution_match" &&
+      diff.rawBytesMatch === false &&
+      diff.semanticMatch === true &&
+      diff.rootAddressSubstitutionApplied === true &&
+      diff.identity?.currentBuildOriginalAddress === zeroAddress
+  )
+) {
+  throw new Error(
+    `root substitution should include raw/semantic bytecode evidence: ${JSON.stringify(
+      publishedRootSubstitutionResult,
+      null,
+      2
+    )}`
+  );
+}
+if (
+  publishedRootSubstitutionResult.currentSummary?.perModule?.[0]
+    ?.originalAddress !== zeroAddress
+) {
+  throw new Error(
+    `root substitution should preserve the original current address: ${JSON.stringify(
+      publishedRootSubstitutionResult,
+      null,
+      2
+    )}`
+  );
+}
 
+const publishIntentResult = await verify(
+  publishedFiles,
+  {
+    modules: publishedReference.modules,
+    dependencies: publishedReference.dependencies,
+    packageId: publishedAddress,
+  },
+  { intent: "publish" }
+);
 expectStatus(
-  await verify(
-    publishedFiles,
-    {
-      modules: publishedReference.modules,
-      dependencies: publishedReference.dependencies,
-      packageId: publishedAddress,
-    },
-    { intent: "publish" }
-  ),
+  publishIntentResult,
   "verified",
   "publish intent accepts already populated package id"
 );
+expectVerdict(
+  publishIntentResult,
+  "exact_bytecode_match",
+  "publish intent accepts already populated package id"
+);
+if (
+  publishIntentResult.referenceSummary?.perModule?.[0]?.sha256 !==
+  publishIntentResult.currentSummary?.perModule?.[0]?.sha256
+) {
+  throw new Error(
+    `publish intent should preserve raw byte equality: ${JSON.stringify(
+      publishIntentResult,
+      null,
+      2
+    )}`
+  );
+}
+
+const wrongRootAddress =
+  "0x0000000000000000000000000000000000000000000000000000000000000099";
+const publishWrongRootResult = await verify(
+  publishedFiles,
+  {
+    modules: publishedReference.modules,
+    dependencies: publishedReference.dependencies,
+    rootAddress: wrongRootAddress,
+  },
+  { intent: "publish" }
+);
+expectStatus(
+  publishWrongRootResult,
+  "mismatch",
+  "publish intent rejects conflicting rootAddress"
+);
+expectVerdict(
+  publishWrongRootResult,
+  "semantic_mismatch",
+  "publish intent rejects conflicting rootAddress"
+);
+expectNoFailureStage(
+  publishWrongRootResult,
+  "publish intent rejects conflicting rootAddress"
+);
+if (
+  !publishWrongRootResult.bytecodeDiffs?.some(
+    (diff) =>
+      diff.classification === "semantic_mismatch" &&
+      diff.rootAddressConflict?.requestedRootAddress === wrongRootAddress &&
+      diff.rootAddressConflict?.currentBuildAddress === publishedAddress
+  )
+) {
+  throw new Error(
+    `wrong rootAddress should be reported as semantic mismatch evidence: ${JSON.stringify(
+      publishWrongRootResult,
+      null,
+      2
+    )}`
+  );
+}
 
 const publishedDumpReference = await dumpReference(publishedFiles);
 expectStatus(

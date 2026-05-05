@@ -23,6 +23,14 @@ export type VerificationStatus =
   | "build_failure"
   | "invalid_reference";
 
+export type VerificationVerdict =
+  | "exact_bytecode_match"
+  | "root_address_substitution_match"
+  | "header_only_toolchain_drift"
+  | "format_drift"
+  | "semantic_mismatch"
+  | "unverified";
+
 export type VerificationFailureStage =
   | "wasm_init"
   | "dependency_resolution"
@@ -57,6 +65,7 @@ export interface VerificationModuleSummary {
   sha256: string;
   name?: string;
   address?: string;
+  originalAddress?: string;
   functionCount?: number;
   structCount?: number;
   constantCount?: number;
@@ -90,9 +99,54 @@ export interface VerificationToolchainEvidence {
 
 export interface VerificationBytecodeDiff {
   module?: string;
+  classification: VerificationVerdict;
   firstDiffOffset?: number;
+  changedSections?: string[];
+  changedTables?: VerificationChangedTable[];
+  rawBytesMatch: boolean;
+  semanticMatch: boolean;
+  rootAddressSubstitutionApplied: boolean;
+  rootAddressConflict?: VerificationRootAddressConflict;
+  sameExceptVersionWord: boolean;
+  identity: VerificationBytecodeIdentityEvidence;
+  shape: VerificationBytecodeShapeEvidence;
   reference: VerificationModuleSummary;
   currentBuild: VerificationModuleSummary;
+}
+
+export interface VerificationChangedTable {
+  name: string;
+  referenceBytes?: number;
+  currentBuildBytes?: number;
+  referenceSha256?: string;
+  currentBuildSha256?: string;
+  sameSha256: boolean;
+  sameBytes: boolean;
+}
+
+export interface VerificationRootAddressConflict {
+  requestedRootAddress: string;
+  currentBuildAddress: string;
+}
+
+export interface VerificationBytecodeIdentityEvidence {
+  matches: boolean;
+  referenceName?: string;
+  currentBuildName?: string;
+  referenceAddress?: string;
+  currentBuildAddress?: string;
+  referenceOriginalAddress?: string;
+  currentBuildOriginalAddress?: string;
+}
+
+export interface VerificationBytecodeShapeEvidence {
+  matches: boolean;
+  referenceFunctionCount?: number;
+  currentBuildFunctionCount?: number;
+  referenceStructCount?: number;
+  currentBuildStructCount?: number;
+  referenceConstantCount?: number;
+  currentBuildConstantCount?: number;
 }
 
 export interface VerificationCurrentBuild {
@@ -104,6 +158,8 @@ export interface VerificationCurrentBuild {
 
 export interface MovePackageProvenanceResult {
   status: VerificationStatus;
+  verdict?: VerificationVerdict;
+  summary?: string;
   failureStage?: VerificationFailureStage;
   currentBuild?: VerificationCurrentBuild;
   referenceSummary?: VerificationArtifactSummary;

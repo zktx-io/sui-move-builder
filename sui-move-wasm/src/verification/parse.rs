@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use super::types::{
     ArtifactSummary, ModuleHeaderEvidence, ModuleSummary, ParsedArtifact, ParsedModule, RawHeader,
-    ToolchainEvidence, ToolchainMetadata,
+    RootAddressConflict, ToolchainEvidence, ToolchainMetadata,
 };
 
 pub(super) fn parse_artifact(
@@ -28,16 +28,29 @@ pub(super) fn parse_artifact(
         let (summary, mut compiled) = summarize_module(&bytes)
             .map_err(|error| format!("{} module {}: {}", label, index, error))?;
         let mut summary = summary;
+        let mut address_substitution_applied = false;
+        let mut root_address_conflict = None;
         if let (Some(root_address), Some(compiled_module)) = (root_address, compiled.as_mut()) {
-            substitute_root_address(compiled_module, root_address)
-                .map_err(|error| format!("current module {}: {}", index, error))?;
-            apply_compiled_identity(&mut summary, compiled_module);
+            match apply_root_address(compiled_module, root_address)
+                .map_err(|error| format!("current module {}: {}", index, error))?
+            {
+                RootAddressAction::NoOp => {}
+                RootAddressAction::Substituted { original_address } => {
+                    address_substitution_applied = true;
+                    summary.original_address = Some(original_address);
+                    apply_compiled_identity(&mut summary, compiled_module);
+                }
+                RootAddressAction::Conflict(conflict) => {
+                    root_address_conflict = Some(conflict);
+                }
+            }
         }
         parsed_modules.push(ParsedModule {
-            base64: module,
             bytes,
             summary,
             compiled,
+            address_substitution_applied,
+            root_address_conflict,
         });
     }
     let per_module = parsed_modules
@@ -73,6 +86,7 @@ fn summarize_module(bytes: &[u8]) -> Result<(ModuleSummary, Option<CompiledModul
                 sha256,
                 name: Some(self_id.name().to_string()),
                 address: Some(self_id.address().to_canonical_string(true)),
+                original_address: None,
                 function_count: Some(module.function_defs().len()),
                 struct_count: Some(module.struct_defs().len()),
                 constant_count: Some(module.constant_pool().len()),
@@ -88,6 +102,7 @@ fn summarize_module(bytes: &[u8]) -> Result<(ModuleSummary, Option<CompiledModul
                 sha256,
                 name: None,
                 address: None,
+                original_address: None,
                 function_count: None,
                 struct_count: None,
                 constant_count: None,
@@ -98,22 +113,32 @@ fn summarize_module(bytes: &[u8]) -> Result<(ModuleSummary, Option<CompiledModul
     }
 }
 
-fn substitute_root_address(
+enum RootAddressAction {
+    NoOp,
+    Substituted { original_address: String },
+    Conflict(RootAddressConflict),
+}
+
+fn apply_root_address(
     module: &mut CompiledModule,
     root: AccountAddress,
-) -> Result<(), String> {
+) -> Result<RootAddressAction, String> {
     let address_idx = module.self_handle().address;
     let Some(address) = module.address_identifiers.get_mut(address_idx.0 as usize) else {
         return Err("Self address field missing".to_string());
     };
     if *address == root {
-        return Ok(());
+        return Ok(RootAddressAction::NoOp);
     }
     if *address != AccountAddress::ZERO {
-        return Err("Self address differs from requested root address".to_string());
+        return Ok(RootAddressAction::Conflict(RootAddressConflict {
+            requested_root_address: root.to_canonical_string(true),
+            current_build_address: address.to_canonical_string(true),
+        }));
     }
+    let original_address = address.to_canonical_string(true);
     *address = root;
-    Ok(())
+    Ok(RootAddressAction::Substituted { original_address })
 }
 
 fn apply_compiled_identity(summary: &mut ModuleSummary, module: &CompiledModule) {

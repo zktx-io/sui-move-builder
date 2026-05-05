@@ -12,9 +12,10 @@ use normalize::{
 };
 use parse::{current_toolchain_version, parse_artifact, toolchain_evidence_if_mismatch};
 use types::{
-    BuildOutput, ToolchainMetadata, VerificationInput, VerificationOutput, FAILURE_STAGE_COMPILE,
-    FAILURE_STAGE_COMPILER_OUTPUT, FAILURE_STAGE_INPUT_VALIDATION,
-    FAILURE_STAGE_VERIFICATION_OUTPUT,
+    summary_for_verdict, BuildOutput, ToolchainMetadata, VerificationInput, VerificationOutput,
+    FAILURE_STAGE_COMPILE, FAILURE_STAGE_COMPILER_OUTPUT, FAILURE_STAGE_INPUT_VALIDATION,
+    FAILURE_STAGE_VERIFICATION_OUTPUT, VERDICT_FORMAT_DRIFT, VERDICT_HEADER_ONLY_TOOLCHAIN_DRIFT,
+    VERDICT_UNVERIFIED,
 };
 
 pub(crate) fn verify_against_reference(input_json: &str) -> String {
@@ -22,6 +23,8 @@ pub(crate) fn verify_against_reference(input_json: &str) -> String {
         Ok(output) => output,
         Err(error) => VerificationOutput {
             status: "invalid_reference",
+            verdict: Some(VERDICT_UNVERIFIED),
+            summary: Some(summary_for_verdict(VERDICT_UNVERIFIED)),
             failure_stage: Some(FAILURE_STAGE_INPUT_VALIDATION),
             current_build: None,
             reference_summary: None,
@@ -35,6 +38,8 @@ pub(crate) fn verify_against_reference(input_json: &str) -> String {
     serde_json::to_string(&output).unwrap_or_else(|error| {
         serde_json::json!({
             "status": "invalid_reference",
+            "verdict": VERDICT_UNVERIFIED,
+            "summary": summary_for_verdict(VERDICT_UNVERIFIED),
             "failureStage": FAILURE_STAGE_VERIFICATION_OUTPUT,
             "error": format!("failed to serialize verification result: {}", error),
         })
@@ -73,6 +78,8 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
         Err(error) => {
             return Ok(VerificationOutput {
                 status: "invalid_reference",
+                verdict: Some(VERDICT_UNVERIFIED),
+                summary: Some(summary_for_verdict(VERDICT_UNVERIFIED)),
                 failure_stage: Some(FAILURE_STAGE_INPUT_VALIDATION),
                 current_build: None,
                 reference_summary: None,
@@ -96,6 +103,8 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
     if !compile_result.success() {
         return Ok(VerificationOutput {
             status: "build_failure",
+            verdict: Some(VERDICT_UNVERIFIED),
+            summary: Some(summary_for_verdict(VERDICT_UNVERIFIED)),
             failure_stage: Some(FAILURE_STAGE_COMPILE),
             current_build: None,
             reference_summary: Some(reference.summary),
@@ -112,6 +121,8 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
         Err(error) => {
             return Ok(VerificationOutput {
                 status: "build_failure",
+                verdict: Some(VERDICT_UNVERIFIED),
+                summary: Some(summary_for_verdict(VERDICT_UNVERIFIED)),
                 failure_stage: Some(FAILURE_STAGE_COMPILER_OUTPUT),
                 current_build: None,
                 reference_summary: Some(reference.summary),
@@ -130,6 +141,8 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
         Err(error) => {
             return Ok(VerificationOutput {
                 status: "build_failure",
+                verdict: Some(VERDICT_UNVERIFIED),
+                summary: Some(summary_for_verdict(VERDICT_UNVERIFIED)),
                 failure_stage: Some(FAILURE_STAGE_COMPILER_OUTPUT),
                 current_build: Some(current_build),
                 reference_summary: Some(reference.summary),
@@ -156,6 +169,8 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
         Err(error) => {
             return Ok(VerificationOutput {
                 status: "build_failure",
+                verdict: Some(VERDICT_UNVERIFIED),
+                summary: Some(summary_for_verdict(VERDICT_UNVERIFIED)),
                 failure_stage: Some(FAILURE_STAGE_COMPILER_OUTPUT),
                 current_build: Some(current_build),
                 reference_summary: Some(reference.summary),
@@ -169,55 +184,53 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
     };
 
     let toolchain_evidence = toolchain_evidence_if_mismatch(&reference, &current);
-    if let Some(toolchain_evidence) = toolchain_evidence {
-        return Ok(VerificationOutput {
-            status: "toolchain_mismatch",
-            failure_stage: None,
-            current_build: Some(current_build),
-            reference_summary: Some(reference.summary),
-            current_summary: Some(current.summary),
-            toolchain_evidence: Some(toolchain_evidence),
-            differences: Vec::new(),
-            bytecode_diffs: Vec::new(),
-            error: None,
-        });
+    if toolchain_evidence.is_none() {
+        if let Some(error) = first_reference_deserialization_error(&reference) {
+            return Ok(VerificationOutput {
+                status: "invalid_reference",
+                verdict: Some(VERDICT_UNVERIFIED),
+                summary: Some(summary_for_verdict(VERDICT_UNVERIFIED)),
+                failure_stage: Some(FAILURE_STAGE_INPUT_VALIDATION),
+                current_build: Some(current_build),
+                reference_summary: Some(reference.summary),
+                current_summary: Some(current.summary),
+                toolchain_evidence: None,
+                differences: Vec::new(),
+                bytecode_diffs: Vec::new(),
+                error: Some(error),
+            });
+        }
     }
 
-    if let Some(error) = first_reference_deserialization_error(&reference) {
-        return Ok(VerificationOutput {
-            status: "invalid_reference",
-            failure_stage: Some(FAILURE_STAGE_INPUT_VALIDATION),
-            current_build: Some(current_build),
-            reference_summary: Some(reference.summary),
-            current_summary: Some(current.summary),
-            toolchain_evidence: None,
-            differences: Vec::new(),
-            bytecode_diffs: Vec::new(),
-            error: Some(error),
-        });
-    }
-
-    let (differences, bytecode_diffs) = compare_artifacts(
+    let comparison = compare_artifacts(
         &reference,
         &current,
         reference_dependencies_provided,
         reference_digest_provided,
     );
-    let status = if differences.is_empty() {
+    let status = if comparison.differences.is_empty() {
         "verified"
+    } else if toolchain_evidence.is_some()
+        && (comparison.verdict == VERDICT_HEADER_ONLY_TOOLCHAIN_DRIFT
+            || comparison.verdict == VERDICT_FORMAT_DRIFT
+            || comparison.verdict == VERDICT_UNVERIFIED)
+    {
+        "toolchain_mismatch"
     } else {
         "mismatch"
     };
 
     Ok(VerificationOutput {
         status,
+        verdict: Some(comparison.verdict),
+        summary: Some(summary_for_verdict(comparison.verdict)),
         failure_stage: None,
         current_build: Some(current_build),
         reference_summary: Some(reference.summary),
         current_summary: Some(current.summary),
-        toolchain_evidence: None,
-        differences,
-        bytecode_diffs,
+        toolchain_evidence,
+        differences: comparison.differences,
+        bytecode_diffs: comparison.bytecode_diffs,
         error: None,
     })
 }

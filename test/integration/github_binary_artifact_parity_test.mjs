@@ -43,6 +43,7 @@ const fixtures = [
       "crates/sui-single-node-benchmark/tests/data/package_publish_from_bytecode/package_a/build/a/bytecode_modules",
     intent: "publish",
     expectedStatus: "toolchain_mismatch",
+    expectedVerdict: "format_drift",
   },
 ];
 
