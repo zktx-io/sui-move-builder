@@ -61,7 +61,7 @@ export interface MovePackageInput {
   files: Record<string, string>;
   /** Optional custom URL for the wasm binary. Defaults to bundled wasm next to this module. */
   wasm?: string | URL | BufferSource;
-  /** Optional hint for the root package git source (enables resolving local deps from Move.lock). */
+  /** Optional root package git source for resolving relative local deps from Move.lock. */
   rootGit?: MovePackageGitSource;
   /** Optional GitHub token to raise API limits when resolving dependencies. */
   githubToken?: string;
