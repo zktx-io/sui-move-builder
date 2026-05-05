@@ -7,7 +7,7 @@ import {
   FixtureFetcher,
   resolveMovePackageDependencies,
   sameNameDepMoveToml,
-} from "./lockfile_v4_test_helpers.mjs";
+} from "./lockfile_v4_helpers.mjs";
 
 const depAGit = "https://example.com/dep-a.git";
 const depBGit = "https://example.com/dep-b.git";

@@ -1,4 +1,4 @@
-use super::manifest::{manifest_from_files, package_graph_id_name};
+use super::manifest_extraction::{manifest_from_files, package_graph_id_name};
 use super::types::{LockfileV4GenerateInput, LockfileV4GenerateResolvedPackage, LockfileV4Source};
 use crate::helper::HelperError;
 use crate::manifest_digest::{self, CombinedDependencySource, CombinedMoveDependency};

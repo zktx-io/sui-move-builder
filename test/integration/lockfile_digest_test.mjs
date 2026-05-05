@@ -4,20 +4,20 @@ import {
   runMissingMoveTomlSnapshot,
   runResolvedShaPin,
   runStaleDigestFallback,
-} from "./lockfile_v4_pin_fallback_test.mjs";
+} from "./lockfile_v4_pin_fallback_cases.mjs";
 import {
   runMalformedGraphStructure,
   runMalformedImplicitTarget,
-} from "./lockfile_v4_graph_validation_test.mjs";
+} from "./lockfile_v4_graph_validation_cases.mjs";
 import {
   runEnvironmentPackageGroups,
   runExplicitSystemAliases,
   runSameNamePackageIds,
-} from "./lockfile_v4_package_groups_test.mjs";
+} from "./lockfile_v4_package_groups_cases.mjs";
 import {
   runLegacyTransitiveNamedAddresses,
   runLinkageFiltering,
-} from "./lockfile_v4_linkage_test.mjs";
+} from "./lockfile_v4_linkage_cases.mjs";
 
 await runStaleDigestFallback();
 await runMalformedGraphStructure();

@@ -12,7 +12,7 @@ import {
   rootMoveToml,
   sameNameDepMoveToml,
   staleRev,
-} from "./lockfile_v4_test_helpers.mjs";
+} from "./lockfile_v4_helpers.mjs";
 
 const staleMoveLock = `
 [move]

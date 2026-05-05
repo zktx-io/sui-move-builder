@@ -9,7 +9,7 @@ import {
   resolveMovePackageDependencies,
   rootManifestDigest,
   rootMoveToml,
-} from "./lockfile_v4_test_helpers.mjs";
+} from "./lockfile_v4_helpers.mjs";
 
 const malformedNoRootLock = `
 [move]

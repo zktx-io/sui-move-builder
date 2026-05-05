@@ -1,5 +1,5 @@
 use super::graph::packages_by_id;
-use super::manifest::manifest_from_files;
+use super::manifest_extraction::manifest_from_files;
 use super::response::out_of_date;
 use super::types::LockfileV4ValidationResult;
 use super::{

@@ -2,7 +2,7 @@ mod fetch_plan;
 mod generate;
 mod graph;
 mod linkage;
-mod manifest;
+mod manifest_extraction;
 mod package_groups;
 mod response;
 mod types;
@@ -11,7 +11,7 @@ mod validate;
 pub(crate) use fetch_plan::{fetch_plan_json, find_move_toml};
 #[cfg(not(feature = "verification"))]
 pub(crate) use generate::generate_json;
-pub(crate) use manifest::{manifest_from_files, package_graph_id_name};
+pub(crate) use manifest_extraction::{manifest_from_files, package_graph_id_name};
 #[cfg(feature = "verification")]
 pub(crate) use package_groups::resolve_package_groups_from_value;
 #[cfg(not(feature = "verification"))]

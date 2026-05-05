@@ -1,7 +1,7 @@
 use super::fetch_plan::find_move_toml;
 use super::graph::{edges_by_from, packages_by_id};
 use super::linkage::linked_graph;
-use super::manifest::{manifest_dep_names, NO_NAME_LEGACY_PACKAGE_NAME};
+use super::manifest_extraction::{manifest_dep_names, NO_NAME_LEGACY_PACKAGE_NAME};
 use super::response::out_of_date;
 use super::types::LockfileV4ValidationResult;
 use super::validate::validate_graph_impl;
