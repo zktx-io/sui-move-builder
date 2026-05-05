@@ -7,7 +7,9 @@ import { Transaction } from "@mysten/sui/transactions";
 import {
   compareBuildOutputs,
   compareModuleBytecode,
+  modulesToOutput,
   normalizeOutput,
+  readNamedMoveModules,
   writeJsonArtifact,
 } from "./artifact_parity_helpers.mjs";
 import {
@@ -105,6 +107,89 @@ function runSuiCliDumpArtifact(packageDir, label, environment) {
     throw new Error(`Sui CLI did not emit JSON output for ${packageDir}`);
   }
   return JSON.parse(stdout.slice(jsonStart, jsonEnd + 1));
+}
+
+function runSuiCliBuildArtifact(packageDir, outputDir, label, environment) {
+  const command = [
+    "move",
+    "build",
+    "--path",
+    packageDir,
+    "--install-dir",
+    outputDir,
+    "--build-env",
+    environment,
+  ];
+  const result = spawnSync(suiCli, command, {
+    cwd: repoRoot,
+    encoding: "utf8",
+    maxBuffer: 100 * 1024 * 1024,
+    timeout: Number(process.env.SUI_PARITY_CLI_TIMEOUT_MS || 180000),
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(
+      formatSuiCliFailure({
+        label,
+        command: [suiCli, ...command],
+        packageDir,
+        result,
+      })
+    );
+  }
+  return {
+    stdout: result.stdout.trim(),
+    stderr: result.stderr.trim(),
+  };
+}
+
+async function readSuiCliBuildArtifact(outputDir) {
+  const buildDir = path.join(outputDir, "build");
+  const entries = await fs.readdir(buildDir, { withFileTypes: true });
+  const packageDirs = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(buildDir, entry.name))
+    .sort();
+  if (packageDirs.length !== 1) {
+    throw new Error(
+      `Expected exactly one built package under ${buildDir}, found ${packageDirs.length}`
+    );
+  }
+  const modulesDir = path.join(packageDirs[0], "bytecode_modules");
+  return modulesToOutput(await readNamedMoveModules(modulesDir));
+}
+
+async function runSuiCliReferenceArtifact({
+  packageDir,
+  outputRoot,
+  fixture,
+  transactionKind,
+}) {
+  if (transactionKind === "publish") {
+    const buildOutputDir = path.join(outputRoot, "cli-build");
+    const cliResult = runSuiCliBuildArtifact(
+      packageDir,
+      buildOutputDir,
+      `Sui CLI publish artifact build failed for ${fixture.name}`,
+      fixture.network
+    );
+    return {
+      kind: "publish",
+      cliResult,
+      output: await readSuiCliBuildArtifact(buildOutputDir),
+    };
+  }
+
+  return {
+    kind: "dump",
+    cliResult: undefined,
+    output: normalizeOutput(
+      runSuiCliDumpArtifact(
+        packageDir,
+        `Sui CLI current source build failed for ${fixture.name}`,
+        fixture.network
+      )
+    ),
+  };
 }
 
 async function fetchTransactionArtifact(fixture) {
@@ -230,6 +315,39 @@ function normalizeTransactionModules(modules) {
   });
 }
 
+function compareCliReferenceWithVerificationCurrent(
+  cliReference,
+  verification
+) {
+  if (cliReference.kind === "dump") {
+    return compareCliWithVerificationCurrent(cliReference.output, verification);
+  }
+  if (!verification.currentBuild) {
+    return {
+      ok: false,
+      currentBuild: undefined,
+      modules: {
+        ok: false,
+        differences: ["verification result has no currentBuild"],
+      },
+      output: ["verification result has no currentBuild"],
+    };
+  }
+  const currentBuild = normalizeOutput(verification.currentBuild);
+  const modules = compareModuleBytecode(
+    "CLI publish",
+    cliReference.output,
+    "verification",
+    currentBuild
+  );
+  return {
+    ok: modules.ok,
+    currentBuild,
+    modules,
+    output: [],
+  };
+}
+
 async function main() {
   console.log(
     `Running transaction artifact provenance audit in [${mode.toUpperCase()}] mode`
@@ -269,14 +387,19 @@ async function main() {
         transactionArtifact
       );
 
-      const resolvedCliOutput = normalizeOutput(
-        runSuiCliDumpArtifact(
-          packageDir,
-          `Sui CLI current source build failed for ${fixture.name}`,
-          fixture.network
-        )
-      );
-      await writeJsonArtifact(outputRoot, "cli.json", resolvedCliOutput);
+      const cliReference = await runSuiCliReferenceArtifact({
+        packageDir,
+        outputRoot,
+        fixture,
+        transactionKind: transactionArtifact.kind,
+      });
+      await writeJsonArtifact(outputRoot, "cli.json", cliReference.output);
+      if (cliReference.cliResult) {
+        await writeJsonArtifact(outputRoot, "cli-output.json", {
+          kind: cliReference.kind,
+          ...cliReference.cliResult,
+        });
+      }
 
       const files = await readMovePackageFiles(packageDir);
       const txOutput = {
@@ -288,6 +411,7 @@ async function main() {
       };
       const verification = await verifyReferenceProvenance({
         files,
+        intent: transactionArtifact.kind,
         network: fixture.network,
         githubToken: token,
         rootGit: {
@@ -299,8 +423,8 @@ async function main() {
       });
       await writeJsonArtifact(outputRoot, "verification.json", verification);
       const verificationGate = verificationStatusGate(fixture, verification);
-      const cliVsVerification = compareCliWithVerificationCurrent(
-        resolvedCliOutput,
+      const cliVsVerification = compareCliReferenceWithVerificationCurrent(
+        cliReference,
         verification
       );
       if (cliVsVerification.currentBuild) {
@@ -316,10 +440,15 @@ async function main() {
         "transaction",
         txOutput,
         "cli",
-        resolvedCliOutput
+        cliReference.output
       );
       const txVsCliOutput = compareDependencyOutputs
-        ? compareBuildOutputs("transaction", txOutput, "CLI", resolvedCliOutput)
+        ? compareBuildOutputs(
+            "transaction",
+            txOutput,
+            "CLI",
+            cliReference.output
+          )
         : [];
       const comparison = {
         ok: verificationGate.ok && cliVsVerification.ok,
@@ -341,7 +470,7 @@ async function main() {
         );
       } else {
         console.log(
-          `[OK] kind=${transactionArtifact.kind}, status=${verification.status}, modules=${resolvedCliOutput.modules.length}`
+          `[OK] kind=${transactionArtifact.kind}, status=${verification.status}, modules=${cliReference.output.modules.length}`
         );
       }
     } catch (error) {

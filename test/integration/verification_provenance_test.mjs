@@ -54,13 +54,26 @@ function frameworkDeps() {
   ];
 }
 
-function fixtureFiles({ value = 1, address = "0x0" } = {}) {
+function fixtureFiles({
+  value = 1,
+  address = "0x0",
+  publishedAt,
+  includeAddressConstant = false,
+} = {}) {
+  const publishedAtLine = publishedAt ? `published-at = "${publishedAt}"` : "";
+  const addressConstant = includeAddressConstant
+    ? `
+    const ROOT: address = @verify_fixture;
+    public fun root(): address { ROOT }
+`
+    : "";
   return {
     "Move.toml": `
 [package]
 name = "VerifyFixture"
 version = "0.0.0"
 edition = "2024"
+${publishedAtLine}
 
 [addresses]
 verify_fixture = "${address}"
@@ -68,6 +81,7 @@ verify_fixture = "${address}"
     "sources/main.move": `
 module verify_fixture::main {
     public fun value(): u64 { ${value} }
+${addressConstant}
 }
 `,
   };
@@ -112,12 +126,13 @@ async function publishReference(files) {
   return JSON.parse(output);
 }
 
-async function verify(files, reference) {
+async function verify(files, reference, options = {}) {
   const result = await verifier.verifyMovePackageProvenance({
     files,
     resolvedDependencies: resolvedDependencies(files),
     network: "mainnet",
     silenceWarnings: true,
+    ...options,
     reference,
   });
   if (!result?.status) {
@@ -254,9 +269,11 @@ expectNoFailureStage(mismatchResult, "same toolchain changed module");
 
 const publishedAddress =
   "0x0000000000000000000000000000000000000000000000000000000000000042";
-const publishedReference = await publishReference(
-  fixtureFiles({ address: publishedAddress })
-);
+const publishedFiles = fixtureFiles({
+  address: publishedAddress,
+  publishedAt: publishedAddress,
+});
+const publishedReference = await publishReference(publishedFiles);
 expectStatus(
   await verify(files, {
     modules: publishedReference.modules,
@@ -265,6 +282,95 @@ expectStatus(
   }),
   "verified",
   "published root address substitution"
+);
+
+expectStatus(
+  await verify(
+    publishedFiles,
+    {
+      modules: publishedReference.modules,
+      dependencies: publishedReference.dependencies,
+      packageId: publishedAddress,
+    },
+    { intent: "publish" }
+  ),
+  "verified",
+  "publish intent accepts already populated package id"
+);
+
+const publishedDumpReference = await dumpReference(publishedFiles);
+expectStatus(
+  await verify(
+    publishedFiles,
+    {
+      modules: publishedDumpReference.modules,
+      dependencies: publishedDumpReference.dependencies,
+    },
+    { intent: "publish" }
+  ),
+  "mismatch",
+  "publish intent does not verify dump bytecode"
+);
+
+expectStatus(
+  await verify(
+    files,
+    {
+      modules: reference.modules,
+      dependencies: reference.dependencies,
+    },
+    { intent: "upgrade" }
+  ),
+  "verified",
+  "upgrade intent matches dump root_as_zero bytecode"
+);
+
+const addressConstantFiles = fixtureFiles({
+  address: publishedAddress,
+  publishedAt: publishedAddress,
+  includeAddressConstant: true,
+});
+const addressConstantPublishReference =
+  await publishReference(addressConstantFiles);
+expectStatus(
+  await verify(addressConstantFiles, {
+    modules: addressConstantPublishReference.modules,
+    dependencies: addressConstantPublishReference.dependencies,
+    rootAddress: publishedAddress,
+  }),
+  "mismatch",
+  "root substitution alone does not hide embedded address differences"
+);
+expectStatus(
+  await verify(
+    addressConstantFiles,
+    {
+      modules: addressConstantPublishReference.modules,
+      dependencies: addressConstantPublishReference.dependencies,
+      packageId: publishedAddress,
+    },
+    { intent: "publish" }
+  ),
+  "verified",
+  "publish intent verifies embedded address bytecode"
+);
+
+const invalidIntentResult = await verify(
+  files,
+  {
+    modules: reference.modules,
+  },
+  { intent: "invalid" }
+);
+expectStatus(
+  invalidIntentResult,
+  "build_failure",
+  "invalid verification intent"
+);
+expectFailureStage(
+  invalidIntentResult,
+  "input_validation",
+  "invalid verification intent"
 );
 
 const malformedReferenceResult = await verify(files, {

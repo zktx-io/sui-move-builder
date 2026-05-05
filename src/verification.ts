@@ -1,6 +1,8 @@
 import {
   asFailure,
   loadWasm,
+  MOVE_PACKAGE_INTENTS,
+  type MovePackageIntent,
   type MovePackageInput,
   type MovePackageResolvedDependencies,
   type WasmModule,
@@ -113,8 +115,20 @@ export interface MovePackageProvenanceResult {
 }
 
 export interface MovePackageProvenanceInput extends MovePackageInput {
+  /**
+   * Rebuild policy for the current source. Defaults to dump.
+   * Dump and upgrade use root-as-zero; publish keeps the package root address.
+   * Transaction callers pass the externally extracted Publish or Upgrade kind.
+   */
+  intent?: MovePackageIntent;
   reference: ReferenceArtifact;
 }
+
+const verificationIntents = new Set<MovePackageIntent>(MOVE_PACKAGE_INTENTS);
+
+type VerificationIntentResult =
+  | { ok: true; value: MovePackageIntent }
+  | { ok: false; failure: MovePackageProvenanceResult };
 
 type VerificationWasmModule = Pick<
   WasmModule,
@@ -154,6 +168,12 @@ export async function getPinnedSuiVersion(options?: {
 export async function verifyMovePackageProvenance(
   input: MovePackageProvenanceInput
 ): Promise<MovePackageProvenanceResult> {
+  const intentResult = verificationIntent(input.intent);
+  if (!intentResult.ok) {
+    return intentResult.failure;
+  }
+  const intent = intentResult.value;
+
   let mod: VerificationWasmModule;
   try {
     mod = (await loadWasm(input.wasm)) as unknown as VerificationWasmModule;
@@ -183,7 +203,7 @@ export async function verifyMovePackageProvenance(
           lintFlag: input.lintFlag,
           stripMetadata: input.stripMetadata,
           ansiColor: input.ansiColor,
-          compileIntent: "dump",
+          compileIntent: intent,
           withUnpublishedDependencies: input.withUnpublishedDependencies,
           modes: compilerModes(input),
         },
@@ -201,6 +221,29 @@ export async function verifyMovePackageProvenance(
     const failure = asFailure(error, "compiler_output");
     return buildFailure(failure.error, "verification_output");
   }
+}
+
+function verificationIntent(
+  intent: MovePackageProvenanceInput["intent"] | unknown
+): VerificationIntentResult {
+  if (intent === undefined) {
+    return { ok: true, value: "dump" };
+  }
+  if (
+    typeof intent === "string" &&
+    verificationIntents.has(intent as MovePackageIntent)
+  ) {
+    return { ok: true, value: intent as MovePackageIntent };
+  }
+  return {
+    ok: false,
+    failure: buildFailure(
+      `Invalid verification intent '${String(
+        intent
+      )}'. Expected one of: ${MOVE_PACKAGE_INTENTS.join(", ")}`,
+      "input_validation"
+    ),
+  };
 }
 
 function buildFailure(

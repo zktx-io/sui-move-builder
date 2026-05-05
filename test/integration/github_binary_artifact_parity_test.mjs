@@ -151,6 +151,7 @@ async function main() {
         modules: githubOutput.modules,
       };
 
+      // Committed .mv fixtures do not carry transaction kind; keep the verifier's default dump intent unless a fixture declares publish-time artifacts.
       const verification = await verifyReferenceProvenance({
         files,
         network: environment,

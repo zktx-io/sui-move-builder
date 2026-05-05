@@ -67,7 +67,31 @@ import {
 } from "@zktx.io/sui-move-builder/verification";
 ```
 
-`verifyMovePackageProvenance` accepts the same package snapshot and dependency resolution inputs as the build APIs, plus a reference artifact containing base64 Move modules and optional dependency IDs, package digest, root package address, or declared toolchain metadata. It returns one of `verified`, `toolchain_mismatch`, `mismatch`, `build_failure`, or `invalid_reference`. `verified` means the caller-provided source rebuilds to the caller-provided reference under the pinned Sui toolchain. `toolchain_mismatch` means the reference bytecode header does not match the pinned toolchain output, so this WASM artifact cannot prove or disprove provenance for that reference. Declared `reference.toolchainVersion` and `reference.buildConfig` are returned as evidence when provided; they do not replace bytecode comparison. If source compiles with a root address of `0x0` but the reference contains a published package address, pass that published address as `reference.rootAddress` or `reference.packageId`. The verification WASM does not fetch RPC, GitHub, transaction, or filesystem data; callers provide the source and reference bytes.
+`verifyMovePackageProvenance` accepts the same package snapshot and dependency resolution inputs as the build APIs, plus a reference artifact containing base64 Move modules and optional dependency IDs, package digest, root package address, or declared toolchain metadata. It returns one of `verified`, `toolchain_mismatch`, `mismatch`, `build_failure`, or `invalid_reference`. `verified` means the caller-provided source rebuilds to the caller-provided reference under the pinned Sui toolchain. `toolchain_mismatch` means the reference bytecode header does not match the pinned toolchain output, so this WASM artifact cannot prove or disprove provenance for that reference. Declared `reference.toolchainVersion` and `reference.buildConfig` are returned as evidence when provided; they do not replace bytecode comparison. The optional `intent` selects the current source rebuild policy: `dump` by default, `publish` for publish-time bytecode, or `upgrade` for upgrade-time bytecode. `dump` and `upgrade` currently compile with the same root-as-zero policy; `publish` keeps the package root address selected by package metadata. If source compiles with a root address of `0x0` but the reference contains a published package address, pass that published address as `reference.rootAddress` or `reference.packageId`. The verification WASM does not fetch RPC, GitHub, transaction, or filesystem data; callers provide the source and reference bytes. Transaction callers should extract `Publish` or `Upgrade` externally and pass the matching `intent` with the extracted reference artifact.
+
+Choose `intent` from the source of the reference artifact:
+
+| Reference artifact source                                              | `intent` value        | Notes                                                                                                             |
+| ---------------------------------------------------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `dumpMovePackage` or `sui move build --dump-bytecode-as-base64` output | Omit it or use `dump` | Default behavior. Rebuilds the root package as `0x0`.                                                             |
+| Publish transaction modules or publish build artifacts                 | `publish`             | Use when the reference bytecode was produced for publication and should keep the package root address.            |
+| Upgrade transaction modules or upgrade preparation output              | `upgrade`             | Use when the reference came from an upgrade flow. Current bytecode policy matches `dump`, but records the intent. |
+
+For a publish transaction payload, pass the externally extracted transaction artifact and package ID:
+
+```ts
+const result = await verifyMovePackageProvenance({
+  files,
+  intent: "publish",
+  reference: {
+    modules: publishModules,
+    dependencies: publishDependencies,
+    packageId,
+  },
+});
+```
+
+`reference.rootAddress` and `reference.packageId` only align the current build's module self address for comparison. If the package source embeds its own address in constants or other bytecode-sensitive positions, use the matching `intent` and source metadata for the artifact being checked.
 
 Verification failures may include `failureStage`. `verified`, `mismatch`, and `toolchain_mismatch` results do not include `failureStage`.
 
@@ -75,7 +99,7 @@ Verification failures may include `failureStage`. `verified`, `mismatch`, and `t
 | ----------------------- | --------------------------------------------------------------------------------------------- |
 | `wasm_init`             | The verification WASM module could not initialize.                                            |
 | `dependency_resolution` | Source snapshot dependency resolution failed before Rust verification ran.                    |
-| `input_validation`      | Rust rejected the verification input or caller-provided reference artifact.                   |
+| `input_validation`      | JS or Rust rejected the verification input or caller-provided reference artifact.             |
 | `compile`               | Rust compilation of the caller-provided source snapshot failed.                               |
 | `compiler_output`       | Rust could not parse or normalize current build output JSON, digest, or bytecode module data. |
 | `verification_output`   | The JS wrapper could not call the verifier or could not parse the verifier JSON response.     |
@@ -510,7 +534,7 @@ The parity test warns when the local Sui CLI version differs from `sui-version.j
 
 `node test/integration/run.mjs audit upgrade` uses `sui move build --dump-bytecode-as-base64` as the CLI artifact source for upgrade-intent bytecode and compares it with `prepareMovePackageUpgrade` for published package fixtures. The comparison covers modules, dependency IDs, and digest.
 
-`node test/integration/run.mjs audit transaction` uses Sui RPC and GitHub access to fetch configured publish or upgrade transactions, rebuilds the configured GitHub source commit through the verification artifact, requires CLI dump output to match `verification.currentBuild`, and records transaction bytecode/dependency differences plus the fixture's expected verification status as audit evidence. `audit transaction verification` is equivalent. `audit transaction full` and `audit transaction lite` are usage errors.
+`node test/integration/run.mjs audit transaction` uses Sui RPC and GitHub access to fetch configured publish or upgrade transactions, extracts the single `Publish` or `Upgrade` command payload, passes that kind as the verification `intent`, rebuilds the configured GitHub source commit through the verification artifact, requires the matching CLI artifact to match `verification.currentBuild`, and records transaction bytecode/dependency differences plus the fixture's expected verification status as audit evidence. `audit transaction verification` is equivalent. `audit transaction full` and `audit transaction lite` are usage errors.
 
 `node test/integration/run.mjs audit github-binary` uses GitHub API and raw file access to fetch configured committed `.mv` artifacts, rebuilds the same source commit through the verification artifact, requires CLI dump output to match `verification.currentBuild`, and records bytecode diff summaries plus the fixture's expected verification status. `audit github-binary verification` is equivalent. `audit github-binary full` and `audit github-binary lite` are usage errors.
 

@@ -31,6 +31,7 @@ export async function loadVerificationApi() {
 
 export async function verifyReferenceProvenance({
   files,
+  intent,
   network,
   fetcher,
   githubToken,
@@ -40,6 +41,7 @@ export async function verifyReferenceProvenance({
   const { verifyMovePackageProvenance } = await loadVerificationApi();
   return verifyMovePackageProvenance({
     files,
+    intent,
     network,
     fetcher,
     githubToken,

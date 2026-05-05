@@ -48,7 +48,8 @@ export interface MovePackageResolvedDependencies {
   lockfileDependencies: string;
 }
 
-export type MovePackageIntent = "dump" | "publish" | "upgrade";
+export const MOVE_PACKAGE_INTENTS = ["dump", "publish", "upgrade"] as const;
+export type MovePackageIntent = (typeof MOVE_PACKAGE_INTENTS)[number];
 
 export interface MovePackageGitSource {
   git: string;

@@ -106,8 +106,11 @@ fn substitute_root_address(
     let Some(address) = module.address_identifiers.get_mut(address_idx.0 as usize) else {
         return Err("Self address field missing".to_string());
     };
+    if *address == root {
+        return Ok(());
+    }
     if *address != AccountAddress::ZERO {
-        return Err("Self address already populated".to_string());
+        return Err("Self address differs from requested root address".to_string());
     }
     *address = root;
     Ok(())
