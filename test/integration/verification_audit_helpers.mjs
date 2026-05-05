@@ -84,6 +84,39 @@ export function compareCliWithVerificationCurrent(cliOutput, verification) {
   };
 }
 
+export function compareCliReferenceWithVerificationCurrent(
+  cliReference,
+  verification
+) {
+  if (cliReference.kind === "dump") {
+    return compareCliWithVerificationCurrent(cliReference.output, verification);
+  }
+  if (!verification.currentBuild) {
+    return {
+      ok: false,
+      currentBuild: undefined,
+      modules: {
+        ok: false,
+        differences: ["verification result has no currentBuild"],
+      },
+      output: ["verification result has no currentBuild"],
+    };
+  }
+  const currentBuild = normalizeOutput(verification.currentBuild);
+  const modules = compareModuleBytecode(
+    "CLI publish",
+    cliReference.output,
+    "verification",
+    currentBuild
+  );
+  return {
+    ok: modules.ok,
+    currentBuild,
+    modules,
+    output: [],
+  };
+}
+
 export function verificationStatusGate(fixture, verification) {
   const differences = [];
   if (!fixture.expectedStatus) {

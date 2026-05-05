@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { SuiGraphQLClient } from "@mysten/sui/graphql";
@@ -7,9 +6,6 @@ import { Transaction } from "@mysten/sui/transactions";
 import {
   compareBuildOutputs,
   compareModuleBytecode,
-  modulesToOutput,
-  normalizeOutput,
-  readNamedMoveModules,
   writeJsonArtifact,
 } from "./artifact_parity_helpers.mjs";
 import {
@@ -19,13 +15,12 @@ import {
 import {
   assertSuiCliVersion,
   createVerificationAuditContext,
-  formatSuiCliFailure,
   readMovePackageFiles,
-  repoRoot,
   toArtifactPackageName,
 } from "./parity_helpers.mjs";
+import { runSuiCliReferenceArtifact } from "./sui_cli_artifact_helpers.mjs";
 import {
-  compareCliWithVerificationCurrent,
+  compareCliReferenceWithVerificationCurrent,
   verificationStatusGate,
   verifyReferenceProvenance,
 } from "./verification_audit_helpers.mjs";
@@ -73,124 +68,6 @@ const { suiVersion, mode, suiCli, parityOutputDir } =
     process.argv.slice(2),
     "parity-transaction-artifact-output"
   );
-
-function runSuiCliDumpArtifact(packageDir, label, environment) {
-  const command = [
-    "move",
-    "build",
-    "--dump-bytecode-as-base64",
-    "--path",
-    packageDir,
-    "--build-env",
-    environment,
-  ];
-  const result = spawnSync(suiCli, command, {
-    cwd: repoRoot,
-    encoding: "utf8",
-    maxBuffer: 100 * 1024 * 1024,
-    timeout: Number(process.env.SUI_PARITY_CLI_TIMEOUT_MS || 180000),
-  });
-  if (result.error || result.status !== 0) {
-    throw new Error(
-      formatSuiCliFailure({
-        label,
-        command: [suiCli, ...command],
-        packageDir,
-        result,
-      })
-    );
-  }
-  const stdout = result.stdout.trim();
-  const jsonStart = stdout.indexOf("{");
-  const jsonEnd = stdout.lastIndexOf("}");
-  if (jsonStart === -1 || jsonEnd === -1 || jsonEnd < jsonStart) {
-    throw new Error(`Sui CLI did not emit JSON output for ${packageDir}`);
-  }
-  return JSON.parse(stdout.slice(jsonStart, jsonEnd + 1));
-}
-
-function runSuiCliBuildArtifact(packageDir, outputDir, label, environment) {
-  const command = [
-    "move",
-    "build",
-    "--path",
-    packageDir,
-    "--install-dir",
-    outputDir,
-    "--build-env",
-    environment,
-  ];
-  const result = spawnSync(suiCli, command, {
-    cwd: repoRoot,
-    encoding: "utf8",
-    maxBuffer: 100 * 1024 * 1024,
-    timeout: Number(process.env.SUI_PARITY_CLI_TIMEOUT_MS || 180000),
-  });
-  if (result.error || result.status !== 0) {
-    throw new Error(
-      formatSuiCliFailure({
-        label,
-        command: [suiCli, ...command],
-        packageDir,
-        result,
-      })
-    );
-  }
-  return {
-    stdout: result.stdout.trim(),
-    stderr: result.stderr.trim(),
-  };
-}
-
-async function readSuiCliBuildArtifact(outputDir) {
-  const buildDir = path.join(outputDir, "build");
-  const entries = await fs.readdir(buildDir, { withFileTypes: true });
-  const packageDirs = entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => path.join(buildDir, entry.name))
-    .sort();
-  if (packageDirs.length !== 1) {
-    throw new Error(
-      `Expected exactly one built package under ${buildDir}, found ${packageDirs.length}`
-    );
-  }
-  const modulesDir = path.join(packageDirs[0], "bytecode_modules");
-  return modulesToOutput(await readNamedMoveModules(modulesDir));
-}
-
-async function runSuiCliReferenceArtifact({
-  packageDir,
-  outputRoot,
-  fixture,
-  transactionKind,
-}) {
-  if (transactionKind === "publish") {
-    const buildOutputDir = path.join(outputRoot, "cli-build");
-    const cliResult = runSuiCliBuildArtifact(
-      packageDir,
-      buildOutputDir,
-      `Sui CLI publish artifact build failed for ${fixture.name}`,
-      fixture.network
-    );
-    return {
-      kind: "publish",
-      cliResult,
-      output: await readSuiCliBuildArtifact(buildOutputDir),
-    };
-  }
-
-  return {
-    kind: "dump",
-    cliResult: undefined,
-    output: normalizeOutput(
-      runSuiCliDumpArtifact(
-        packageDir,
-        `Sui CLI current source build failed for ${fixture.name}`,
-        fixture.network
-      )
-    ),
-  };
-}
 
 async function fetchTransactionArtifact(fixture) {
   const urls = networkUrls[fixture.network];
@@ -315,39 +192,6 @@ function normalizeTransactionModules(modules) {
   });
 }
 
-function compareCliReferenceWithVerificationCurrent(
-  cliReference,
-  verification
-) {
-  if (cliReference.kind === "dump") {
-    return compareCliWithVerificationCurrent(cliReference.output, verification);
-  }
-  if (!verification.currentBuild) {
-    return {
-      ok: false,
-      currentBuild: undefined,
-      modules: {
-        ok: false,
-        differences: ["verification result has no currentBuild"],
-      },
-      output: ["verification result has no currentBuild"],
-    };
-  }
-  const currentBuild = normalizeOutput(verification.currentBuild);
-  const modules = compareModuleBytecode(
-    "CLI publish",
-    cliReference.output,
-    "verification",
-    currentBuild
-  );
-  return {
-    ok: modules.ok,
-    currentBuild,
-    modules,
-    output: [],
-  };
-}
-
 async function main() {
   console.log(
     `Running transaction artifact provenance audit in [${mode.toUpperCase()}] mode`
@@ -388,15 +232,18 @@ async function main() {
       );
 
       const cliReference = await runSuiCliReferenceArtifact({
+        suiCli,
         packageDir,
         outputRoot,
-        fixture,
-        transactionKind: transactionArtifact.kind,
+        fixtureName: fixture.name,
+        intent: transactionArtifact.kind,
+        environment: fixture.network,
       });
       await writeJsonArtifact(outputRoot, "cli.json", cliReference.output);
       if (cliReference.cliResult) {
         await writeJsonArtifact(outputRoot, "cli-output.json", {
           kind: cliReference.kind,
+          intent: cliReference.intent,
           ...cliReference.cliResult,
         });
       }

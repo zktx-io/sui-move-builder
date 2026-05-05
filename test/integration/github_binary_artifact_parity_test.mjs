@@ -1,10 +1,8 @@
-import { spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
   compareModuleBytecode,
   modulesToOutput,
-  normalizeOutput,
   writeJsonArtifact,
 } from "./artifact_parity_helpers.mjs";
 import {
@@ -18,13 +16,12 @@ import {
   assertSuiCliVersion,
   createVerificationAuditContext,
   ensureSuiSourceCheckout,
-  formatSuiCliFailure,
   readMovePackageFiles,
-  repoRoot,
   toArtifactPackageName,
 } from "./parity_helpers.mjs";
+import { runSuiCliReferenceArtifact } from "./sui_cli_artifact_helpers.mjs";
 import {
-  compareCliWithVerificationCurrent,
+  compareCliReferenceWithVerificationCurrent,
   verificationStatusGate,
   verifyReferenceProvenance,
 } from "./verification_audit_helpers.mjs";
@@ -49,41 +46,6 @@ const fixtures = [
   },
 ];
 
-function runSuiCliDumpArtifact(packageDir, label, environment) {
-  const command = [
-    "move",
-    "build",
-    "--path",
-    packageDir,
-    "--dump-bytecode-as-base64",
-    "--build-env",
-    environment,
-  ];
-  const result = spawnSync(suiCli, command, {
-    cwd: repoRoot,
-    encoding: "utf8",
-    maxBuffer: 100 * 1024 * 1024,
-    timeout: Number(process.env.SUI_PARITY_CLI_TIMEOUT_MS || 180000),
-  });
-  if (result.error || result.status !== 0) {
-    throw new Error(
-      formatSuiCliFailure({
-        label,
-        command: [suiCli, ...command],
-        packageDir,
-        result,
-      })
-    );
-  }
-  const stdout = result.stdout.trim();
-  const jsonStart = stdout.indexOf("{");
-  const jsonEnd = stdout.lastIndexOf("}");
-  if (jsonStart === -1 || jsonEnd === -1 || jsonEnd < jsonStart) {
-    throw new Error(`Sui CLI did not emit JSON output for ${packageDir}`);
-  }
-  return JSON.parse(stdout.slice(jsonStart, jsonEnd + 1));
-}
-
 async function main() {
   console.log(
     `Running GitHub binary artifact provenance audit in [${mode.toUpperCase()}] mode`
@@ -100,12 +62,10 @@ async function main() {
   let failed = false;
 
   for (const fixture of fixtures) {
-    if (!fixture.intent) {
-      throw new Error(`${fixture.name}: fixture must declare an intent`);
-    }
-    if (fixture.intent !== "publish") {
+    const intent = fixture.intent ?? "dump";
+    if (!["dump", "publish", "upgrade"].includes(intent)) {
       throw new Error(
-        `${fixture.name}: unsupported binary artifact intent ${fixture.intent}`
+        `${fixture.name}: unsupported binary artifact intent ${intent}`
       );
     }
 
@@ -137,23 +97,31 @@ async function main() {
       );
       await writeJsonArtifact(outputRoot, "github-binary.json", githubOutput);
 
-      const cliOutput = normalizeOutput(
-        runSuiCliDumpArtifact(
-          packageDir,
-          `Sui CLI current source build failed for ${fixture.name}`,
-          environment
-        )
-      );
-      await writeJsonArtifact(outputRoot, "cli.json", cliOutput);
+      const cliReference = await runSuiCliReferenceArtifact({
+        suiCli,
+        packageDir,
+        outputRoot,
+        fixtureName: fixture.name,
+        intent,
+        environment,
+      });
+      await writeJsonArtifact(outputRoot, "cli.json", cliReference.output);
+      if (cliReference.cliResult) {
+        await writeJsonArtifact(outputRoot, "cli-output.json", {
+          kind: cliReference.kind,
+          intent: cliReference.intent,
+          ...cliReference.cliResult,
+        });
+      }
 
       const files = await readMovePackageFiles(packageDir);
       const reference = {
         modules: githubOutput.modules,
       };
 
-      // Committed .mv fixtures do not carry transaction kind; keep the verifier's default dump intent unless a fixture declares publish-time artifacts.
       const verification = await verifyReferenceProvenance({
         files,
+        intent,
         network: environment,
         fetcher,
         githubToken: token,
@@ -166,8 +134,8 @@ async function main() {
       });
       await writeJsonArtifact(outputRoot, "verification.json", verification);
       const verificationGate = verificationStatusGate(fixture, verification);
-      const cliVsVerification = compareCliWithVerificationCurrent(
-        cliOutput,
+      const cliVsVerification = compareCliReferenceWithVerificationCurrent(
+        cliReference,
         verification
       );
       if (cliVsVerification.currentBuild) {
@@ -182,7 +150,7 @@ async function main() {
         "github",
         githubOutput,
         "CLI",
-        cliOutput
+        cliReference.output
       );
       const githubVsVerification = cliVsVerification.currentBuild
         ? compareModuleBytecode(
@@ -199,6 +167,7 @@ async function main() {
         ok: verificationGate.ok && cliVsVerification.ok,
         verification,
         verificationGate,
+        intent,
         githubVsCli,
         githubVsVerification,
         cliVsVerification,
