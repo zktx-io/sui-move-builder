@@ -3,6 +3,12 @@
  */
 
 import { GitHubMovePackageFetcher } from "./fetcher.js";
+import type { MovePackageGitSource } from "./core.js";
+
+export interface FetchedMovePackage {
+  files: Record<string, string>;
+  rootGit: MovePackageGitSource;
+}
 
 /**
  * Parse GitHub URL to extract owner, repo, branch/tag, and subdir
@@ -60,20 +66,15 @@ function parseMovePackageGitHubUrl(url: string): {
  *
  * @param url - GitHub repository URL (e.g., "https://github.com/MystenLabs/sui/tree/main/crates/sui-framework/packages/sui-framework")
  * @param options - Optional configuration
- * @returns Object with Move.toml and source files
+ * @returns Object with package files and root Git source metadata
  *
  * @example
  * ```ts
- * const files = await fetchMovePackageFromGitHub(
+ * const input = await fetchMovePackageFromGitHub(
  *   'https://github.com/org/repo/tree/main/packages/example_package'
  * );
  *
- * // files = {
- * //   'Move.toml': '...',
- * //   'Move.lock': '...',
- * //   'sources/pool.move': '...',
- * //   ...
- * // }
+ * const result = await dumpMovePackage(input);
  * ```
  */
 export async function fetchMovePackageFromGitHub(
@@ -86,7 +87,7 @@ export async function fetchMovePackageFromGitHub(
     /** Include Move.lock file (default: true) */
     includeLock?: boolean;
   }
-): Promise<Record<string, string>> {
+): Promise<FetchedMovePackage> {
   const parsed = parseMovePackageGitHubUrl(url);
 
   if (!parsed) {
@@ -106,22 +107,18 @@ export async function fetchMovePackageFromGitHub(
     `root:${parsed.owner}/${parsed.repo}`
   );
 
-  // Attach root git metadata (non-enumerable) for downstream relative path resolution
-  Object.defineProperty(files, "__rootGit", {
-    value: {
-      git: gitUrl,
-      rev: parsed.ref,
-      subdir: parsed.subdir,
-    },
-    enumerable: false,
-  });
+  const rootGit: MovePackageGitSource = {
+    git: gitUrl,
+    rev: parsed.ref,
+    subdir: parsed.subdir,
+  };
 
   // Filter out Move.lock if requested
   if (!includeLock && files["Move.lock"]) {
     const { "Move.lock": _unused, ...rest } = files;
     void _unused; // Mark as intentionally unused
-    return rest;
+    return { files: rest, rootGit };
   }
 
-  return files;
+  return { files, rootGit };
 }

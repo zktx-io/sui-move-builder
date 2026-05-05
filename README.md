@@ -295,7 +295,7 @@ import {
 await initMovePackageBuilder();
 
 // Fetch a package from GitHub URL
-const files = await fetchMovePackageFromGitHub(
+const input = await fetchMovePackageFromGitHub(
   "https://github.com/MystenLabs/sui/tree/framework/mainnet/crates/sui-framework/packages/sui-framework",
   {
     githubToken: process.env.GITHUB_TOKEN, // optional
@@ -304,7 +304,7 @@ const files = await fetchMovePackageFromGitHub(
 
 // Compile directly
 const result = await dumpMovePackage({
-  files,
+  ...input,
   githubToken: process.env.GITHUB_TOKEN, // optional
 });
 ```

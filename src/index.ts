@@ -13,6 +13,7 @@ export type {
   MovePackageDumpSuccess,
   MovePackageFailure,
   MovePackageFailureCategory,
+  MovePackageGitSource,
   MovePackageInput,
   MovePackageIntent,
   MovePackageProgressCallback,
@@ -35,4 +36,5 @@ export {
   prepareMovePackageUpgrade,
   resolveMovePackageDependencies,
 } from "./core.js";
+export type { FetchedMovePackage } from "./packageFetcher.js";
 export { fetchMovePackageFromGitHub } from "./packageFetcher.js";

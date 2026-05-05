@@ -50,13 +50,19 @@ export interface MovePackageResolvedDependencies {
 
 export type MovePackageIntent = "dump" | "publish" | "upgrade";
 
+export interface MovePackageGitSource {
+  git: string;
+  rev: string;
+  subdir?: string;
+}
+
 export interface MovePackageInput {
   /** Virtual file system contents. Keys are paths (e.g. "Move.toml", "sources/Module.move"). */
   files: Record<string, string>;
   /** Optional custom URL for the wasm binary. Defaults to bundled wasm next to this module. */
   wasm?: string | URL | BufferSource;
   /** Optional hint for the root package git source (enables resolving local deps from Move.lock). */
-  rootGit?: { git: string; rev: string; subdir?: string };
+  rootGit?: MovePackageGitSource;
   /** Optional GitHub token to raise API limits when resolving dependencies. */
   githubToken?: string;
   /** Optional dependency fetcher. Defaults to GitHubMovePackageFetcher. */
@@ -507,12 +513,6 @@ async function compileMovePackage(
   const environment = input.network || "mainnet";
 
   try {
-    const inferredRootGit =
-      input.rootGit ||
-      ((input.files as any).__rootGit as
-        | { git: string; rev: string; subdir?: string }
-        | undefined);
-
     // Filter input files to only include valid Move package files
     // This mimics the CLI behavior of only processing relevant files from the directory
     // and ignoring things like README.md, .gitignore, etc.
@@ -528,7 +528,6 @@ async function compileMovePackage(
       }
     }
     input.files = filteredFiles;
-    input.rootGit = inferredRootGit;
 
     let mod: WasmModule;
     try {

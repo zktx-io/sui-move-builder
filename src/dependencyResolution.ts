@@ -114,19 +114,14 @@ export function applyLegacyPublicationMigrationToFiles(
 }
 
 function rootGitSource(
-  input: Pick<MovePackageInput, "files" | "rootGit">
+  input: Pick<MovePackageInput, "rootGit">
 ): DependencySource | undefined {
-  const inferredRootGit =
-    input.rootGit ||
-    ((input.files as any).__rootGit as
-      | { git: string; rev: string; subdir?: string }
-      | undefined);
-  return inferredRootGit
+  return input.rootGit
     ? {
         type: "git",
-        git: inferredRootGit.git,
-        rev: inferredRootGit.rev,
-        subdir: inferredRootGit.subdir,
+        git: input.rootGit.git,
+        rev: input.rootGit.rev,
+        subdir: input.rootGit.subdir,
       }
     : undefined;
 }
