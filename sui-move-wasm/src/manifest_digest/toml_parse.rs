@@ -349,7 +349,7 @@ pub(crate) fn combined_dependencies_from_move_toml(
     Ok(deps)
 }
 
-pub(crate) fn manifest_plan_dependency_subst(
+fn manifest_plan_dependency_subst(
     dep_table: &toml::Table,
 ) -> Option<BTreeMap<String, ManifestPackagePlanSubst>> {
     let subst_table = dep_table
