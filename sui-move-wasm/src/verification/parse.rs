@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 use super::types::{
-    ArtifactSummary, ModuleHeaderEvidence, ModuleSummary, ParsedArtifact, ParsedModule, RawHeader,
-    RootAddressConflict, ToolchainEvidence, ToolchainMetadata,
+    ArtifactSummary, BuildVersionMetadata, BytecodeHeaderEvidence, ModuleHeaderEvidence,
+    ModuleSummary, ParsedArtifact, ParsedModule, RawHeader, RootAddressConflict,
 };
 
 pub(super) fn parse_artifact(
@@ -18,7 +18,7 @@ pub(super) fn parse_artifact(
     dependencies: Vec<String>,
     digest: Option<String>,
     root_address: Option<AccountAddress>,
-    toolchain_metadata: Option<ToolchainMetadata>,
+    build_version_metadata: Option<BuildVersionMetadata>,
 ) -> Result<ParsedArtifact, String> {
     let mut parsed_modules = Vec::new();
     for (index, module) in modules.into_iter().enumerate() {
@@ -63,10 +63,10 @@ pub(super) fn parse_artifact(
             per_module,
             dependencies,
             digest,
-            toolchain_version: toolchain_metadata
+            cli_version: build_version_metadata
                 .as_ref()
                 .and_then(|metadata| metadata.version.clone()),
-            build_config: toolchain_metadata.and_then(|metadata| metadata.build_config),
+            build_config: build_version_metadata.and_then(|metadata| metadata.build_config),
         },
         modules: parsed_modules,
     })
@@ -162,18 +162,18 @@ fn parse_raw_header(bytes: &[u8]) -> Option<RawHeader> {
     })
 }
 
-pub(super) fn toolchain_evidence_if_mismatch(
+pub(super) fn bytecode_header_evidence_if_mismatch(
     reference: &ParsedArtifact,
     current: &ParsedArtifact,
-) -> Option<ToolchainEvidence> {
+) -> Option<BytecodeHeaderEvidence> {
     let reference_headers = header_set(reference);
     let current_headers = header_set(current);
     if reference_headers == current_headers {
         return None;
     }
     let has_reference_metadata =
-        reference.summary.toolchain_version.is_some() || reference.summary.build_config.is_some();
-    Some(ToolchainEvidence {
+        reference.summary.cli_version.is_some() || reference.summary.build_config.is_some();
+    Some(BytecodeHeaderEvidence {
         source: if has_reference_metadata {
             "metadata+binary_header"
         } else {
@@ -181,13 +181,13 @@ pub(super) fn toolchain_evidence_if_mismatch(
         },
         reference: module_header_evidence(reference),
         current_build: module_header_evidence(current),
-        reference_toolchain_version: reference.summary.toolchain_version.clone(),
-        current_build_toolchain_version: current.summary.toolchain_version.clone(),
+        reference_cli_version: reference.summary.cli_version.clone(),
+        current_verifier_sui_version: current.summary.cli_version.clone(),
         reference_build_config: reference.summary.build_config.clone(),
     })
 }
 
-pub(super) fn current_toolchain_version() -> String {
+pub(super) fn current_sui_version() -> String {
     option_env!("SUI_VERSION").unwrap_or("unknown").to_string()
 }
 

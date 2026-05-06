@@ -1,15 +1,12 @@
 import { loadWasmBindings } from "./wasm_helpers.mjs";
 
-const builder = await import(
-  new URL("../../dist/lite/index.js", import.meta.url)
-);
 const verifier = await import(
   new URL("../../dist/verification/index.js", import.meta.url)
 );
 
-await builder.initMovePackageBuilder();
 await verifier.initMovePackageVerifier();
 const rawLite = await loadWasmBindings("lite");
+const rawVerification = await loadWasmBindings("verification");
 
 function frameworkPackage(id, addressName, localPath) {
   const publishedAt = id === "Sui" ? "0x2" : "0x1";
@@ -96,37 +93,32 @@ function resolvedDependencies(files) {
   };
 }
 
-async function dumpReference(files) {
-  const result = await builder.dumpMovePackage({
-    files,
-    resolvedDependencies: resolvedDependencies(files),
-    network: "mainnet",
-    silenceWarnings: true,
-  });
-  if ("error" in result) {
-    throw new Error(`dump reference build failed: ${result.error}`);
-  }
-  return result;
-}
-
-async function publishReference(files) {
+async function compileReference(files, intent) {
   const resolved = resolvedDependencies(files);
   const result = rawLite.compile(
     resolved.files,
     resolved.dependencies,
-    JSON.stringify({ compileIntent: "publish" })
+    JSON.stringify({ compileIntent: intent })
   );
   const success =
     typeof result.success === "function" ? result.success() : result.success;
   const output =
     typeof result.output === "function" ? result.output() : result.output;
   if (!success) {
-    throw new Error(`publish reference build failed: ${output}`);
+    throw new Error(`${intent} reference build failed: ${output}`);
   }
   return JSON.parse(output);
 }
 
-async function verify(files, reference, options = {}) {
+function publishReference(files) {
+  return compileReference(files, "publish");
+}
+
+function upgradeReference(files) {
+  return compileReference(files, "upgrade");
+}
+
+async function verify(files, reference, options = { intent: "publish" }) {
   const result = await verifier.verifyMovePackageProvenance({
     files,
     resolvedDependencies: resolvedDependencies(files),
@@ -139,6 +131,20 @@ async function verify(files, reference, options = {}) {
     throw new Error("verification result has no status");
   }
   return result;
+}
+
+function rawVerify(files, reference, options) {
+  const resolved = resolvedDependencies(files);
+  return JSON.parse(
+    rawVerification.verify_against_reference(
+      JSON.stringify({
+        files: resolved.files,
+        dependencies: resolved.dependencies,
+        options,
+        reference,
+      })
+    )
+  );
 }
 
 function expectStatus(result, status, label) {
@@ -177,6 +183,18 @@ function expectFailureStage(result, stage, label) {
   }
 }
 
+function expectErrorIncludes(result, text, label) {
+  if (!result.error?.includes(text)) {
+    throw new Error(
+      `${label}: expected error to include ${text}, got ${result.error}: ${JSON.stringify(
+        result,
+        null,
+        2
+      )}`
+    );
+  }
+}
+
 function expectNoFailureStage(result, label) {
   if (result.failureStage !== undefined) {
     throw new Error(
@@ -196,7 +214,7 @@ function withHeaderVersion(base64, version) {
 }
 
 const files = fixtureFiles();
-const reference = await dumpReference(files);
+const reference = await publishReference(files);
 
 const verifiedReference = await verify(files, {
   modules: reference.modules,
@@ -210,7 +228,7 @@ expectNoFailureStage(verifiedReference, "verified reference");
 const metadataReference = await verify(files, {
   modules: reference.modules,
   dependencies: reference.dependencies,
-  toolchainVersion: "0.0.0-metadata-only",
+  cliVersion: "0.0.0-metadata-only",
   buildConfig: { edition: "2024", flavor: "sui" },
 });
 expectStatus(metadataReference, "verified", "metadata does not override bytes");
@@ -219,10 +237,8 @@ expectVerdict(
   "exact_bytecode_match",
   "metadata does not override bytes"
 );
-if (
-  metadataReference.referenceSummary?.toolchainVersion !== "0.0.0-metadata-only"
-) {
-  throw new Error("reference toolchainVersion should be reported as evidence");
+if (metadataReference.referenceSummary?.cliVersion !== "0.0.0-metadata-only") {
+  throw new Error("reference cliVersion should be reported as evidence");
 }
 if (metadataReference.referenceSummary?.buildConfig?.flavor !== "sui") {
   throw new Error("reference buildConfig should be reported as evidence");
@@ -246,66 +262,74 @@ expectStatus(wrongDigestResult, "mismatch", "wrong digest");
 expectVerdict(wrongDigestResult, "semantic_mismatch", "wrong digest");
 
 const v6ReferenceModule = withHeaderVersion(reference.modules[0], 6);
-const metadataToolchainMismatch = await verify(files, {
+const metadataBytecodeVersionMismatch = await verify(files, {
   modules: [v6ReferenceModule],
   dependencies: reference.dependencies,
-  toolchainVersion: "0.0.0-metadata-only",
+  cliVersion: "0.0.0-metadata-only",
   buildConfig: { edition: "2024", flavor: "sui" },
 });
 expectStatus(
-  metadataToolchainMismatch,
-  "toolchain_mismatch",
+  metadataBytecodeVersionMismatch,
+  "bytecode_version_mismatch",
   "synthetic_header_only reference"
 );
 expectVerdict(
-  metadataToolchainMismatch,
-  "header_only_toolchain_drift",
+  metadataBytecodeVersionMismatch,
+  "bytecode_version_header_mismatch",
   "synthetic_header_only reference"
 );
-expectNoFailureStage(metadataToolchainMismatch, "toolchain mismatch reference");
+expectNoFailureStage(
+  metadataBytecodeVersionMismatch,
+  "bytecode version mismatch reference"
+);
 if (
-  metadataToolchainMismatch.bytecodeDiffs?.[0]?.sameExceptVersionWord !== true
+  metadataBytecodeVersionMismatch.bytecodeDiffs?.[0]?.sameExceptVersionWord !==
+  true
 ) {
   throw new Error(
     `synthetic_header_only should differ only in the version word: ${JSON.stringify(
-      metadataToolchainMismatch,
+      metadataBytecodeVersionMismatch,
       null,
       2
     )}`
   );
 }
 if (
-  metadataToolchainMismatch.toolchainEvidence?.source !==
+  metadataBytecodeVersionMismatch.bytecodeHeaderEvidence?.source !==
   "metadata+binary_header"
 ) {
   throw new Error(
-    "toolchain evidence should record metadata plus header source"
+    "bytecode header evidence should record metadata plus header source"
   );
 }
 if (
-  metadataToolchainMismatch.toolchainEvidence?.referenceToolchainVersion !==
-  "0.0.0-metadata-only"
+  metadataBytecodeVersionMismatch.bytecodeHeaderEvidence
+    ?.referenceCliVersion !== "0.0.0-metadata-only"
 ) {
   throw new Error(
-    "toolchain evidence should include reference version metadata"
+    "bytecode header evidence should include reference version metadata"
   );
 }
 
-const changedReference = await dumpReference(fixtureFiles({ value: 2 }));
+const changedReference = await publishReference(fixtureFiles({ value: 2 }));
 const mismatchResult = await verify(files, {
   modules: changedReference.modules,
   dependencies: changedReference.dependencies,
 });
-expectStatus(mismatchResult, "mismatch", "same toolchain changed module");
+expectStatus(
+  mismatchResult,
+  "mismatch",
+  "same bytecode version changed module"
+);
 expectVerdict(
   mismatchResult,
   "semantic_mismatch",
-  "same toolchain changed module"
+  "same bytecode version changed module"
 );
-expectNoFailureStage(mismatchResult, "same toolchain changed module");
+expectNoFailureStage(mismatchResult, "same bytecode version changed module");
 if (!mismatchResult.bytecodeDiffs?.some((diff) => diff.identity?.matches)) {
   throw new Error(
-    `same-toolchain mismatch should include bytecode identity evidence: ${JSON.stringify(
+    `same-bytecode version mismatch should include bytecode identity evidence: ${JSON.stringify(
       mismatchResult,
       null,
       2
@@ -454,52 +478,61 @@ if (
   );
 }
 
-const publishedDumpReference = await dumpReference(publishedFiles);
+const publishedUpgradeReference = await upgradeReference(publishedFiles);
 expectStatus(
   await verify(
     publishedFiles,
     {
-      modules: publishedDumpReference.modules,
-      dependencies: publishedDumpReference.dependencies,
+      modules: publishedUpgradeReference.modules,
+      dependencies: publishedUpgradeReference.dependencies,
     },
     { intent: "publish" }
   ),
   "mismatch",
-  "publish intent does not verify dump bytecode"
+  "publish intent does not verify upgrade bytecode"
 );
 
+const upgradeReferenceOutput = await upgradeReference(files);
 expectStatus(
   await verify(
     files,
     {
-      modules: reference.modules,
-      dependencies: reference.dependencies,
+      modules: upgradeReferenceOutput.modules,
+      dependencies: upgradeReferenceOutput.dependencies,
     },
     { intent: "upgrade" }
   ),
   "verified",
-  "upgrade intent matches dump root_as_zero bytecode"
+  "upgrade intent verifies upgrade bytecode"
 );
 
-const addressConstantFiles = fixtureFiles({
+const zeroAddressConstantFiles = fixtureFiles({
+  includeAddressConstant: true,
+});
+const publishedAddressConstantFiles = fixtureFiles({
   address: publishedAddress,
   publishedAt: publishedAddress,
   includeAddressConstant: true,
 });
-const addressConstantPublishReference =
-  await publishReference(addressConstantFiles);
+const addressConstantPublishReference = await publishReference(
+  publishedAddressConstantFiles
+);
 expectStatus(
-  await verify(addressConstantFiles, {
-    modules: addressConstantPublishReference.modules,
-    dependencies: addressConstantPublishReference.dependencies,
-    rootAddress: publishedAddress,
-  }),
+  await verify(
+    zeroAddressConstantFiles,
+    {
+      modules: addressConstantPublishReference.modules,
+      dependencies: addressConstantPublishReference.dependencies,
+      rootAddress: publishedAddress,
+    },
+    { intent: "publish" }
+  ),
   "mismatch",
   "root substitution alone does not hide embedded address differences"
 );
 expectStatus(
   await verify(
-    addressConstantFiles,
+    publishedAddressConstantFiles,
     {
       modules: addressConstantPublishReference.modules,
       dependencies: addressConstantPublishReference.dependencies,
@@ -509,6 +542,99 @@ expectStatus(
   ),
   "verified",
   "publish intent verifies embedded address bytecode"
+);
+
+const missingIntentResult = await verifier.verifyMovePackageProvenance({
+  files,
+  resolvedDependencies: resolvedDependencies(files),
+  network: "mainnet",
+  silenceWarnings: true,
+  reference: {
+    modules: reference.modules,
+  },
+});
+expectStatus(
+  missingIntentResult,
+  "build_failure",
+  "missing verification intent"
+);
+expectFailureStage(
+  missingIntentResult,
+  "input_validation",
+  "missing verification intent"
+);
+
+const dumpIntentResult = await verify(
+  files,
+  {
+    modules: reference.modules,
+  },
+  { intent: "dump" }
+);
+expectStatus(dumpIntentResult, "build_failure", "dump verification intent");
+expectFailureStage(
+  dumpIntentResult,
+  "input_validation",
+  "dump verification intent"
+);
+
+const rawMissingIntentResult = rawVerify(
+  files,
+  {
+    modules: reference.modules,
+  },
+  {}
+);
+expectStatus(
+  rawMissingIntentResult,
+  "build_failure",
+  "raw missing verification intent"
+);
+expectFailureStage(
+  rawMissingIntentResult,
+  "input_validation",
+  "raw missing verification intent"
+);
+
+const rawDumpIntentResult = rawVerify(
+  files,
+  {
+    modules: reference.modules,
+  },
+  { compileIntent: "dump" }
+);
+expectStatus(
+  rawDumpIntentResult,
+  "build_failure",
+  "raw dump verification intent"
+);
+expectFailureStage(
+  rawDumpIntentResult,
+  "input_validation",
+  "raw dump verification intent"
+);
+
+const rawNumericIntentResult = rawVerify(
+  files,
+  {
+    modules: reference.modules,
+  },
+  { compileIntent: 42 }
+);
+expectStatus(
+  rawNumericIntentResult,
+  "build_failure",
+  "raw numeric verification intent"
+);
+expectFailureStage(
+  rawNumericIntentResult,
+  "input_validation",
+  "raw numeric verification intent"
+);
+expectErrorIncludes(
+  rawNumericIntentResult,
+  "42",
+  "raw numeric verification intent"
 );
 
 const invalidIntentResult = await verify(
@@ -570,6 +696,7 @@ MissingLocal = { local = "../missing-local" }
 };
 const dependencyFailureResult = await verifier.verifyMovePackageProvenance({
   files: dependencyFailureFiles,
+  intent: "publish",
   network: "mainnet",
   silenceWarnings: true,
   reference: {

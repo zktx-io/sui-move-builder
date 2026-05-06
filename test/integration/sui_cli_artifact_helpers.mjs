@@ -3,35 +3,9 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
   modulesToOutput,
-  normalizeOutput,
   readNamedMoveModules,
 } from "./artifact_parity_helpers.mjs";
 import { formatSuiCliFailure, repoRoot } from "./parity_helpers.mjs";
-
-export function runSuiCliDumpArtifact({
-  suiCli,
-  packageDir,
-  label,
-  environment,
-}) {
-  const command = [
-    "move",
-    "build",
-    "--dump-bytecode-as-base64",
-    "--path",
-    packageDir,
-    "--build-env",
-    environment,
-  ];
-  const result = runSuiCli({ suiCli, command, packageDir, label });
-  const stdout = result.stdout.trim();
-  const jsonStart = stdout.indexOf("{");
-  const jsonEnd = stdout.lastIndexOf("}");
-  if (jsonStart === -1 || jsonEnd === -1 || jsonEnd < jsonStart) {
-    throw new Error(`Sui CLI did not emit JSON output for ${packageDir}`);
-  }
-  return JSON.parse(stdout.slice(jsonStart, jsonEnd + 1));
-}
 
 export function runSuiCliBuildArtifact({
   suiCli,
@@ -50,6 +24,60 @@ export function runSuiCliBuildArtifact({
     "--build-env",
     environment,
   ];
+  return runSuiCli({ suiCli, command, packageDir, label });
+}
+
+export function runSuiCliUpgradeArtifact({
+  suiCli,
+  packageDir,
+  outputDir,
+  label,
+  environment,
+  upgradeCapability,
+  sender,
+  gasBudget,
+  gasPrice,
+  gas,
+  skipVerifyCompatibility = false,
+  skipDependencyVerification = false,
+}) {
+  if (!upgradeCapability) {
+    throw new Error(
+      "Sui CLI upgrade artifact build requires upgradeCapability"
+    );
+  }
+  const command = [
+    "client",
+    "upgrade",
+    "--upgrade-capability",
+    upgradeCapability,
+    "--install-dir",
+    outputDir,
+    "--build-env",
+    environment,
+    "--serialize-unsigned-transaction",
+    "--force",
+    "--silence-warnings",
+  ];
+  if (skipVerifyCompatibility) {
+    command.push("--skip-verify-compatibility");
+  }
+  if (skipDependencyVerification) {
+    command.push("--skip-dependency-verification");
+  }
+  if (sender) {
+    command.push("--sender", sender);
+  }
+  if (gasBudget) {
+    command.push("--gas-budget", String(gasBudget));
+  }
+  if (gasPrice) {
+    command.push("--gas-price", String(gasPrice));
+  }
+  if (Array.isArray(gas) && gas.length > 0) {
+    command.push("--gas", ...gas.map(String));
+  }
+  command.push("--", packageDir);
   return runSuiCli({ suiCli, command, packageDir, label });
 }
 
@@ -76,6 +104,13 @@ export async function runSuiCliReferenceArtifact({
   fixtureName,
   intent,
   environment,
+  upgradeCapability,
+  sender,
+  gasBudget,
+  gasPrice,
+  gas,
+  skipVerifyCompatibility,
+  skipDependencyVerification,
 }) {
   if (intent === "publish") {
     const buildOutputDir = path.join(outputRoot, "cli-build");
@@ -94,19 +129,27 @@ export async function runSuiCliReferenceArtifact({
     };
   }
 
-  if (intent === "dump" || intent === "upgrade") {
+  if (intent === "upgrade") {
+    const buildOutputDir = path.join(outputRoot, "cli-upgrade");
+    const cliResult = runSuiCliUpgradeArtifact({
+      suiCli,
+      packageDir,
+      outputDir: buildOutputDir,
+      label: `Sui CLI upgrade artifact build failed for ${fixtureName}`,
+      environment,
+      upgradeCapability,
+      sender,
+      gasBudget,
+      gasPrice,
+      gas,
+      skipVerifyCompatibility,
+      skipDependencyVerification,
+    });
     return {
-      kind: "dump",
+      kind: "upgrade",
       intent,
-      cliResult: undefined,
-      output: normalizeOutput(
-        runSuiCliDumpArtifact({
-          suiCli,
-          packageDir,
-          label: `Sui CLI current source build failed for ${fixtureName}`,
-          environment,
-        })
-      ),
+      cliResult,
+      output: await readSuiCliBuildArtifact(buildOutputDir),
     };
   }
 

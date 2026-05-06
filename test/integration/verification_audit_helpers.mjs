@@ -88,8 +88,20 @@ export function compareCliReferenceWithVerificationCurrent(
   cliReference,
   verification
 ) {
-  if (cliReference.kind === "dump") {
-    return compareCliWithVerificationCurrent(cliReference.output, verification);
+  if (cliReference.kind !== "publish" && cliReference.kind !== "upgrade") {
+    return {
+      ok: false,
+      currentBuild: undefined,
+      modules: {
+        ok: false,
+        differences: [
+          `unsupported CLI verification reference kind ${cliReference.kind}`,
+        ],
+      },
+      output: [
+        `unsupported CLI verification reference kind ${cliReference.kind}`,
+      ],
+    };
   }
   if (!verification.currentBuild) {
     return {
@@ -104,7 +116,7 @@ export function compareCliReferenceWithVerificationCurrent(
   }
   const currentBuild = normalizeOutput(verification.currentBuild);
   const modules = compareModuleBytecode(
-    "CLI publish",
+    `CLI ${cliReference.kind}`,
     cliReference.output,
     "verification",
     currentBuild
@@ -148,7 +160,7 @@ export function verificationStatusGate(fixture, verification) {
       `${fixture.name}: expected verification verdict ${fixture.expectedVerdict}, got ${verification.verdict}`
     );
   }
-  if (fixture.expectedVerdict === "format_drift") {
+  if (fixture.expectedVerdict === "bytecode_format_drift") {
     differences.push(
       ...formatDriftConsistencyDifferences(fixture, verification)
     );
@@ -163,14 +175,16 @@ function formatDriftConsistencyDifferences(fixture, verification) {
   const differences = [];
   const bytecodeDiffs = verification.bytecodeDiffs || [];
   if (bytecodeDiffs.length === 0) {
-    differences.push(`${fixture.name}: format_drift has no bytecodeDiffs`);
+    differences.push(
+      `${fixture.name}: bytecode_format_drift has no bytecodeDiffs`
+    );
     return differences;
   }
   for (const diff of bytecodeDiffs) {
     const label = diff.module || "<unnamed module>";
-    if (diff.classification !== "format_drift") {
+    if (diff.classification !== "bytecode_format_drift") {
       differences.push(
-        `${fixture.name}: ${label} expected format_drift bytecode classification, got ${diff.classification}`
+        `${fixture.name}: ${label} expected bytecode_format_drift bytecode classification, got ${diff.classification}`
       );
     }
     const changedTables = diff.changedTables || [];

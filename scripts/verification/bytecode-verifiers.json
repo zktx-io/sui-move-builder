@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "selectionModel": "bytecode-version-first",
+  "distribution": "separate-npm-packages",
+  "current": "sui-1.70.2",
+  "bytecodeVersions": {
+    "7": {
+      "verifier": "sui-1.70.2",
+      "flavor": 5
+    }
+  },
+  "verifiers": {
+    "sui-1.70.2": {
+      "verifierId": "sui-1.70.2",
+      "suiVersion": "1.70.2",
+      "tag": "mainnet-v1.70.2",
+      "commit": "6d4ec0b0621dd9555753c9ecd5be021b25a0d267",
+      "status": "current",
+      "bytecodeVersion": 7,
+      "bytecodeFlavor": 5,
+      "selectionReason": "Current verifier for decoded bytecode version 7 from sui-version.json.",
+      "packageName": "@zktx.io/sui-move-builder",
+      "verificationWasmPath": "dist/verification/sui_move_wasm_bg.wasm",
+      "knownFixtures": []
+    }
+  }
+}

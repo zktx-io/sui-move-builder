@@ -1,6 +1,6 @@
 {
   "name": "@zktx.io/sui-move-builder",
-  "version": "0.3.5",
+  "version": "0.4.0",
   "description": "Build Move packages in web or Node.js with dependency fetching and dump outputs.",
   "keywords": [
     "sui",
@@ -54,6 +54,10 @@
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
     "prepare:wasm": "node scripts/prepare-wasm.mjs",
+    "inventory:sui-tags": "node scripts/verification/inventory-sui-tags.mjs",
+    "analyze:bytecode-versions": "node scripts/verification/analyze-bytecode-versions.mjs",
+    "verify:bytecode-verifiers": "node scripts/verification/validate-bytecode-verifiers.mjs",
+    "build:bytecode-verifier": "node scripts/verification/build-bytecode-verifier.mjs",
     "build:wasm:prepared": "node scripts/build-prepared-wasm.mjs --profile all",
     "build:wasm:prepared:lite": "node scripts/build-prepared-wasm.mjs --profile lite",
     "build:wasm:prepared:full": "node scripts/build-prepared-wasm.mjs --profile full",

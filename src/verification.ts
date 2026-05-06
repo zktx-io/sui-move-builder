@@ -1,7 +1,6 @@
 import {
   asFailure,
   loadWasm,
-  MOVE_PACKAGE_INTENTS,
   type MovePackageIntent,
   type MovePackageInput,
   type MovePackageResolvedDependencies,
@@ -18,7 +17,7 @@ import { type LockfileV4Helpers } from "./resolver.js";
 
 export type VerificationStatus =
   | "verified"
-  | "toolchain_mismatch"
+  | "bytecode_version_mismatch"
   | "mismatch"
   | "build_failure"
   | "invalid_reference";
@@ -26,8 +25,8 @@ export type VerificationStatus =
 export type VerificationVerdict =
   | "exact_bytecode_match"
   | "root_address_substitution_match"
-  | "header_only_toolchain_drift"
-  | "format_drift"
+  | "bytecode_version_header_mismatch"
+  | "bytecode_format_drift"
   | "semantic_mismatch"
   | "unverified";
 
@@ -47,8 +46,8 @@ export interface ReferenceArtifact {
   rootAddress?: string;
   /** Alias for rootAddress when the caller has a package object ID. */
   packageId?: string;
-  /** Declared Sui toolchain version for evidence only. Bytecode comparison remains authoritative. */
-  toolchainVersion?: string;
+  /** Declared Sui CLI version for evidence only. Bytecode comparison remains authoritative. */
+  cliVersion?: string;
   /** Declared build config for evidence only. */
   buildConfig?: VerificationBuildConfig;
 }
@@ -77,7 +76,7 @@ export interface VerificationArtifactSummary {
   perModule: VerificationModuleSummary[];
   dependencies: string[];
   digest?: string;
-  toolchainVersion?: string;
+  cliVersion?: string;
   buildConfig?: VerificationBuildConfig;
 }
 
@@ -88,12 +87,14 @@ export interface VerificationHeaderEvidence {
   flavor?: number;
 }
 
-export interface VerificationToolchainEvidence {
+export interface VerificationBytecodeHeaderEvidence {
   source: "binary_header" | "metadata+binary_header";
   reference: VerificationHeaderEvidence[];
   currentBuild: VerificationHeaderEvidence[];
-  referenceToolchainVersion?: string;
-  currentBuildToolchainVersion?: string;
+  /** Caller-declared Sui CLI version for the reference artifact, when provided. */
+  referenceCliVersion?: string;
+  /** Sui source version baked into the verifier WASM, not a local CLI probe. */
+  currentVerifierSuiVersion?: string;
   referenceBuildConfig?: VerificationBuildConfig;
 }
 
@@ -164,7 +165,7 @@ export interface MovePackageProvenanceResult {
   currentBuild?: VerificationCurrentBuild;
   referenceSummary?: VerificationArtifactSummary;
   currentSummary?: VerificationArtifactSummary;
-  toolchainEvidence?: VerificationToolchainEvidence;
+  bytecodeHeaderEvidence?: VerificationBytecodeHeaderEvidence;
   differences?: string[];
   bytecodeDiffs?: VerificationBytecodeDiff[];
   error?: string;
@@ -172,18 +173,29 @@ export interface MovePackageProvenanceResult {
 
 export interface MovePackageProvenanceInput extends MovePackageInput {
   /**
-   * Rebuild policy for the current source. Defaults to dump.
-   * Dump and upgrade use root-as-zero; publish keeps the package root address.
+   * Rebuild policy for the current source.
    * Transaction callers pass the externally extracted Publish or Upgrade kind.
+   * Publish keeps the package root address; upgrade uses root-as-zero.
    */
-  intent?: MovePackageIntent;
+  intent: VerificationProvenanceIntent;
   reference: ReferenceArtifact;
 }
 
-const verificationIntents = new Set<MovePackageIntent>(MOVE_PACKAGE_INTENTS);
+export type VerificationProvenanceIntent = Extract<
+  MovePackageIntent,
+  "publish" | "upgrade"
+>;
+
+const VERIFICATION_PROVENANCE_INTENTS = [
+  "publish",
+  "upgrade",
+] as const satisfies readonly VerificationProvenanceIntent[];
+const verificationIntents = new Set<VerificationProvenanceIntent>(
+  VERIFICATION_PROVENANCE_INTENTS
+);
 
 type VerificationIntentResult =
-  | { ok: true; value: MovePackageIntent }
+  | { ok: true; value: VerificationProvenanceIntent }
   | { ok: false; failure: MovePackageProvenanceResult };
 
 type VerificationWasmModule = Pick<
@@ -219,7 +231,7 @@ export async function getPinnedSuiVersion(options?: {
 /**
  * Rebuild source and compare it to caller-provided reference bytecode.
  * Browser WASM builds use declared host/crypto/network compatibility boundaries; see SECURITY.md.
- * `failureStage` is a failure-only diagnostic and is absent from verified, mismatch, and toolchain-mismatch results.
+ * `failureStage` is a failure-only diagnostic and is absent from verified, mismatch, and bytecode-version-mismatch results.
  */
 export async function verifyMovePackageProvenance(
   input: MovePackageProvenanceInput
@@ -282,21 +294,18 @@ export async function verifyMovePackageProvenance(
 function verificationIntent(
   intent: MovePackageProvenanceInput["intent"] | unknown
 ): VerificationIntentResult {
-  if (intent === undefined) {
-    return { ok: true, value: "dump" };
-  }
   if (
     typeof intent === "string" &&
-    verificationIntents.has(intent as MovePackageIntent)
+    verificationIntents.has(intent as VerificationProvenanceIntent)
   ) {
-    return { ok: true, value: intent as MovePackageIntent };
+    return { ok: true, value: intent as VerificationProvenanceIntent };
   }
   return {
     ok: false,
     failure: buildFailure(
       `Invalid verification intent '${String(
         intent
-      )}'. Expected one of: ${MOVE_PACKAGE_INTENTS.join(", ")}`,
+      )}'. Expected one of: ${VERIFICATION_PROVENANCE_INTENTS.join(", ")}`,
       "input_validation"
     ),
   };

@@ -6,6 +6,7 @@ import { Transaction } from "@mysten/sui/transactions";
 import {
   compareBuildOutputs,
   compareModuleBytecode,
+  normalizeOutput,
   writeJsonArtifact,
 } from "./artifact_parity_helpers.mjs";
 import {
@@ -49,8 +50,8 @@ const fixtures = [
     packagePath: "move/enclave",
     txDigest: "B2eHopwUuSgMhJNHQA6LNMkQYVKesPe6M6MorbiwiaGX",
     expectedKind: "publish",
-    expectedStatus: "toolchain_mismatch",
-    expectedVerdict: "format_drift",
+    expectedStatus: "bytecode_version_mismatch",
+    expectedVerdict: "bytecode_format_drift",
   },
   {
     name: "apps-kiosk",
@@ -60,8 +61,8 @@ const fixtures = [
     packagePath: "kiosk",
     txDigest: "LexwBJLt1jMwhNsNCkU4jiWwZPaAeqwhgLy2RPZbd2n",
     expectedKind: "upgrade",
-    expectedStatus: "toolchain_mismatch",
-    expectedVerdict: "format_drift",
+    expectedStatus: "bytecode_version_mismatch",
+    expectedVerdict: "bytecode_format_drift",
   },
 ];
 
@@ -233,20 +234,38 @@ async function main() {
         transactionArtifact
       );
 
-      const cliReference = await runSuiCliReferenceArtifact({
-        suiCli,
-        packageDir,
-        outputRoot,
-        fixtureName: fixture.name,
-        intent: transactionArtifact.kind,
-        environment: fixture.network,
-      });
-      await writeJsonArtifact(outputRoot, "cli.json", cliReference.output);
-      if (cliReference.cliResult) {
+      const hasUpgradeCliInput =
+        transactionArtifact.kind === "upgrade" && fixture.upgradeCapability;
+      const cliReference =
+        transactionArtifact.kind === "publish" || hasUpgradeCliInput
+          ? await runSuiCliReferenceArtifact({
+              suiCli,
+              packageDir,
+              outputRoot,
+              fixtureName: fixture.name,
+              intent: transactionArtifact.kind,
+              environment: fixture.network,
+              upgradeCapability: fixture.upgradeCapability,
+              sender: fixture.sender,
+              gasBudget: fixture.gasBudget,
+              gasPrice: fixture.gasPrice,
+              gas: fixture.gas,
+              skipVerifyCompatibility: fixture.skipVerifyCompatibility,
+              skipDependencyVerification: fixture.skipDependencyVerification,
+            })
+          : undefined;
+      if (cliReference) {
+        await writeJsonArtifact(outputRoot, "cli.json", cliReference.output);
         await writeJsonArtifact(outputRoot, "cli-output.json", {
           kind: cliReference.kind,
           intent: cliReference.intent,
           ...cliReference.cliResult,
+        });
+      } else {
+        await writeJsonArtifact(outputRoot, "cli-reference-skipped.json", {
+          kind: transactionArtifact.kind,
+          reason:
+            "Sui CLI upgrade .mv artifacts require user-provided upgradeCapability and transaction context; verification does not use dump output as an upgrade reference.",
         });
       }
 
@@ -272,41 +291,93 @@ async function main() {
       });
       await writeJsonArtifact(outputRoot, "verification.json", verification);
       const verificationGate = verificationStatusGate(fixture, verification);
-      const cliVsVerification = compareCliReferenceWithVerificationCurrent(
-        cliReference,
-        verification
-      );
-      if (cliVsVerification.currentBuild) {
+      const cliVsVerification = cliReference
+        ? compareCliReferenceWithVerificationCurrent(cliReference, verification)
+        : {
+            ok: true,
+            skipped: true,
+            reason:
+              "Upgrade transaction verification compares the extracted transaction modules against the verifier's upgrade-intent currentBuild; no dump reference is used.",
+          };
+      const verificationCurrentBuild = verification.currentBuild
+        ? normalizeOutput(verification.currentBuild)
+        : undefined;
+      if (verificationCurrentBuild) {
         await writeJsonArtifact(
           outputRoot,
           "verification-current-build.json",
-          cliVsVerification.currentBuild
+          verificationCurrentBuild
         );
       }
 
-      const compareDependencyOutputs = transactionArtifact.kind === "upgrade";
-      const txVsCli = compareModuleBytecode(
-        "transaction",
-        txOutput,
-        "cli",
-        cliReference.output
-      );
-      const txVsCliOutput = compareDependencyOutputs
-        ? compareBuildOutputs(
+      const txVsCli = cliReference
+        ? compareModuleBytecode(
             "transaction",
             txOutput,
-            "CLI",
+            "cli",
             cliReference.output
           )
-        : [];
+        : { ok: true, skipped: true, differences: [] };
+      const txVsVerification = verificationCurrentBuild
+        ? compareModuleBytecode(
+            "transaction",
+            txOutput,
+            "verification",
+            verificationCurrentBuild
+          )
+        : {
+            ok: false,
+            differences: ["verification result has no currentBuild"],
+          };
+      const compareDependencyOutputs = transactionArtifact.kind === "upgrade";
+      const txVsVerificationOutput =
+        compareDependencyOutputs && verificationCurrentBuild
+          ? compareBuildOutputs(
+              "transaction",
+              txOutput,
+              "verification",
+              verificationCurrentBuild
+            )
+          : [];
+      const txVsCliOutput =
+        compareDependencyOutputs &&
+        cliReference?.output.dependencies &&
+        cliReference?.output.digest
+          ? compareBuildOutputs(
+              "transaction",
+              txOutput,
+              "CLI",
+              cliReference.output
+            )
+          : [];
+      const currentLabel =
+        transactionArtifact.kind === "upgrade"
+          ? "verification"
+          : cliReference
+            ? "cli"
+            : "verification";
+      const transactionMatchesVerification =
+        txVsVerification.ok && txVsVerificationOutput.length === 0;
+      const transactionMatchesCli = txVsCli.ok && txVsCliOutput.length === 0;
+      const currentBuildPresent = Boolean(verificationCurrentBuild);
+      const currentBuildGate =
+        transactionArtifact.kind === "upgrade" ? currentBuildPresent : true;
       const comparison = {
-        ok: verificationGate.ok && cliVsVerification.ok,
-        transactionMatchesCurrent: txVsCli.ok && txVsCliOutput.length === 0,
+        ok: verificationGate.ok && cliVsVerification.ok && currentBuildGate,
+        transactionMatchesCurrent:
+          transactionArtifact.kind === "upgrade"
+            ? transactionMatchesVerification
+            : transactionMatchesCli,
+        transactionMatchesCli,
+        transactionMatchesVerification,
+        transactionCurrentArtifact: currentLabel,
         verificationGate,
         transactionVsCli: txVsCli,
+        transactionVsVerification: txVsVerification,
         cliVsVerification,
         verification,
         transactionVsCliOutput: txVsCliOutput,
+        transactionVsVerificationOutput: txVsVerificationOutput,
       };
       await writeJsonArtifact(outputRoot, "comparison.json", comparison);
 

@@ -13,7 +13,7 @@ export interface MovePackagePublication {
   publishedAt: string;
   originalId: string;
   version: number;
-  toolchainVersion?: string;
+  suiVersion?: string;
   buildConfig?: { edition: string; flavor: string };
   upgradeCapability?: string;
   transactionDigest?: string;
@@ -74,7 +74,7 @@ export async function updateMovePackagePublication(
     return asFailure(error, "wasm_init");
   }
 
-  const toolchainVersion = await getPinnedSuiVersion({ wasm: input.wasm });
+  const suiVersion = await getPinnedSuiVersion({ wasm: input.wasm });
   let response: PublicationUpdateResponse;
   try {
     response = parsePublicationUpdateResponse(
@@ -87,7 +87,7 @@ export async function updateMovePackagePublication(
           publishedId: execution.packageId,
           version: execution.version,
           upgradeCapability: execution.upgradeCapability,
-          toolchainVersion,
+          suiVersion,
           transactionDigest: execution.transactionDigest,
         })
       )

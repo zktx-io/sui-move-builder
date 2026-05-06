@@ -10,12 +10,12 @@ use normalize::{
     normalize_digest_value, normalize_optional_dependencies, normalize_optional_digest,
     normalize_optional_root_address, normalize_string_dependencies,
 };
-use parse::{current_toolchain_version, parse_artifact, toolchain_evidence_if_mismatch};
+use parse::{bytecode_header_evidence_if_mismatch, current_sui_version, parse_artifact};
 use types::{
-    summary_for_verdict, BuildOutput, ToolchainMetadata, VerificationInput, VerificationOutput,
+    summary_for_verdict, BuildOutput, BuildVersionMetadata, VerificationInput, VerificationOutput,
     FAILURE_STAGE_COMPILE, FAILURE_STAGE_COMPILER_OUTPUT, FAILURE_STAGE_INPUT_VALIDATION,
-    FAILURE_STAGE_VERIFICATION_OUTPUT, VERDICT_FORMAT_DRIFT, VERDICT_HEADER_ONLY_TOOLCHAIN_DRIFT,
-    VERDICT_UNVERIFIED,
+    FAILURE_STAGE_VERIFICATION_OUTPUT, VERDICT_BYTECODE_FORMAT_DRIFT,
+    VERDICT_BYTECODE_VERSION_HEADER_MISMATCH, VERDICT_UNVERIFIED,
 };
 
 pub(crate) fn verify_against_reference(input_json: &str) -> String {
@@ -29,7 +29,7 @@ pub(crate) fn verify_against_reference(input_json: &str) -> String {
             current_build: None,
             reference_summary: None,
             current_summary: None,
-            toolchain_evidence: None,
+            bytecode_header_evidence: None,
             differences: Vec::new(),
             bytecode_diffs: Vec::new(),
             error: Some(error),
@@ -51,6 +51,22 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
     let input: VerificationInput = serde_json::from_str(input_json)
         .map_err(|error| format!("Invalid verification input: {}", error))?;
 
+    if let Err(error) = validate_verification_compile_intent(input.options.as_ref()) {
+        return Ok(VerificationOutput {
+            status: "build_failure",
+            verdict: Some(VERDICT_UNVERIFIED),
+            summary: Some(summary_for_verdict(VERDICT_UNVERIFIED)),
+            failure_stage: Some(FAILURE_STAGE_INPUT_VALIDATION),
+            current_build: None,
+            reference_summary: None,
+            current_summary: None,
+            bytecode_header_evidence: None,
+            differences: Vec::new(),
+            bytecode_diffs: Vec::new(),
+            error: Some(error),
+        });
+    }
+
     let reference_dependencies_provided = input.reference.dependencies.is_some();
     let reference_digest_provided = input.reference.digest.is_some();
     let reference_dependencies = normalize_optional_dependencies(input.reference.dependencies)?;
@@ -62,8 +78,8 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
             .clone()
             .or(input.reference.package_id.clone()),
     )?;
-    let reference_toolchain_metadata = ToolchainMetadata {
-        version: input.reference.toolchain_version,
+    let reference_build_version_metadata = BuildVersionMetadata {
+        version: input.reference.cli_version,
         build_config: input.reference.build_config,
     };
     let reference = match parse_artifact(
@@ -72,7 +88,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
         reference_dependencies,
         reference_digest,
         None,
-        Some(reference_toolchain_metadata),
+        Some(reference_build_version_metadata),
     ) {
         Ok(artifact) => artifact,
         Err(error) => {
@@ -84,7 +100,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
                 current_build: None,
                 reference_summary: None,
                 current_summary: None,
-                toolchain_evidence: None,
+                bytecode_header_evidence: None,
                 differences: Vec::new(),
                 bytecode_diffs: Vec::new(),
                 error: Some(error),
@@ -109,7 +125,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
             current_build: None,
             reference_summary: Some(reference.summary),
             current_summary: None,
-            toolchain_evidence: None,
+            bytecode_header_evidence: None,
             differences: Vec::new(),
             bytecode_diffs: Vec::new(),
             error: Some(compile_result.output()),
@@ -127,7 +143,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
                 current_build: None,
                 reference_summary: Some(reference.summary),
                 current_summary: None,
-                toolchain_evidence: None,
+                bytecode_header_evidence: None,
                 differences: Vec::new(),
                 bytecode_diffs: Vec::new(),
                 error: Some(format!("Invalid current build output: {}", error)),
@@ -147,7 +163,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
                 current_build: Some(current_build),
                 reference_summary: Some(reference.summary),
                 current_summary: None,
-                toolchain_evidence: None,
+                bytecode_header_evidence: None,
                 differences: Vec::new(),
                 bytecode_diffs: Vec::new(),
                 error: Some(format!("Invalid current build digest: {}", error)),
@@ -160,8 +176,8 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
         current_dependencies,
         Some(current_digest),
         reference_root_address,
-        Some(ToolchainMetadata {
-            version: Some(current_toolchain_version()),
+        Some(BuildVersionMetadata {
+            version: Some(current_sui_version()),
             build_config: None,
         }),
     ) {
@@ -175,7 +191,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
                 current_build: Some(current_build),
                 reference_summary: Some(reference.summary),
                 current_summary: None,
-                toolchain_evidence: None,
+                bytecode_header_evidence: None,
                 differences: Vec::new(),
                 bytecode_diffs: Vec::new(),
                 error: Some(format!("Invalid current build bytecode: {}", error)),
@@ -183,8 +199,8 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
         }
     };
 
-    let toolchain_evidence = toolchain_evidence_if_mismatch(&reference, &current);
-    if toolchain_evidence.is_none() {
+    let bytecode_header_evidence = bytecode_header_evidence_if_mismatch(&reference, &current);
+    if bytecode_header_evidence.is_none() {
         if let Some(error) = first_reference_deserialization_error(&reference) {
             return Ok(VerificationOutput {
                 status: "invalid_reference",
@@ -194,7 +210,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
                 current_build: Some(current_build),
                 reference_summary: Some(reference.summary),
                 current_summary: Some(current.summary),
-                toolchain_evidence: None,
+                bytecode_header_evidence: None,
                 differences: Vec::new(),
                 bytecode_diffs: Vec::new(),
                 error: Some(error),
@@ -210,12 +226,12 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
     );
     let status = if comparison.differences.is_empty() {
         "verified"
-    } else if toolchain_evidence.is_some()
-        && (comparison.verdict == VERDICT_HEADER_ONLY_TOOLCHAIN_DRIFT
-            || comparison.verdict == VERDICT_FORMAT_DRIFT
+    } else if bytecode_header_evidence.is_some()
+        && (comparison.verdict == VERDICT_BYTECODE_VERSION_HEADER_MISMATCH
+            || comparison.verdict == VERDICT_BYTECODE_FORMAT_DRIFT
             || comparison.verdict == VERDICT_UNVERIFIED)
     {
-        "toolchain_mismatch"
+        "bytecode_version_mismatch"
     } else {
         "mismatch"
     };
@@ -228,9 +244,38 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
         current_build: Some(current_build),
         reference_summary: Some(reference.summary),
         current_summary: Some(current.summary),
-        toolchain_evidence,
+        bytecode_header_evidence,
         differences: comparison.differences,
         bytecode_diffs: comparison.bytecode_diffs,
         error: None,
     })
+}
+
+fn validate_verification_compile_intent(options: Option<&serde_json::Value>) -> Result<(), String> {
+    let Some(options) = options else {
+        return Err(
+            "Invalid verification intent '<missing>'. Expected one of: publish, upgrade"
+                .to_string(),
+        );
+    };
+    let Some(value) = options.get("compileIntent") else {
+        return Err(
+            "Invalid verification intent '<missing>'. Expected one of: publish, upgrade"
+                .to_string(),
+        );
+    };
+    let Some(intent) = value.as_str() else {
+        return Err(format!(
+            "Invalid verification intent {}. Expected one of: publish, upgrade",
+            value
+        ));
+    };
+
+    match intent {
+        "publish" | "upgrade" => Ok(()),
+        value => Err(format!(
+            "Invalid verification intent '{}'. Expected one of: publish, upgrade",
+            value
+        )),
+    }
 }

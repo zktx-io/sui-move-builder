@@ -141,8 +141,10 @@ export function resolveSuiVersionConfig(
   return { suiVersion: config, restArgs };
 }
 
-export function getSuiBuildConfig(repoRoot, suiVersion) {
-  const buildWorkspaceDir = path.join(repoRoot, ".sui-build");
+export function getSuiBuildConfig(repoRoot, suiVersion, env = process.env) {
+  const buildWorkspaceDir = env.SUI_BUILD_WORKSPACE_DIR
+    ? path.resolve(env.SUI_BUILD_WORKSPACE_DIR)
+    : path.join(repoRoot, ".sui-build");
   const tag = suiVersion.tag;
   const commit = suiVersion.commit;
   const checkoutRef = tag ? `refs/tags/${tag}` : commit;
@@ -154,11 +156,11 @@ export function getSuiBuildConfig(repoRoot, suiVersion) {
   return {
     repoRoot,
     buildWorkspaceDir,
-    sourceDir: process.env.SUI_SOURCE_DIR
-      ? path.resolve(process.env.SUI_SOURCE_DIR)
+    sourceDir: env.SUI_SOURCE_DIR
+      ? path.resolve(env.SUI_SOURCE_DIR)
       : path.join(buildWorkspaceDir, "source"),
-    workDir: process.env.SUI_WORK_DIR
-      ? path.resolve(process.env.SUI_WORK_DIR)
+    workDir: env.SUI_WORK_DIR
+      ? path.resolve(env.SUI_WORK_DIR)
       : path.join(buildWorkspaceDir, "work"),
     repoUrl: suiVersion.repo || SUI_REPO_URL,
     tag,

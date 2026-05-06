@@ -58,7 +58,7 @@ struct PublicationUpdateInput {
     published_id: String,
     version: u64,
     upgrade_capability: Option<String>,
-    toolchain_version: String,
+    sui_version: String,
     transaction_digest: Option<String>,
 }
 
@@ -78,7 +78,7 @@ struct PublicationUpdatePublicationOutput {
     original_id: String,
     version: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    toolchain_version: Option<String>,
+    sui_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     build_config: Option<PublicationBuildConfigOutput>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -148,7 +148,7 @@ struct WasmPublication {
     addresses: WasmPublishAddresses,
     version: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    toolchain_version: Option<String>,
+    sui_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     build_config: Option<WasmSuiBuildParams>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -333,7 +333,7 @@ fn publication_update_output(
         published_at: publication.addresses.published_at.to_string(),
         original_id: publication.addresses.original_id.to_string(),
         version: publication.version,
-        toolchain_version: publication.toolchain_version.clone(),
+        sui_version: publication.sui_version.clone(),
         build_config: publication.build_config.as_ref().map(|build_config| {
             PublicationBuildConfigOutput {
                 edition: build_config.edition.clone(),
@@ -369,7 +369,7 @@ fn publication_update_impl(
                     original_id: WasmOriginalID(published_id),
                 },
                 version: input.version,
-                toolchain_version: Some(input.toolchain_version),
+                sui_version: Some(input.sui_version),
                 build_config: Some(WasmSuiBuildParams::default()),
                 upgrade_capability: Some(upgrade_capability),
             }
@@ -385,7 +385,7 @@ fn publication_update_impl(
                 WasmPublishedID(parse_account_address(&input.published_id, "published-at")?);
             publication.version = input.version;
             publication.build_config = Some(WasmSuiBuildParams::default());
-            publication.toolchain_version = Some(input.toolchain_version);
+            publication.sui_version = Some(input.sui_version);
             publication.clone()
         }
     };
@@ -468,7 +468,7 @@ fn parse_legacy_publications(
                         published_at: WasmPublishedID(latest_id),
                     },
                     version,
-                    toolchain_version: None,
+                    sui_version: None,
                     build_config: None,
                     upgrade_capability: None,
                 },

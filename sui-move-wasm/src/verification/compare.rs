@@ -5,8 +5,8 @@ use sha2::{Digest, Sha256};
 
 use super::types::{
     BytecodeDiff, BytecodeIdentityEvidence, BytecodeShapeEvidence, ChangedTable, ParsedArtifact,
-    ParsedModule, VERDICT_EXACT_BYTECODE_MATCH, VERDICT_FORMAT_DRIFT,
-    VERDICT_HEADER_ONLY_TOOLCHAIN_DRIFT, VERDICT_ROOT_ADDRESS_SUBSTITUTION_MATCH,
+    ParsedModule, VERDICT_BYTECODE_FORMAT_DRIFT, VERDICT_BYTECODE_VERSION_HEADER_MISMATCH,
+    VERDICT_EXACT_BYTECODE_MATCH, VERDICT_ROOT_ADDRESS_SUBSTITUTION_MATCH,
     VERDICT_SEMANTIC_MISMATCH, VERDICT_UNVERIFIED,
 };
 
@@ -277,15 +277,15 @@ fn aggregate_verdict(differences: &[String], bytecode_diffs: &[BytecodeDiff]) ->
     }
     if bytecode_diffs
         .iter()
-        .all(|diff| diff.classification == VERDICT_HEADER_ONLY_TOOLCHAIN_DRIFT)
+        .all(|diff| diff.classification == VERDICT_BYTECODE_VERSION_HEADER_MISMATCH)
     {
-        return VERDICT_HEADER_ONLY_TOOLCHAIN_DRIFT;
+        return VERDICT_BYTECODE_VERSION_HEADER_MISMATCH;
     }
     if bytecode_diffs.iter().all(|diff| {
-        diff.classification == VERDICT_HEADER_ONLY_TOOLCHAIN_DRIFT
-            || diff.classification == VERDICT_FORMAT_DRIFT
+        diff.classification == VERDICT_BYTECODE_VERSION_HEADER_MISMATCH
+            || diff.classification == VERDICT_BYTECODE_FORMAT_DRIFT
     }) {
-        return VERDICT_FORMAT_DRIFT;
+        return VERDICT_BYTECODE_FORMAT_DRIFT;
     }
 
     VERDICT_SEMANTIC_MISMATCH
@@ -301,7 +301,7 @@ fn classify_bytecode_diff(reference: &ParsedModule, current: &ParsedModule) -> &
     }
 
     if same_except_version_word(&reference.bytes, &current.bytes) {
-        return VERDICT_HEADER_ONLY_TOOLCHAIN_DRIFT;
+        return VERDICT_BYTECODE_VERSION_HEADER_MISMATCH;
     }
 
     let Some(changed_tables) = changed_tables(&reference.bytes, &current.bytes) else {
@@ -315,7 +315,7 @@ fn classify_bytecode_diff(reference: &ParsedModule, current: &ParsedModule) -> &
             .iter()
             .all(|table| table.name == "function_defs")
     {
-        return VERDICT_FORMAT_DRIFT;
+        return VERDICT_BYTECODE_FORMAT_DRIFT;
     }
 
     VERDICT_SEMANTIC_MISMATCH

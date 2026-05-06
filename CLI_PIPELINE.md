@@ -56,6 +56,14 @@ flowchart TD
 | Full         | `testing`               | `@zktx.io/sui-move-builder/full`         | Lite API plus `testMovePackage`                                                                 | Uses the full `dist/full` WASM artifact; unit-test execution is full-only and root-test ownership is checked by integration tests.           |
 | Verification | `verification`          | `@zktx.io/sui-move-builder/verification` | Source provenance rebuild with caller-selected rebuild intent and bytecode/reference comparison | Uses the verification `dist/verification` WASM artifact and returns verification status without transaction, publish, upgrade, or test APIs. |
 
+## Verification Version Routing
+
+Builder version-up work tracks the pinned Sui CLI/source version because lite/full artifacts are expected to follow the selected Sui build pipeline. Verification version routing is different: it starts from the decoded bytecode version and bytecode serialization behavior observed in transaction or `.mv` reference modules.
+
+`scripts/verification/bytecode-version-sources.json` is the machine-readable source list for scripts that fetch Sui repo files by tag/commit. `BYTECODE_VERSION_HISTORY.md` records the human-reviewed bytecode-version history: the representative Sui source tag/commit for each decoded bytecode version, the last observed tag before the next recorded change, and the difference from the previous recorded version. `scripts/verification/bytecode-verifiers.json` is the verifier routing manifest. The manifest `current` field names the current verifier ID; decoded bytecode version routing lives under `bytecodeVersions`. Each supported decoded bytecode version maps to one verifier built from the representative Sui source tag/commit for that bytecode version. During a Sui version-up, if the decoded bytecode version and serialization behavior are unchanged, update the current builder and verifier together. If either changes, update `scripts/verification/bytecode-version-sources.json` and `BYTECODE_VERSION_HISTORY.md`, move the previous verifier recipe into `scripts/compat/bytecode-verifiers/<verifier-id>/`, add that verifier to the manifest as `legacy`, and verify that it rebuilds through `npm run build:bytecode-verifier -- --verifier <verifier-id>`.
+
+When multiple Sui releases were skipped, regenerate upstream tag inventory with `npm run inventory:sui-tags` and analyze skipped mainnet/testnet/devnet tags with `npm run analyze:bytecode-versions` before deciding which legacy verifiers are required. The objective is to keep verifiers for evidence-changing decoded bytecode versions, not every Sui patch release.
+
 ## Version-Up Sequence Map
 
 Use this ordered map with the structure table below when porting the pinned Sui version. The `Reuse level` column names the current implementation shape; version-up work should prefer a pinned upstream call before expanding a local implementation.
@@ -139,7 +147,7 @@ The runtime package boundary is a host-provided snapshot, not an implicit filesy
 ## 4) Compiler Invocation
 
 - **CLI**: `Compiler::from_package_paths` with target + deps (Source/Bytecode mix), using real FS or VFS.
-- **Here (WASM/Rust)**: `compiler_support::compile_impl` builds `PackagePaths` for root/deps, writes files to an in-memory VFS, then calls `Compiler::from_package_paths`. Dependency named-address maps/IDs come from Rust package-group construction, falling back to `SourceManifest` parsing (via `manifest.rs`) where needed. `PackageConfig` uses manifest edition/flavor, source warning filters, and package-id safe names. `compileIntent` is one of `dump`, `publish`, or `upgrade`; `dump` and `upgrade` compile the root package named address as `0x0`, while `publish` keeps the package root address selected by package metadata. Verification exposes the same values through its optional `intent` input and defaults to `dump`; transaction extraction remains a caller or audit-harness responsibility. Dependency addresses are unchanged unless `withUnpublishedDependencies` maps unpublished dependency addresses to `0x0`. `modes` controls manifest dependency inclusion and `Flags::set_modes`. `lintFlag` maps to Move compiler lint levels (`none`, `default`, `all`) and registers the same regular/Sui linter filter sets used by the pinned compiler path. `stripMetadata` is passed by JS but not represented in the Rust compile options.
+- **Here (WASM/Rust)**: `compiler_support::compile_impl` builds `PackagePaths` for root/deps, writes files to an in-memory VFS, then calls `Compiler::from_package_paths`. Dependency named-address maps/IDs come from Rust package-group construction, falling back to `SourceManifest` parsing (via `manifest.rs`) where needed. `PackageConfig` uses manifest edition/flavor, source warning filters, and package-id safe names. Build APIs use `compileIntent` values `dump`, `publish`, or `upgrade`; `dump` and `upgrade` compile the root package named address as `0x0`, while `publish` keeps the package root address selected by package metadata. Verification requires an explicit `publish` or `upgrade` intent so transaction provenance is compared against publish/upgrade bytecode rather than dump JSON. Transaction extraction remains a caller or audit-harness responsibility. Dependency addresses are unchanged unless `withUnpublishedDependencies` maps unpublished dependency addresses to `0x0`. `modes` controls manifest dependency inclusion and `Flags::set_modes`. `lintFlag` maps to Move compiler lint levels (`none`, `default`, `all`) and registers the same regular/Sui linter filter sets used by the pinned compiler path. `stripMetadata` is passed by JS but not represented in the Rust compile options.
 
 ## 5) Module Ordering
 
@@ -158,7 +166,7 @@ The runtime package boundary is a host-provided snapshot, not an implicit filesy
 | Bytecode-only `.mv` dependency fallback                     | `unsupported`         | All dependencies must be available as source snapshots.                                                                                                        | Generated source or synthetic package metadata.                                |
 | Browser/local filesystem discovery                          | `host-snapshot only`  | Local dependency files must be provided through `fetchLocal` or another host snapshot loader.                                                                  | Hidden filesystem assumptions in browser code.                                 |
 | `stripMetadata`                                             | `reserved/no-op`      | The public option is passed through but is not represented in Rust compile options.                                                                            | Documentation that presents it as active compiler behavior.                    |
-| Full upstream `PackageGraphBuilder` / `BuildPlan` execution | `not used at runtime` | V4 lockfile and manifest fallback semantics are Rust/WASM-owned for supported shapes, while TypeScript owns host fetching and snapshot assembly.               | More local package-manager semantics without upstream references and fixtures. |
+| Full upstream `PackageGraphBuilder` / `BuildPlan` execution | `not used at runtime` | V4 lockfile and manifest fallback semantics are Rust/WASM-owned for supported shapes, while TypeScript owns host fetching and snapshot assembly.               | More local package-manager semantics without upstream references and coverage. |
 | Dev-address / extra named-address override API              | `not exposed`         | No first-class `MovePackageInput` override channel is exposed.                                                                                                 | Ad hoc address rewrites in TypeScript.                                         |
 | V0/V1/V2/V3 lockfile graph loading as pinned graph sources  | `unsupported`         | Supported packages fall back to manifest resolution; supported V3 publication data may be migrated separately.                                                 | JS compatibility graph loading or silent lockfile pin trust.                   |
 | Transaction execution                                       | `not exposed`         | Publish and upgrade APIs prepare bytecode payload data only.                                                                                                   | Signing, gas selection, PTB construction, dry-run, or execution in this layer. |
@@ -166,7 +174,7 @@ The runtime package boundary is a host-provided snapshot, not an implicit filesy
 
 ## Known Implementation Boundaries
 
-These areas are local compatibility boundaries rather than full reuse of the upstream Sui package-manager path. Do not expand them without adding a targeted parity fixture and an upstream source reference.
+These areas are local compatibility boundaries rather than full reuse of the upstream Sui package-manager path. Do not expand them without adding targeted parity coverage and an upstream source reference.
 
 - **Lockfile and manifest graph outputs**: V4 fetch-plan, graph validation, package group construction, and generation run through Rust/WASM helpers. Manifest fallback graph planning, traversal/order extraction, and package group construction also run through Rust/WASM. TypeScript still performs host fetching and snapshot assembly.
 - **Output dependency filtering**: Rust/WASM filters zero IDs and selected system package IDs such as SuiSystem (`0x3`) and Bridge (`0xb`) when they are not root-declared dependencies. Explicit root aliases are carried from the resolver into dependency metadata and covered by `node test/integration/run.mjs output-deps`.
@@ -174,7 +182,7 @@ These areas are local compatibility boundaries rather than full reuse of the ups
 - **Test ownership and modes**: full WASM tests construct the test plan with the root package name. Dependency package tests are compiled in test mode but are not executed as root tests. User `modes` are passed to the test compiler path. This is covered by `node test/integration/run.mjs unit-test-ownership` and `node test/integration/run.mjs unit-test-modes`.
 - **Failure observability**: JS build/test wrappers attach a broad `MovePackageFailure.category` based on the stage that failed. Rust/WASM helper failures may also carry `MovePackageFailure.code`; host loader, compiler, and test runner details remain in the original error string.
 - **Prepare patching**: recursive Cargo patching remains broad, but active compatibility sources and intentional empty stubs are manifest-declared and required patch targets now fail when missing.
-- **Compatibility-hollow package manager crates**: `move-package-alt` and `move-package-alt-compilation` are `stubTemplates`, not `emptyStubCrates`. The prepared WASM build includes only placeholder symbols from those crates; `sui-move-wasm/src` does not call their package graph, lockfile, digest, or build-plan entrypoints. Supported package-manager behavior is implemented in local Rust/WASM helpers and fixture-covered at the stages listed in this document.
+- **Compatibility-hollow package manager crates**: `move-package-alt` and `move-package-alt-compilation` are `stubTemplates`, not `emptyStubCrates`. The prepared WASM build includes only placeholder symbols from those crates; `sui-move-wasm/src` does not call their package graph, lockfile, digest, or build-plan entrypoints. Supported package-manager behavior is implemented in local Rust/WASM helpers and covered at the stages listed in this document.
 
 ### Upstream Package-Manager Boundaries
 
@@ -189,7 +197,7 @@ The runtime path accepts host-provided package snapshots and does not call disk/
 | Compiler dependency input                   | `local assembly`      | `package_model::build_compiler_input` handles source discovery, package config, address merge, output ID collection, and `PackagePaths` assembly.                |
 | Source discovery                            | `equivalent-local`    | `package_model/source_discovery.rs` selects `sources/` and `scripts/`, plus `examples/` and `tests/` in test mode.                                               |
 | Compiler flags and lint setup               | `local adapter`       | `compiler_support::compile_impl` adapts the exposed compiler flag fields and registers Sui/regular linter filters from `lintFlag`.                               |
-| Output dependencies and digest              | `Rust/WASM-owned`     | Rust/WASM emits dependency IDs used for both output and digest; zero/system filtering remains Rust-owned and fixture-covered.                                    |
+| Output dependencies and digest              | `Rust/WASM-owned`     | Rust/WASM emits dependency IDs used for both output and digest; zero/system filtering remains Rust-owned and covered by integration tests.                       |
 | Move.lock V4 generation                     | `Rust/WASM-owned`     | `lockfile_v4_generate` writes supported V4 pinned sections from Rust/WASM package metadata.                                                                      |
 | Unit test ownership                         | `Rust/WASM-owned`     | The full artifact compiles test-mode sources and constructs the test plan with the root package name; dependency tests are compiled but not run as root tests.   |
 | Bytecode-only dependencies                  | `unsupported`         | `.mv` dependency fallback requires cached or on-disk bytecode artifacts outside the current snapshot contract.                                                   |
@@ -209,10 +217,10 @@ Runtime code must not add filesystem package-root discovery, git-cache assumptio
 - Same-name/different-source packages: keep the suffix/linkage behavior covered by parity tests and avoid silent source dedupe.
 - Path sorting: keep source path ordering deterministic and verify against CLI outputs; avoid locale-dependent comparisons where sorting is used.
 - Move.toml usage: use Rust `SourceManifest`/package-model parsing for compiler package groups. Manifest fallback planning, traversal/order extraction, and package-group construction are Rust-owned; TypeScript still performs host snapshot fetching.
-- Module ordering: keep the root module topological ordering aligned with CLI dump output for parity fixtures.
+- Module ordering: keep the root module topological ordering aligned with CLI dump output for covered parity scenarios.
 - Outputs: BuildInfo/disassembly artifacts are CLI-only unless intentionally added to WASM.
 - Stale V4 lockfiles: verify dependency digest mismatch and fetched-source-content drift before claiming lockfile parity.
-- V4 lockfile graph loading: keep fixtures for same-name/different-source pins, undefined edges, local source pins through `fetchLocal`, and dependency snapshots missing `Move.toml`.
+- V4 lockfile graph loading: keep coverage for same-name/different-source pins, undefined edges, local source pins through `fetchLocal`, and dependency snapshots missing `Move.toml`.
 - Explicit system deps: `node test/integration/run.mjs output-deps` covers preserving a root-declared system dependency alias while omitting the same system package when it is not root-declared.
 - Test mode: `node test/integration/run.mjs unit-test-ownership` covers the rule that dependency package tests are compiled but not run as root tests. `node test/integration/run.mjs unit-test-modes` covers user mode propagation to the test compiler path.
 - Source discovery: `node test/integration/run.mjs source-discovery` covers the build rule that `tests/*.move` must not leak into compiler input.
@@ -222,7 +230,7 @@ Runtime code must not add filesystem package-root discovery, git-cache assumptio
 ## 8) Implementation Defaults & Boundaries
 
 - **Network Default**: If not specified, the build network defaults to `mainnet`; lockfile lookup then uses the active network/chain identifiers.
-- **Address Injection**: Address handling combines parsed `Move.toml`, supported `Move.lock` environment data, `Published.toml`, and a unified named-address table. New package-manager address behavior should be tied to a pinned upstream source reference and a targeted parity fixture.
+- **Address Injection**: Address handling combines parsed `Move.toml`, supported `Move.lock` environment data, `Published.toml`, and a unified named-address table. New package-manager address behavior should be tied to a pinned upstream source reference and targeted parity coverage.
 - **Test Filtering**: `move test` (WASM) constructs the test plan with the root package name and excludes dependency package `tests/` from root test execution. The surrounding compiler setup still uses local `PackagePaths` assembly rather than the full upstream `BuildPlan` path.
 - **System Addresses**: `std` (0x1) and `sui` (0x2) are automatically defined in the compiler's address map if missing, ensuring standard library resolution.
 
@@ -233,7 +241,7 @@ The `sui-move-wasm` Rust source and JS integration layer use pinned Move/Sui com
 - `sui-move-wasm/Cargo.toml` uses Move/Sui compiler crates from the pinned Sui build workspace.
 - JS serializes package `edition` into `PackageGroup`; Rust deserializes it when constructing compiler input.
 - Address handling supports `0x0` for unpublished packages and uses resolved original/latest IDs where available.
-- Integration tests compare selected CLI and WASM outputs. Passing tests are evidence for covered fixtures only.
+- Integration tests compare selected CLI and WASM outputs. Passing tests are evidence for covered packages and scenarios only.
 
 ---
 
@@ -417,7 +425,7 @@ published Sui network metadata. They are not test expectations:
               │
               └─▶ [sui-move-builder (WASM)] ─▶ Result B
 
-Result A == Result B for selected outputs → covered fixture parity
+Result A == Result B for selected outputs → covered parity
 ```
 
 ### 15.2 Comparison Targets
@@ -430,9 +438,9 @@ Result A == Result B for selected outputs → covered fixture parity
 
 ### 15.3 Test Scenarios
 
-1. **Move.toml only** (initial build): Compare module bytecode, dependencies, and digest for selected fixtures.
-2. **Move.toml + Lock** (rebuild): Exercise lockfile-aware resolution where fixtures include lockfiles.
-3. **+ Published.toml** (deployed package): Exercise publication metadata when available in fixtures.
+1. **Move.toml only** (initial build): Compare module bytecode, dependencies, and digest for selected packages.
+2. **Move.toml + Lock** (rebuild): Exercise lockfile-aware resolution where covered packages include lockfiles.
+3. **+ Published.toml** (deployed package): Exercise publication metadata when available in covered packages.
 
 ### 15.4 Parity Test Method
 
@@ -441,15 +449,15 @@ The default parity integration test does not use transaction snapshots or packag
 1. `sui move build --dump-bytecode-as-base64 --path <package>` using the local Sui CLI.
 2. `dumpMovePackage` using the generated WASM artifact.
 
-`node test/integration/run.mjs parity full` checks `dist/full`, `node test/integration/run.mjs parity lite` checks `dist/lite`, and `npm run test:parity` runs both serially. The test warns when the local Sui CLI version differs from `sui-version.json` and fails when the CLI is missing. It also fails on any mismatch in module bytecode, dependency IDs, or package digest. Default test packages include auto-discovered packages from the pinned Sui checkout under `examples/move`, preferring packages with multiple Move source files, plus the fixed framework fixture at `crates/sui-framework/packages/deepbook`. Explicit package paths can be passed to `node test/integration/run.mjs parity <profile> <package>` when project-specific fixtures are available.
+`node test/integration/run.mjs parity full` checks `dist/full`, `node test/integration/run.mjs parity lite` checks `dist/lite`, and `npm run test:parity` runs both serially. The test warns when the local Sui CLI version differs from `sui-version.json` and fails when the CLI is missing. It also fails on any mismatch in module bytecode, dependency IDs, or package digest. Default test packages include auto-discovered packages from the pinned Sui checkout and configured framework coverage. Explicit package paths can be passed to `node test/integration/run.mjs parity <profile> <package>` when project-specific coverage is needed.
 
-`node test/integration/run.mjs audit build` runs `sui move build --path <package> --install-dir <output>` for `crates/sui-framework/packages/sui-framework` and `crates/sui-framework/packages/sui-system`, converts generated `.mv` files into base64 JSON under `.sui-build/parity-cli-build-artifact-output`, runs the existing low-level WASM `compile` binding with `compileIntent: "publish"`, and compares module bytecode. The command also validates that `BuildInfo.yaml` records `root_as_zero: false`, `set_unpublished_deps_to_zero: false`, and `test_mode: false`.
+`node test/integration/run.mjs audit build` runs `sui move build --path <package> --install-dir <output>` for configured framework packages, converts generated `.mv` files into base64 JSON under `.sui-build/parity-cli-build-artifact-output`, runs the existing low-level WASM `compile` binding with `compileIntent: "publish"`, and compares module bytecode. The command also validates that `BuildInfo.yaml` records `root_as_zero: false`, `set_unpublished_deps_to_zero: false`, and `test_mode: false`.
 
-`node test/integration/run.mjs audit upgrade` uses `sui move build --dump-bytecode-as-base64` as the CLI artifact source for upgrade-intent bytecode and compares it with `prepareMovePackageUpgrade` for published package fixtures. The command compares modules, dependency IDs, and digest for both full and lite WASM artifacts.
+`node test/integration/run.mjs audit upgrade` is a non-verification root-as-zero compile parity harness for `prepareMovePackageUpgrade`; it still uses `sui move build --dump-bytecode-as-base64` and must not be treated as upgrade transaction `.mv` proof. Verification audits do not use dump output as an upgrade reference. Real Sui CLI upgrade `.mv` comparison requires caller-provided upgrade inputs such as `upgradeCapability` and any required sender/gas fields so the helper can run `sui client upgrade --install-dir`.
 
-`node test/integration/run.mjs audit transaction` uses Sui RPC and GitHub access to fetch configured Sui transactions, extracts the single `Publish` or `Upgrade` command payload, passes that kind as the verification rebuild intent, rebuilds the configured GitHub source commit through `dist/verification`, and requires the pinned CLI artifact for the same rebuild intent to match `verification.currentBuild` for that source and environment. Transaction bytecode/dependencies and the fixture's expected verification status and verdict are recorded as audit evidence; `toolchain_mismatch` results can include populated bytecode differences, while semantic bytecode, dependency, or digest differences are classified as `mismatch`. Transaction payloads can differ when they were built with another compiler or with source state that does not match the configured commit. `audit transaction verification` is equivalent. `audit transaction full` and `audit transaction lite` are usage errors.
+`node test/integration/run.mjs audit transaction` uses Sui RPC and GitHub access to fetch configured Sui transactions, extracts the single `Publish` or `Upgrade` command payload, passes that kind as the verification rebuild intent, and rebuilds the configured GitHub source commit through `dist/verification`. Publish comparisons also require the pinned CLI `.mv` build artifact to match `verification.currentBuild`; upgrade comparisons check the transaction modules against the verifier's upgrade-intent current build and, when user-provided upgrade inputs are present, also compare the real CLI upgrade `.mv` artifact. Transaction bytecode/dependencies and the expected verification status and verdict are recorded as audit evidence; `bytecode_version_mismatch` results can include populated bytecode differences, while semantic bytecode, dependency, or digest differences are classified as `mismatch`. Transaction payloads can differ when they were built with another compiler or with source state that does not match the configured commit. `audit transaction verification` is equivalent. `audit transaction full` and `audit transaction lite` are usage errors.
 
-`node test/integration/run.mjs audit github-binary` uses GitHub API and raw file access to fetch configured committed `.mv` artifacts, selects the verifier rebuild intent declared by each fixture or `dump` when omitted, rebuilds the same source commit through `dist/verification`, and requires the matching pinned CLI artifact to match `verification.currentBuild` for that source and environment. Committed `.mv` differences and the fixture's expected verification status/verdict are recorded with module hashes, first differing offset, bytecode header, and verifier bytecode table evidence including changed table hashes. `audit github-binary verification` is equivalent. `audit github-binary full` and `audit github-binary lite` are usage errors.
+`node test/integration/run.mjs audit github-binary` uses GitHub API and raw file access to fetch configured committed `.mv` artifacts, requires each artifact to declare `publish` or `upgrade` intent, rebuilds the same source commit through `dist/verification`, requires the matching pinned CLI `.mv` artifact for publish-time references, and records committed `.mv` differences plus the expected verification status/verdict with module hashes, first differing offset, bytecode header, and verifier bytecode table evidence including changed table hashes. `audit github-binary verification` is equivalent. `audit github-binary full` and `audit github-binary lite` are usage errors.
 
 `npm run test:browser` uses Chrome headless and the Chrome DevTools Protocol to verify that both `dist/lite` and `dist/full` load and compile in a real browser environment. `npm run dev:browser-parity` serves an interactive browser page that loads Sui examples, local packages, or GitHub packages, builds them in the browser, and compares the browser WASM output against the local Sui CLI JSON output.
 

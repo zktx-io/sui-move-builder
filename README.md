@@ -33,7 +33,7 @@ The package is published with three generated variants:
 
 1. **Lite Version (Default)**: Build-focused artifact without the WASM test runner dependencies.
 2. **Full Version**: Includes the lite build APIs plus the WASM `testing` feature for Move unit test execution.
-3. **Verification Version**: Rebuilds source with the pinned WASM toolchain and compares the result with caller-supplied reference bytecode for source provenance checks.
+3. **Verification Version**: Rebuilds source with the pinned verifier WASM and compares the result with caller-supplied reference bytecode for source provenance checks.
 
 ### Using the Lite Version (Default)
 
@@ -67,26 +67,25 @@ import {
 } from "@zktx.io/sui-move-builder/verification";
 ```
 
-`verifyMovePackageProvenance` accepts the same package snapshot and dependency resolution inputs as the build APIs, plus a reference artifact containing base64 Move modules and optional dependency IDs, package digest, root package address, or declared toolchain metadata. It returns one of `verified`, `toolchain_mismatch`, `mismatch`, `build_failure`, or `invalid_reference`, plus an optional `verdict` that classifies bytecode evidence. `verified` with `exact_bytecode_match` means the caller-provided source rebuilds to the caller-provided reference byte-for-byte under the pinned Sui toolchain. `verified` with `root_address_substitution_match` means module bytecode differs, but the compiled modules match after applying the documented root-address substitution; current module summaries keep the pre-substitution address in `originalAddress` when that rewrite is applied. A conflicting non-zero current module address and requested `rootAddress` is reported as `mismatch` with `semantic_mismatch`, not as a build failure. `toolchain_mismatch` means the reference bytecode header does not match the pinned toolchain output and the verdict is limited to header-only drift, recognized format drift, or unclassified toolchain evidence; if bytecode, dependency, or digest evidence is semantic, the status is `mismatch`. `toolchain_mismatch` results may include populated `differences` and `bytecodeDiffs` as evidence. Declared `reference.toolchainVersion` and `reference.buildConfig` are returned as evidence when provided; they do not replace bytecode comparison. The optional `intent` selects the current source rebuild policy: `dump` by default, `publish` for publish-time bytecode, or `upgrade` for upgrade-time bytecode. `dump` and `upgrade` currently compile with the same root-as-zero policy; `publish` keeps the package root address selected by package metadata. If source compiles with a root address of `0x0` but the reference contains a published package address, pass that published address as `reference.rootAddress` or `reference.packageId`. The verification WASM does not fetch RPC, GitHub, transaction, or filesystem data; callers provide the source and reference bytes. Transaction callers should extract `Publish` or `Upgrade` externally and pass the matching `intent` with the extracted reference artifact.
+`verifyMovePackageProvenance` accepts the same package snapshot and dependency resolution inputs as the build APIs, plus a required `intent` and a reference artifact containing base64 Move modules and optional dependency IDs, package digest, root package address, or declared Sui version metadata. It returns one of `verified`, `bytecode_version_mismatch`, `mismatch`, `build_failure`, or `invalid_reference`, plus an optional `verdict` that classifies bytecode evidence. `verified` with `exact_bytecode_match` means the caller-provided source rebuilds to the caller-provided reference byte-for-byte under the pinned Sui version. `verified` with `root_address_substitution_match` means module bytecode differs, but the compiled modules match after applying the documented root-address substitution; current module summaries keep the pre-substitution address in `originalAddress` when that rewrite is applied. A conflicting non-zero current module address and requested `rootAddress` is reported as `mismatch` with `semantic_mismatch`, not as a build failure. `bytecode_version_mismatch` means the reference bytecode header does not match the pinned verifier output and the verdict is limited to header-only drift, recognized format drift, or unclassified bytecode header evidence; if bytecode, dependency, or digest evidence is semantic, the status is `mismatch`. `bytecode_version_mismatch` results may include populated `differences` and `bytecodeDiffs` as evidence. Declared `reference.cliVersion` and `reference.buildConfig` are returned as evidence when provided; they do not replace bytecode comparison. `reference.cliVersion` is caller-declared reference metadata; `bytecodeHeaderEvidence.currentVerifierSuiVersion` is the Sui source version baked into the verifier WASM, not a local CLI probe. Verification accepts only `publish` or `upgrade` intent: `publish` compares publish-time `.mv` bytecode and keeps the package root address selected by package metadata; `upgrade` compares upgrade-time bytecode and compiles the root package as `0x0`. `dumpMovePackage` remains a build API, but dump JSON is not a transaction provenance reference. If source compiles with a root address of `0x0` but the reference contains a published package address, pass that published address as `reference.rootAddress` or `reference.packageId`. The verification WASM does not fetch RPC, GitHub, transaction, or filesystem data; callers provide the source and reference bytes. Transaction callers should extract `Publish` or `Upgrade` externally and pass the matching `intent` with the extracted reference artifact.
 
 Verification verdicts are evidence classifications, not transaction execution results:
 
-| `verdict`                         | Meaning                                                                                                           |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `exact_bytecode_match`            | Reference modules match the current source rebuild byte-for-byte.                                                 |
-| `root_address_substitution_match` | Reference modules match after applying root-address substitution, but raw module bytes differ.                    |
-| `header_only_toolchain_drift`     | The only module difference is the Move bytecode version word.                                                     |
-| `format_drift`                    | Module identity and shape match, and differences are limited to bytecode version metadata and `function_defs`.    |
-| `semantic_mismatch`               | Module identity, shape, dependency/digest data, or bytecode tables differ beyond recognized toolchain drift.      |
-| `unverified`                      | The verifier could not classify source provenance, usually because input validation, dependency, or build failed. |
+| `verdict`                          | Meaning                                                                                                            |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `exact_bytecode_match`             | Reference modules match the current source rebuild byte-for-byte.                                                  |
+| `root_address_substitution_match`  | Reference modules match after applying root-address substitution, but raw module bytes differ.                     |
+| `bytecode_version_header_mismatch` | The only module difference is the Move bytecode version word.                                                      |
+| `bytecode_format_drift`            | Module identity and shape match, and differences are limited to bytecode version metadata and `function_defs`.     |
+| `semantic_mismatch`                | Module identity, shape, dependency/digest data, or bytecode tables differ beyond recognized bytecode format drift. |
+| `unverified`                       | The verifier could not classify source provenance, usually because input validation, dependency, or build failed.  |
 
 Choose `intent` from the source of the reference artifact:
 
-| Reference artifact source                                              | `intent` value        | Notes                                                                                                             |
-| ---------------------------------------------------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `dumpMovePackage` or `sui move build --dump-bytecode-as-base64` output | Omit it or use `dump` | Default behavior. Rebuilds the root package as `0x0`.                                                             |
-| Publish transaction modules or publish build artifacts                 | `publish`             | Use when the reference bytecode was produced for publication and should keep the package root address.            |
-| Upgrade transaction modules or upgrade preparation output              | `upgrade`             | Use when the reference came from an upgrade flow. Current bytecode policy matches `dump`, but records the intent. |
+| Reference artifact source                                 | `intent` value | Notes                                                                                                                                                |
+| --------------------------------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Publish transaction modules or publish `.mv` artifacts    | `publish`      | Use when the reference bytecode was produced for publication and should keep the package root address.                                               |
+| Upgrade transaction modules or upgrade preparation output | `upgrade`      | Use when the reference came from an upgrade flow. Callers provide the transaction/reference bytes; the verifier does not use dump output as a proxy. |
 
 For a publish transaction payload, pass the externally extracted transaction artifact and package ID:
 
@@ -104,7 +103,7 @@ const result = await verifyMovePackageProvenance({
 
 `reference.rootAddress` and `reference.packageId` only align the current build's module self address for comparison. If the package source embeds its own address in constants or other bytecode-sensitive positions, use the matching `intent` and source metadata for the artifact being checked.
 
-Verification failures may include `failureStage`. `verified`, `mismatch`, and `toolchain_mismatch` results do not include `failureStage`.
+Verification failures may include `failureStage`. `verified`, `mismatch`, and `bytecode_version_mismatch` results do not include `failureStage`.
 
 | `failureStage`          | Current meaning                                                                               |
 | ----------------------- | --------------------------------------------------------------------------------------------- |
@@ -329,9 +328,9 @@ import {
 
 await initMovePackageBuilder();
 
-// Fetch a package from GitHub URL
+// Fetch a package from a GitHub URL
 const input = await fetchMovePackageFromGitHub(
-  "https://github.com/MystenLabs/sui/tree/framework/mainnet/crates/sui-framework/packages/sui-framework",
+  "https://github.com/<owner>/<repo>/tree/<ref>/<path-to-move-package>",
   {
     githubToken: process.env.GITHUB_TOKEN, // optional
   }
@@ -425,7 +424,9 @@ SUI_VERSION=1.x.y SUI_TAG=mainnet-v1.x.y npm run build:wasm
 node scripts/build-wasm.mjs --sui-version 1.x.y --sui-tag mainnet-v1.x.y
 ```
 
-For repeated version updates, use the process and prompt in [AGENTS.md](./AGENTS.md). The intended flow is to refresh and test the active compat overlay during `prepare:wasm`, then reuse the prepared worktree for lite/full/verification builds and release checks.
+For repeated version updates, use the process and prompt in [AGENTS.md](./AGENTS.md). Builder updates track the pinned Sui CLI/source version in `sui-version.json`: refresh and test the active compat overlay during `prepare:wasm`, then reuse the prepared worktree for lite/full/verification builds and release checks.
+
+Verification version routing is decoded-bytecode-version-first. When a Sui version update keeps the decoded bytecode version and serialization behavior unchanged, update the current verifier with the builder. When either changes, preserve the previous verifier as a legacy bytecode verifier and pin the Sui tag/commit that represents that decoded bytecode version in `scripts/verification/bytecode-verifiers.json`. If several Sui releases were skipped, regenerate upstream tag inventory with `npm run inventory:sui-tags`, analyze decoded bytecode version changes with `npm run analyze:bytecode-versions`, and restore any missing legacy verifier that changes verification evidence.
 
 ## Package Management Logic
 
@@ -495,7 +496,7 @@ const result2 = await dumpMovePackage({
 - Dependencies are always compiled from source. Bytecode-only deps (.mv fallback used by the Sui CLI when sources are missing) are not supported in the wasm path.
 - V0/V1/V2/V3 `Move.lock` graph sections are not used as pinned graph sources. Supported packages fall back to manifest resolution; V3 publication migration is supported where covered by tests.
 - Publish and upgrade APIs prepare bytecode payload data only. Transaction signing, gas selection, PTB construction, dry-run, execution, and file persistence are outside the WASM package boundary.
-- CLI parity is verified for selected fixtures, not for every Sui package-manager path. Some compiler and test-runner behavior is still implemented through local compatibility glue.
+- CLI parity is verified for covered package scenarios, not for every Sui package-manager path. Some compiler and test-runner behavior is still implemented through local compatibility glue.
 - Browser-compatible WASM builds use declared compatibility replacements for host, networking, randomness, TLS/X.509, and cryptography-adjacent crates. See [SECURITY.md](./SECURITY.md) for the current runtime boundary and compat inventory.
 
 ## Best Practices
@@ -515,16 +516,16 @@ if (entry.name === "build" || entry.name === ".git") continue;
 
 ## CLI-vs-WASM Parity Tests
 
-This package compares the same local Move package through the official Sui CLI and the WASM builder. The default dump parity package set includes auto-discovered examples from `.sui-build/parity-work/examples/move` plus the fixed framework fixture at `crates/sui-framework/packages/deepbook`; pass explicit package paths when you want to test a specific fixture.
+This package compares the same local Move package through the official Sui CLI and the WASM builder. The default dump parity package set includes auto-discovered examples from the pinned Sui checkout plus configured framework coverage; pass explicit package paths when you want to test a specific package.
 
 ```bash
 npm run build       # required once; produces dist/full, dist/lite, and dist/verification WASM artifacts
-npm test            # runtime + semantic fixtures + full/lite CLI parity
+npm test            # runtime + semantic checks + full/lite CLI parity
 npm run test:parity # compare Sui CLI vs both full and lite WASM
 npm run test:audit  # compare CLI build/upgrade artifacts with lite/full WASM outputs
 npm run test:browser # optional local browser smoke test for full and lite
 npm run dev:browser-parity # interactive browser build + CLI comparison page
-node test/integration/run.mjs semantic # runtime + semantic fixtures without CLI parity
+node test/integration/run.mjs semantic # runtime + semantic checks without CLI parity
 node test/integration/run.mjs output-deps # run a single integration case
 ```
 
@@ -534,31 +535,31 @@ Useful options:
 
 - `SUI_CLI=/path/to/sui` selects the local Sui CLI binary.
 - `BROWSER_BIN=/path/to/chrome` selects the browser binary for `test:browser`.
-- `SUI_PARITY_LIMIT=10` changes the number of auto-discovered examples. Fixed framework fixtures still run unless explicit package paths are supplied.
+- `SUI_PARITY_LIMIT=10` changes the number of auto-discovered examples. Configured framework coverage still runs unless explicit package paths are supplied.
 - `SUI_PARITY_MIN_MOVE_FILES=3` requires larger multi-file examples.
 
 The integration runner executes checks serially. Parity, audit, and browser checks are not run concurrently because they use shared `.sui-build`, `dist`, and Sui CLI cache state.
 
 The parity test warns when the local Sui CLI version differs from `sui-version.json` and fails when the CLI is missing. It fails on any mismatch in module bytecode, dependency IDs, or package digest. It does not patch outputs or maintain expected-result snapshots.
 
-`node test/integration/run.mjs audit build` runs `sui move build --path <package> --install-dir <output>` for `crates/sui-framework/packages/sui-framework` and `crates/sui-framework/packages/sui-system`, converts generated `.mv` artifacts to base64, runs the low-level WASM `compile` binding with `compileIntent: "publish"`, and compares module bytecode.
+`node test/integration/run.mjs audit build` runs `sui move build --path <package> --install-dir <output>` for configured framework packages, converts generated `.mv` artifacts to base64, runs the low-level WASM `compile` binding with `compileIntent: "publish"`, and compares module bytecode.
 
-`node test/integration/run.mjs audit upgrade` uses `sui move build --dump-bytecode-as-base64` as the CLI artifact source for upgrade-intent bytecode and compares it with `prepareMovePackageUpgrade` for published package fixtures. The comparison covers modules, dependency IDs, and digest.
+`node test/integration/run.mjs audit upgrade` is a non-verification root-as-zero compile parity harness for `prepareMovePackageUpgrade`; it still uses `sui move build --dump-bytecode-as-base64` and must not be treated as upgrade transaction `.mv` proof. Verification audits do not use dump output as an upgrade reference. Real Sui CLI upgrade `.mv` comparison requires caller-provided upgrade inputs such as `upgradeCapability` and any required sender/gas fields so the helper can run `sui client upgrade --install-dir`.
 
-`node test/integration/run.mjs audit transaction` uses Sui RPC and GitHub access to fetch configured publish or upgrade transactions, extracts the single `Publish` or `Upgrade` command payload, passes that kind as the verification `intent`, rebuilds the configured GitHub source commit through the verification artifact, requires the matching CLI artifact to match `verification.currentBuild`, and records transaction bytecode/dependency differences plus the fixture's expected verification status as audit evidence. `audit transaction verification` is equivalent. `audit transaction full` and `audit transaction lite` are usage errors.
+`node test/integration/run.mjs audit transaction` uses Sui RPC and GitHub access to fetch configured publish or upgrade transactions, extracts the single `Publish` or `Upgrade` command payload, passes that kind as the verification `intent`, and rebuilds the configured GitHub source commit through the verification artifact. Publish comparisons also require the pinned CLI `.mv` build artifact to match `verification.currentBuild`; upgrade comparisons check the transaction modules against the verifier's upgrade-intent current build and, when user-provided upgrade inputs are present, also compare the real CLI upgrade `.mv` artifact. The audit records transaction bytecode/dependency differences plus the expected verification status as evidence. `audit transaction verification` is equivalent. `audit transaction full` and `audit transaction lite` are usage errors.
 
-`node test/integration/run.mjs audit github-binary` uses GitHub API and raw file access to fetch configured committed `.mv` artifacts, selects the verifier `intent` declared by each fixture or `dump` when omitted, rebuilds the same source commit through the verification artifact, requires the matching CLI artifact to match `verification.currentBuild`, and records bytecode diff summaries plus the fixture's expected verification status. `audit github-binary verification` is equivalent. `audit github-binary full` and `audit github-binary lite` are usage errors.
+`node test/integration/run.mjs audit github-binary` uses GitHub API and raw file access to fetch configured committed `.mv` artifacts, requires each artifact to declare `publish` or `upgrade` intent, rebuilds the same source commit through the verification artifact, requires the matching CLI `.mv` artifact for publish-time references, and records bytecode diff summaries plus the expected verification status. `audit github-binary verification` is equivalent. `audit github-binary full` and `audit github-binary lite` are usage errors.
 
-Passing parity tests are evidence for the covered fixtures only. See `CLI_PIPELINE.md` for current implementation boundaries.
+Passing parity tests are evidence for the covered packages and scenarios only. See `CLI_PIPELINE.md` for current implementation boundaries.
 
 For manual browser verification, run `npm run dev:browser-parity` and open the printed `http://127.0.0.1:<port>/` URL. The page loads a Move package from the pinned Sui examples, a local package path, or a GitHub repository; builds it with the selected browser WASM artifact; asks the local server to build the same package with `sui move build --dump-bytecode-as-base64 --path <package>`; then compares module bytecode, dependency IDs, and digest.
 
 ## Support Status
 
-| Area                                                       | Status                | Current contract                                                                                                                                                                                      |
-| ---------------------------------------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Full upstream `BuildPlan` execution                        | `not used at runtime` | Runtime builds use the snapshot-backed Rust/WASM package model described in `CLI_PIPELINE.md`. Package order, address resolution, source discovery, lint, and test-mode behavior are fixture-covered. |
-| Bytecode-only `.mv` dependency fallback                    | `unsupported`         | Source snapshots are required. The package does not synthesize source or package metadata to stand in for missing `.mv` fallback behavior.                                                            |
-| `stripMetadata`                                            | `reserved/no-op`      | The option is part of the public shape but should not be described as active compiler behavior.                                                                                                       |
-| Dev-address / extra named-address API                      | `not exposed`         | No stable public override API is exposed.                                                                                                                                                             |
-| V0/V1/V2/V3 lockfile graph loading as pinned graph sources | `unsupported`         | Supported packages use manifest fallback instead; V3 publication migration is separate from graph loading.                                                                                            |
+| Area                                                       | Status                | Current contract                                                                                                                                                                                                   |
+| ---------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Full upstream `BuildPlan` execution                        | `not used at runtime` | Runtime builds use the snapshot-backed Rust/WASM package model described in `CLI_PIPELINE.md`. Package order, address resolution, source discovery, lint, and test-mode behavior are covered by integration tests. |
+| Bytecode-only `.mv` dependency fallback                    | `unsupported`         | Source snapshots are required. The package does not synthesize source or package metadata to stand in for missing `.mv` fallback behavior.                                                                         |
+| `stripMetadata`                                            | `reserved/no-op`      | The option is part of the public shape but should not be described as active compiler behavior.                                                                                                                    |
+| Dev-address / extra named-address API                      | `not exposed`         | No stable public override API is exposed.                                                                                                                                                                          |
+| V0/V1/V2/V3 lockfile graph loading as pinned graph sources | `unsupported`         | Supported packages use manifest fallback instead; V3 publication migration is separate from graph loading.                                                                                                         |

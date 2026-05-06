@@ -42,8 +42,8 @@ const fixtures = [
     binaryArtifactPath:
       "crates/sui-single-node-benchmark/tests/data/package_publish_from_bytecode/package_a/build/a/bytecode_modules",
     intent: "publish",
-    expectedStatus: "toolchain_mismatch",
-    expectedVerdict: "format_drift",
+    expectedStatus: "bytecode_version_mismatch",
+    expectedVerdict: "bytecode_format_drift",
   },
 ];
 
@@ -63,10 +63,15 @@ async function main() {
   let failed = false;
 
   for (const fixture of fixtures) {
-    const intent = fixture.intent ?? "dump";
-    if (!["dump", "publish", "upgrade"].includes(intent)) {
+    const intent = fixture.intent;
+    if (!["publish", "upgrade"].includes(intent)) {
       throw new Error(
-        `${fixture.name}: unsupported binary artifact intent ${intent}`
+        `${fixture.name}: binary artifact fixtures must declare intent publish or upgrade, got ${intent}`
+      );
+    }
+    if (intent === "upgrade" && !fixture.upgradeCapability) {
+      throw new Error(
+        `${fixture.name}: upgrade binary artifact fixtures must provide upgradeCapability for CLI upgrade .mv comparison`
       );
     }
 
@@ -105,6 +110,13 @@ async function main() {
         fixtureName: fixture.name,
         intent,
         environment,
+        upgradeCapability: fixture.upgradeCapability,
+        sender: fixture.sender,
+        gasBudget: fixture.gasBudget,
+        gasPrice: fixture.gasPrice,
+        gas: fixture.gas,
+        skipVerifyCompatibility: fixture.skipVerifyCompatibility,
+        skipDependencyVerification: fixture.skipDependencyVerification,
       });
       await writeJsonArtifact(outputRoot, "cli.json", cliReference.output);
       if (cliReference.cliResult) {

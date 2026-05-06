@@ -24,8 +24,8 @@ pub(super) struct ReferenceArtifact {
     pub(super) root_address: Option<String>,
     #[serde(default, rename = "packageId")]
     pub(super) package_id: Option<String>,
-    #[serde(default, rename = "toolchainVersion")]
-    pub(super) toolchain_version: Option<String>,
+    #[serde(default, rename = "cliVersion")]
+    pub(super) cli_version: Option<String>,
     #[serde(default, rename = "buildConfig")]
     pub(super) build_config: Option<ReferenceBuildConfig>,
 }
@@ -67,7 +67,7 @@ pub(super) struct VerificationOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) current_summary: Option<ArtifactSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) toolchain_evidence: Option<ToolchainEvidence>,
+    pub(super) bytecode_header_evidence: Option<BytecodeHeaderEvidence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) differences: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -85,7 +85,7 @@ pub(super) struct ArtifactSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) digest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) toolchain_version: Option<String>,
+    pub(super) cli_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) build_config: Option<ReferenceBuildConfig>,
 }
@@ -116,14 +116,14 @@ pub(super) struct ModuleSummary {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct ToolchainEvidence {
+pub(super) struct BytecodeHeaderEvidence {
     pub(super) source: &'static str,
     pub(super) reference: Vec<ModuleHeaderEvidence>,
     pub(super) current_build: Vec<ModuleHeaderEvidence>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) reference_toolchain_version: Option<String>,
+    pub(super) reference_cli_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) current_build_toolchain_version: Option<String>,
+    pub(super) current_verifier_sui_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) reference_build_config: Option<ReferenceBuildConfig>,
 }
@@ -242,7 +242,7 @@ pub(super) struct RawHeader {
 }
 
 #[derive(Clone)]
-pub(super) struct ToolchainMetadata {
+pub(super) struct BuildVersionMetadata {
     pub(super) version: Option<String>,
     pub(super) build_config: Option<ReferenceBuildConfig>,
 }
@@ -254,27 +254,28 @@ pub(super) const FAILURE_STAGE_VERIFICATION_OUTPUT: &str = "verification_output"
 
 pub(super) const VERDICT_EXACT_BYTECODE_MATCH: &str = "exact_bytecode_match";
 pub(super) const VERDICT_ROOT_ADDRESS_SUBSTITUTION_MATCH: &str = "root_address_substitution_match";
-pub(super) const VERDICT_HEADER_ONLY_TOOLCHAIN_DRIFT: &str = "header_only_toolchain_drift";
-pub(super) const VERDICT_FORMAT_DRIFT: &str = "format_drift";
+pub(super) const VERDICT_BYTECODE_VERSION_HEADER_MISMATCH: &str =
+    "bytecode_version_header_mismatch";
+pub(super) const VERDICT_BYTECODE_FORMAT_DRIFT: &str = "bytecode_format_drift";
 pub(super) const VERDICT_SEMANTIC_MISMATCH: &str = "semantic_mismatch";
 pub(super) const VERDICT_UNVERIFIED: &str = "unverified";
 
 pub(super) fn summary_for_verdict(verdict: &str) -> &'static str {
     match verdict {
         VERDICT_EXACT_BYTECODE_MATCH => {
-            "Reference bytecode matches the current source build byte-for-byte under the pinned Sui toolchain."
+            "Reference bytecode matches the current source build byte-for-byte under the pinned Sui version."
         }
         VERDICT_ROOT_ADDRESS_SUBSTITUTION_MATCH => {
             "Reference bytecode matches the current source build after applying the documented root address substitution."
         }
-        VERDICT_HEADER_ONLY_TOOLCHAIN_DRIFT => {
+        VERDICT_BYTECODE_VERSION_HEADER_MISMATCH => {
             "Reference bytecode differs from the current build only in the bytecode version header."
         }
-        VERDICT_FORMAT_DRIFT => {
+        VERDICT_BYTECODE_FORMAT_DRIFT => {
             "Reference bytecode differs in bytecode version metadata and recognized function definition serialization while module identity and shape match."
         }
         VERDICT_SEMANTIC_MISMATCH => {
-            "Reference bytecode differs from the current source build beyond recognized toolchain format drift."
+            "Reference bytecode differs from the current source build beyond recognized bytecode format drift."
         }
         _ => "The verifier could not prove source provenance for this input.",
     }

@@ -14,16 +14,26 @@ export function getRepoRoot() {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 }
 
-export function createWasmBuildContext(argv = process.argv.slice(2)) {
+export function createWasmBuildContext(
+  argv = process.argv.slice(2),
+  env = process.env
+) {
   const repoRoot = getRepoRoot();
   const baseSuiVersion = require("../../sui-version.json");
   const buildConfig = require("../build-config.json");
   const { suiVersion, restArgs } = resolveSuiVersionConfig(
     baseSuiVersion,
-    argv
+    argv,
+    env
   );
-  const suiBuildConfig = getSuiBuildConfig(repoRoot, suiVersion);
+  const suiBuildConfig = getSuiBuildConfig(repoRoot, suiVersion, env);
   const generatedDir = path.join(suiBuildConfig.buildWorkspaceDir, "generated");
+  const compatDir = env.SUI_COMPAT_DIR
+    ? path.resolve(env.SUI_COMPAT_DIR)
+    : path.join(repoRoot, "scripts", "compat");
+  const distDir = env.SUI_DIST_DIR
+    ? path.resolve(env.SUI_DIST_DIR)
+    : path.join(repoRoot, "dist");
 
   return {
     repoRoot,
@@ -34,14 +44,9 @@ export function createWasmBuildContext(argv = process.argv.slice(2)) {
     suiBuildConfig,
     suiWorkDir: suiBuildConfig.workDir,
     localSourceDir: path.join(repoRoot, "sui-move-wasm"),
-    compatDir: path.join(repoRoot, "scripts", "compat"),
-    compatManifestPath: path.join(
-      repoRoot,
-      "scripts",
-      "compat",
-      "manifest.json"
-    ),
-    distDir: path.join(repoRoot, "dist"),
+    compatDir,
+    compatManifestPath: path.join(compatDir, "manifest.json"),
+    distDir,
     generatedDir,
     generatedStubsDir: path.join(generatedDir, "stubs"),
     generatedVendorDir: path.join(generatedDir, "vendor"),
