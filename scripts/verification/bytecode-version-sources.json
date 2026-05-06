@@ -1,7 +1,187 @@
 {
   "schemaVersion": 1,
   "sourceRepo": "https://github.com/MystenLabs/sui",
+  "inventory": {
+    "networkTagCount": 400,
+    "releaseTagCount": 629,
+    "releasedCliVersionCount": 209,
+    "allTagCount": 1029,
+    "firstReleasedCliVersion": "1.1.0",
+    "observedDecodedBytecodeVersions": [5, 6, 7],
+    "releasedCliDecodedBytecodeVersions": [6, 7],
+    "networkOnlyDecodedBytecodeVersions": [5],
+    "networkSignalsPath": ".sui-build/bytecode-verifiers/inventory/sui-bytecode-version-signals.json",
+    "expandedNetworkSignalsPath": ".sui-build/bytecode-verifiers/inventory/sui-bytecode-version-signals-network-expanded.json",
+    "allSignalsPath": ".sui-build/bytecode-verifiers/inventory/sui-bytecode-version-signals-all.json"
+  },
   "records": [
+    {
+      "decodedBytecodeVersion": 5,
+      "bytecodeFlavor": null,
+      "verifierId": "sui-devnet-0.13.2",
+      "sourceRepo": "https://github.com/move-language/move",
+      "representative": {
+        "suiVersion": "0.13.2",
+        "tag": "devnet-0.13.2",
+        "commit": "7fff531f90d912d2d2d77c5eca2e98c3c23ccdcf"
+      },
+      "dependencySource": {
+        "repo": "https://github.com/move-language/move",
+        "rev": "1ffd0a3e7bdc4bba7dafb8c814279e750113d030",
+        "sourceRoot": "language/move-binary-format/src"
+      },
+      "firstObserved": {
+        "tag": "devnet-0.1.0",
+        "commit": "2da3779d44b3ca592b30be1e0d978fb5a947c371"
+      },
+      "lastObservedBeforeNextRecordedChange": {
+        "tag": "devnet-0.13.2",
+        "commit": "7fff531f90d912d2d2d77c5eca2e98c3c23ccdcf"
+      },
+      "nextRecordedChange": {
+        "tag": "devnet-0.14.0",
+        "commit": "2a9ad74262554d2c753d6eaaa057d6612eab8678"
+      },
+      "sourceFiles": [
+        "language/move-binary-format/src/file_format_common.rs",
+        "language/move-binary-format/src/serializer.rs",
+        "language/move-binary-format/src/deserializer.rs"
+      ],
+      "signals": {
+        "moveBinaryFormat": {
+          "versionMin": 5,
+          "versionMax": 5,
+          "tableTypeHash": "992ada9b2bd348b82a0a641535a05bd105ebeca36065825a95a2f44fe10b6ebe"
+        },
+        "serializer": {
+          "encodesBinaryFlavor": false,
+          "jumpTablesVersionGate": false
+        },
+        "deserializer": {
+          "jumpTablesVersionGate": false
+        },
+        "protocolConfig": {
+          "moveBinaryFormatVersions": [],
+          "minMoveBinaryFormatVersions": []
+        }
+      },
+      "observedSerializationGroups": [
+        {
+          "firstObserved": {
+            "tag": "devnet-0.1.0",
+            "commit": "2da3779d44b3ca592b30be1e0d978fb5a947c371"
+          },
+          "lastObserved": {
+            "tag": "devnet-0.4.0-rc",
+            "commit": "87e0756a4b4ace1cc4be7d78b1fed4eb71766b49"
+          },
+          "versionMin": null,
+          "versionMax": 5,
+          "tableTypeHash": "5cabf7a6bcfeb6629f545e9bfb7289b65164cc6885a0149b409c569688503cd0"
+        },
+        {
+          "firstObserved": {
+            "tag": "devnet-0.5.0-rc",
+            "commit": "99543bd61aae0a36d62537f7fac4f69a4aa2d0d0"
+          },
+          "lastObserved": {
+            "tag": "devnet-0.13.2",
+            "commit": "7fff531f90d912d2d2d77c5eca2e98c3c23ccdcf"
+          },
+          "versionMin": 5,
+          "versionMax": 5,
+          "tableTypeHash": "992ada9b2bd348b82a0a641535a05bd105ebeca36065825a95a2f44fe10b6ebe"
+        }
+      ],
+      "representativeSourceHashes": {
+        "moveBinaryFormatCommon": {
+          "sourceFile": "language/move-binary-format/src/file_format_common.rs",
+          "sha256": "2c5149988d344e0ae64c2f5898aaaae290d5435419d179e216f1e53c7b87b0bf"
+        },
+        "serializer": {
+          "sourceFile": "language/move-binary-format/src/serializer.rs",
+          "sha256": "99e6bbed9a9bca4c77d7649c6dabe53c7fd8f730655f7a4a5a52d6690eec68ea"
+        },
+        "deserializer": {
+          "sourceFile": "language/move-binary-format/src/deserializer.rs",
+          "sha256": "1783807255fc07177205f7e2dc98f14c3dabbc754160c58a46fdd8adf22d5630"
+        }
+      },
+      "notes": "Network-only source record for decoded bytecode version 5. No release CLI tag was found for this decoded bytecode version; the Sui tag references move-language/move through Cargo."
+    },
+    {
+      "decodedBytecodeVersion": 6,
+      "bytecodeFlavor": null,
+      "verifierId": "sui-1.26.2",
+      "representative": {
+        "suiVersion": "1.26.2",
+        "tag": "mainnet-v1.26.2",
+        "commit": "f531168c745260b60a4ec4906c9f2b22240d872d"
+      },
+      "firstObserved": {
+        "tag": "devnet-0.14.0",
+        "commit": "2a9ad74262554d2c753d6eaaa057d6612eab8678"
+      },
+      "firstReleasedCli": {
+        "tag": "sui_v1.1.0_1683918278_release",
+        "commit": "1f46cc0d358b6ee944bd49e13f6658d0d914555c"
+      },
+      "firstObservedWithProtocolVersion": {
+        "tag": "testnet-v1.25.0",
+        "commit": "b10ea7331e1c0aef28863e2cb0763dcf7537e297"
+      },
+      "lastObservedBeforeNextRecordedChange": {
+        "tag": "sui_v1.26.2_1717632279_release",
+        "commit": "f531168c745260b60a4ec4906c9f2b22240d872d"
+      },
+      "nextRecordedChange": {
+        "tag": "testnet-v1.27.0",
+        "commit": "e5f080922d565ff699887b7009dc45612387e015"
+      },
+      "sourceFiles": [
+        "external-crates/move/crates/move-binary-format/src/file_format_common.rs",
+        "external-crates/move/crates/move-binary-format/src/serializer.rs",
+        "external-crates/move/crates/move-binary-format/src/deserializer.rs",
+        "crates/sui-protocol-config/src/lib.rs"
+      ],
+      "signals": {
+        "moveBinaryFormat": {
+          "versionMin": 5,
+          "versionMax": 6,
+          "tableTypeHash": "992ada9b2bd348b82a0a641535a05bd105ebeca36065825a95a2f44fe10b6ebe"
+        },
+        "serializer": {
+          "encodesBinaryFlavor": false,
+          "jumpTablesVersionGate": false
+        },
+        "deserializer": {
+          "jumpTablesVersionGate": false
+        },
+        "protocolConfig": {
+          "moveBinaryFormatVersions": [6],
+          "minMoveBinaryFormatVersions": [6]
+        }
+      },
+      "representativeSourceHashes": {
+        "moveBinaryFormatCommon": {
+          "sourceFile": "external-crates/move/crates/move-binary-format/src/file_format_common.rs",
+          "sha256": "68c372a43a2f3272597eb1fb25b5ded799f8be0e9ae2e77ced5c016efbbd6fda"
+        },
+        "serializer": {
+          "sourceFile": "external-crates/move/crates/move-binary-format/src/serializer.rs",
+          "sha256": "62399dd85b9759bb51858fff2d518af77f0d0a8af4aebaec4be5fdb6c1f3dd9d"
+        },
+        "deserializer": {
+          "sourceFile": "external-crates/move/crates/move-binary-format/src/deserializer.rs",
+          "sha256": "c2afcbec0876e178f9fab317cd26df51e0d306a9ee570f5b4d5bf4606f1828f4"
+        },
+        "protocolConfig": {
+          "sourceFile": "crates/sui-protocol-config/src/lib.rs",
+          "sha256": "65d196c9fa72138d4c363f0e9f07dd42c87b3f33cf8b0d13b26d2a9f10caead0"
+        }
+      },
+      "notes": "Candidate source record for decoded bytecode version 6. This is the first decoded bytecode version observed in release CLI tags. Runtime routing is not enabled until an isolated verifier build and fixture prove a distinct exact result."
+    },
     {
       "decodedBytecodeVersion": 7,
       "bytecodeFlavor": 5,
@@ -11,6 +191,14 @@
         "tag": "mainnet-v1.70.2",
         "commit": "6d4ec0b0621dd9555753c9ecd5be021b25a0d267"
       },
+      "firstObserved": {
+        "tag": "testnet-v1.27.0",
+        "commit": "e5f080922d565ff699887b7009dc45612387e015"
+      },
+      "latestObserved": {
+        "tag": "sui_v1.71.1_1778018555_release",
+        "commit": "2f5992f189cd24445cd010ccf0aa7ff418ff93b1"
+      },
       "lastObservedBeforeNextRecordedChange": null,
       "sourceFiles": [
         "external-crates/move/crates/move-binary-format/src/file_format_common.rs",
@@ -18,7 +206,61 @@
         "external-crates/move/crates/move-binary-format/src/deserializer.rs",
         "crates/sui-protocol-config/src/lib.rs"
       ],
-      "notes": "Current verifier source record. Fill boundary evidence after running bytecode-version analysis."
+      "signals": {
+        "moveBinaryFormat": {
+          "versionMin": 5,
+          "versionMax": 7,
+          "tableTypeHash": "7d9dcfb14d16718d1faf124f684fbb0243cd4789a7e1937d42f6bd8cc9d46083"
+        },
+        "serializer": {
+          "encodesBinaryFlavor": true,
+          "jumpTablesVersionGate": true
+        },
+        "deserializer": {
+          "jumpTablesVersionGate": true
+        },
+        "protocolConfig": {
+          "moveBinaryFormatVersions": [6, 7],
+          "minMoveBinaryFormatVersions": [6]
+        }
+      },
+      "representativeSourceHashes": {
+        "moveBinaryFormatCommon": {
+          "sourceFile": "external-crates/move/crates/move-binary-format/src/file_format_common.rs",
+          "sha256": "1b2b41d74f5f12c6625c339a56a995119abbe0c19a7f98df53c7c494b04d10e1"
+        },
+        "serializer": {
+          "sourceFile": "external-crates/move/crates/move-binary-format/src/serializer.rs",
+          "sha256": "9b297ab9d609345623a05612f8b04b96284bc404f131088570df3413794ff79a"
+        },
+        "deserializer": {
+          "sourceFile": "external-crates/move/crates/move-binary-format/src/deserializer.rs",
+          "sha256": "5413482f3c9e556f60a01981864df207079634a5aab6c22b23da22f076aae014"
+        },
+        "protocolConfig": {
+          "sourceFile": "crates/sui-protocol-config/src/lib.rs",
+          "sha256": "de0ddb0fef7bc62cb05021a8bb7056f645ed71ac429398d7c6f46ebd091fab4e"
+        }
+      },
+      "firstObservedSourceHashes": {
+        "moveBinaryFormatCommon": {
+          "sourceFile": "external-crates/move/crates/move-binary-format/src/file_format_common.rs",
+          "sha256": "84d539a4c57fb55fd149593a5deb76bac59ee00be23dc9362c84f23d59962821"
+        },
+        "serializer": {
+          "sourceFile": "external-crates/move/crates/move-binary-format/src/serializer.rs",
+          "sha256": "065f401ea378c06cb8c1343b8999cefcdf420c7ab5c62bf5335545ca9f13fb46"
+        },
+        "deserializer": {
+          "sourceFile": "external-crates/move/crates/move-binary-format/src/deserializer.rs",
+          "sha256": "97d202f54fb91b96748bcf84bfba9ca964b5dfe40c514706087ee473379b3b5d"
+        },
+        "protocolConfig": {
+          "sourceFile": "crates/sui-protocol-config/src/lib.rs",
+          "sha256": "e6a8f7b0906d5be278ca911b498b71a952f8f8d7efe77d88d99aa53a0701a896"
+        }
+      },
+      "notes": "Current verifier source record. VERSION_MIN=5 is parser lower-bound evidence, not an observed verifier route. Runtime routing remains enabled only for this current verifier until legacy verifier builds and fixtures are added."
     }
   ]
 }

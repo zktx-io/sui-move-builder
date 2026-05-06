@@ -16,16 +16,20 @@ const SOURCE_FILE_GROUPS = [
     candidates: MOVE_BINARY_FORMAT_PATHS.map(
       (base) => `${base}/file_format_common.rs`
     ),
+    legacyMoveCandidate:
+      "language/move-binary-format/src/file_format_common.rs",
   },
   {
     id: "serializer",
     candidates: MOVE_BINARY_FORMAT_PATHS.map((base) => `${base}/serializer.rs`),
+    legacyMoveCandidate: "language/move-binary-format/src/serializer.rs",
   },
   {
     id: "deserializer",
     candidates: MOVE_BINARY_FORMAT_PATHS.map(
       (base) => `${base}/deserializer.rs`
     ),
+    legacyMoveCandidate: "language/move-binary-format/src/deserializer.rs",
   },
   {
     id: "protocolConfig",
@@ -198,6 +202,53 @@ async function fetchSourceFile(options, tag, sourceFile) {
   return { ok: true, text, cached: false };
 }
 
+async function fetchPinnedMoveDependency(options, tag) {
+  for (const sourceFile of ["Cargo.lock", "sui/Cargo.toml", "Cargo.toml"]) {
+    const result = await fetchSourceFile(options, tag, sourceFile);
+    if (!result.ok) continue;
+    const dependency = result.text.match(
+      /github\.com\/([^/\s]+\/move)\?rev=([0-9a-f]{40})/i
+    );
+    if (dependency) {
+      return {
+        ownerRepo: dependency[1],
+        repo: `https://github.com/${dependency[1]}`,
+        rev: dependency[2],
+        pinnedBy: sourceFile,
+      };
+    }
+  }
+  return undefined;
+}
+
+async function fetchPinnedMoveSourceFile(options, dependency, sourceFile) {
+  if (!options.refreshCache) {
+    const cached = await readCached(
+      options.cacheDir,
+      dependency.rev,
+      sourceFile
+    );
+    if (cached !== undefined) return { ok: true, text: cached, cached: true };
+  }
+
+  const url = `https://raw.githubusercontent.com/${dependency.ownerRepo}/${dependency.rev}/${sourceFile}`;
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": "sui-move-builder-bytecode-version-analyzer",
+    },
+  });
+  if (!response.ok) {
+    return {
+      ok: false,
+      error: `${response.status} ${response.statusText}`,
+      url,
+    };
+  }
+  const text = await response.text();
+  await writeCached(options.cacheDir, dependency.rev, sourceFile, text);
+  return { ok: true, text, cached: false };
+}
+
 async function fetchSourceGroup(options, tag, group) {
   const attempts = [];
   for (const sourceFile of group.candidates) {
@@ -300,18 +351,49 @@ function numberMatch(text, regex) {
 async function analyzeTag(options, tag) {
   const files = {};
   const errors = [];
+  let pinnedMoveDependency;
   for (const group of SOURCE_FILE_GROUPS) {
     const result = await fetchSourceGroup(options, tag, group);
     if (result.ok) {
       files[group.id] = {
+        sourceRepo: options.repo,
         sourceFile: result.sourceFile,
         sha256: sha256(result.text),
         cached: result.cached,
         text: result.text,
       };
-    } else {
-      errors.push({ sourceGroup: group.id, attempts: result.attempts });
+      continue;
     }
+
+    if (group.legacyMoveCandidate) {
+      pinnedMoveDependency ??= await fetchPinnedMoveDependency(options, tag);
+      if (pinnedMoveDependency) {
+        const legacyResult = await fetchPinnedMoveSourceFile(
+          options,
+          pinnedMoveDependency,
+          group.legacyMoveCandidate
+        );
+        if (legacyResult.ok) {
+          files[group.id] = {
+            sourceRepo: pinnedMoveDependency.repo,
+            sourceFile: group.legacyMoveCandidate,
+            sourceRev: pinnedMoveDependency.rev,
+            pinnedBy: pinnedMoveDependency.pinnedBy,
+            sha256: sha256(legacyResult.text),
+            cached: legacyResult.cached,
+            text: legacyResult.text,
+          };
+          continue;
+        }
+        result.attempts.push({
+          sourceFile: group.legacyMoveCandidate,
+          error: legacyResult.error,
+          url: legacyResult.url,
+        });
+      }
+    }
+
+    errors.push({ sourceGroup: group.id, attempts: result.attempts });
   }
 
   const fileFormat = files.moveBinaryFormatCommon?.text;
@@ -329,7 +411,13 @@ async function analyzeTag(options, tag) {
   const fileHashes = Object.fromEntries(
     Object.entries(files).map(([sourceGroup, value]) => [
       sourceGroup,
-      { sourceFile: value.sourceFile, sha256: value.sha256 },
+      {
+        sourceRepo: value.sourceRepo,
+        sourceFile: value.sourceFile,
+        sourceRev: value.sourceRev,
+        pinnedBy: value.pinnedBy,
+        sha256: value.sha256,
+      },
     ])
   );
   return {

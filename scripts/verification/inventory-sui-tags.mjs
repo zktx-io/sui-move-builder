@@ -59,7 +59,7 @@ function lsRemoteTags(repo) {
 
 function classifyTag(tag) {
   const network = tag.match(
-    /^(mainnet|testnet|devnet)-v(\d+\.\d+\.\d+(?:[-.\w]*)?)$/
+    /^(mainnet|testnet|devnet)-v?(\d+\.\d+\.\d+(?:[-.\w]*)?)$/
   );
   if (network) {
     return { kind: network[1], network: network[1], version: network[2] };

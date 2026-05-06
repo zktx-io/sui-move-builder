@@ -8,6 +8,10 @@ import {
   loadBytecodeVerifierManifest,
   validateBytecodeVerifierManifest,
 } from "../../scripts/verification/bytecode-verifier-manifest.mjs";
+import {
+  loadBytecodeVersionSourceRecords,
+  validateBytecodeVersionSourceRecords,
+} from "../../scripts/verification/bytecode-version-source-records.mjs";
 import { createWasmBuildContext } from "../../scripts/wasm/context.mjs";
 
 const require = createRequire(import.meta.url);
@@ -18,6 +22,7 @@ const repoRoot = path.resolve(
 const suiVersion = require("../../sui-version.json");
 
 const { manifest } = loadBytecodeVerifierManifest(repoRoot);
+const { sourceRecords } = loadBytecodeVersionSourceRecords(repoRoot);
 const current = manifest.verifiers[manifest.current];
 
 if (manifest.selectionModel !== "bytecode-version-first") {
@@ -72,6 +77,17 @@ for (const [verifierId, entry] of Object.entries(manifest.verifiers)) {
   }
 }
 
+const sourceRecordVersions = new Set(
+  sourceRecords.records.map((record) => String(record.decodedBytecodeVersion))
+);
+for (const bytecodeVersion of Object.keys(manifest.bytecodeVersions)) {
+  if (!sourceRecordVersions.has(bytecodeVersion)) {
+    throw new Error(
+      `Bytecode version ${bytecodeVersion} route must have a source record`
+    );
+  }
+}
+
 const invalidCaseVerifierId = "Sui-1.70.2";
 const invalidCaseManifest = {
   ...manifest,
@@ -99,6 +115,33 @@ try {
   if (
     !String(error?.message ?? error).includes(
       "package-compatible Sui source version handle"
+    )
+  ) {
+    throw error;
+  }
+}
+
+const invalidSourceRecords = {
+  ...sourceRecords,
+  records: sourceRecords.records.map((record) => ({ ...record })),
+};
+invalidSourceRecords.records[0].signals = {
+  ...invalidSourceRecords.records[0].signals,
+  moveBinaryFormat: {
+    ...invalidSourceRecords.records[0].signals.moveBinaryFormat,
+    versionMax: invalidSourceRecords.records[0].decodedBytecodeVersion + 1,
+  },
+};
+try {
+  validateBytecodeVersionSourceRecords(
+    invalidSourceRecords,
+    "invalid source record test"
+  );
+  throw new Error("Source records should reject mismatched versionMax");
+} catch (error) {
+  if (
+    !String(error?.message ?? error).includes(
+      "versionMax must match decodedBytecodeVersion"
     )
   ) {
     throw error;
@@ -146,5 +189,5 @@ if (
 }
 
 console.log(
-  `[OK] bytecode verifier manifest includes ${Object.keys(manifest.verifiers).length} verifier(s)`
+  `[OK] bytecode verifier manifest includes ${Object.keys(manifest.verifiers).length} verifier(s) and ${sourceRecords.records.length} source record(s)`
 );

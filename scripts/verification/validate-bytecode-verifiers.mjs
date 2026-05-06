@@ -4,12 +4,15 @@ import {
   getRepoRoot,
   loadBytecodeVerifierManifest,
 } from "./bytecode-verifier-manifest.mjs";
+import { loadBytecodeVersionSourceRecords } from "./bytecode-version-source-records.mjs";
 
 const require = createRequire(import.meta.url);
 
 function main() {
   const repoRoot = getRepoRoot();
   const { manifest, manifestPath } = loadBytecodeVerifierManifest(repoRoot);
+  const { sourceRecords, sourceRecordsPath } =
+    loadBytecodeVersionSourceRecords(repoRoot);
   const current = manifest.verifiers[manifest.current];
   const suiVersion = require("../../sui-version.json");
 
@@ -24,8 +27,22 @@ function main() {
     }
   }
 
+  const sourceRecordVersions = new Set(
+    sourceRecords.records.map((record) => String(record.decodedBytecodeVersion))
+  );
+  for (const version of Object.keys(manifest.bytecodeVersions)) {
+    if (!sourceRecordVersions.has(version)) {
+      throw new Error(
+        `Bytecode version ${version} route must have a source record in ${sourceRecordsPath}`
+      );
+    }
+  }
+
   console.log(
     `[OK] ${manifestPath}: ${Object.keys(manifest.verifiers).length} bytecode verifier(s), current ${manifest.current}`
+  );
+  console.log(
+    `[OK] ${sourceRecordsPath}: ${sourceRecords.records.length} bytecode version source record(s)`
   );
 }
 
