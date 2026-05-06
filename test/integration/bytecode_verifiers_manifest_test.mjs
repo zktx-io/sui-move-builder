@@ -148,6 +148,63 @@ try {
   }
 }
 
+const invalidFixtureManifest = {
+  ...manifest,
+  verifiers: {
+    ...manifest.verifiers,
+    [manifest.current]: {
+      ...current,
+      knownFixtures: [
+        {
+          name: "invalid-fixture",
+          network: "testnet",
+          txDigest: "digest",
+          intent: "publish",
+          rootGit: {
+            git: "https://github.com/MystenLabs/example.git",
+            rev: "abc123",
+          },
+          expectedStatus: "verified",
+          expectedVerdict: "exact_bytecode_match",
+        },
+      ],
+    },
+  },
+};
+try {
+  validateBytecodeVerifierManifest(
+    invalidFixtureManifest,
+    "invalid known fixture test"
+  );
+  throw new Error("Verifier manifest should reject non-mainnet proof fixtures");
+} catch (error) {
+  if (!String(error?.message ?? error).includes("network must be mainnet")) {
+    throw error;
+  }
+}
+
+const invalidSourceVariantManifest = {
+  ...manifest,
+  verifiers: {
+    ...manifest.verifiers,
+    [manifest.current]: {
+      ...current,
+      sourceVariantPath: "../outside/src",
+    },
+  },
+};
+try {
+  validateBytecodeVerifierManifest(
+    invalidSourceVariantManifest,
+    "invalid source variant test"
+  );
+  throw new Error("Verifier manifest should reject escaping source variants");
+} catch (error) {
+  if (!String(error?.message ?? error).includes("must not contain ..")) {
+    throw error;
+  }
+}
+
 const isolatedConfig = getSuiBuildConfig(repoRoot, suiVersion, {
   SUI_BUILD_WORKSPACE_DIR: "/tmp/sui-move-builder-verifier-test",
 });

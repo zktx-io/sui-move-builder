@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -53,7 +54,11 @@ export function defaultCompatDir(repoRoot, verifierId) {
   );
 }
 
-export function validateBytecodeVerifierManifest(manifest, label = "manifest") {
+export function validateBytecodeVerifierManifest(
+  manifest,
+  label = "manifest",
+  repoRoot = getRepoRoot()
+) {
   assertObject(manifest, `${label} root`);
   assertValue(
     manifest.schemaVersion === 1,
@@ -88,6 +93,60 @@ export function validateBytecodeVerifierManifest(manifest, label = "manifest") {
       `${label}: ${verifierId}.verifierId must be a package-compatible Sui source version handle`
     );
     assertString(entry.suiVersion, `${label}: ${verifierId}.suiVersion`);
+    if (entry.rustVersion !== undefined) {
+      assertString(entry.rustVersion, `${label}: ${verifierId}.rustVersion`);
+    }
+    if (entry.wasmBindgenVersion !== undefined) {
+      assertString(
+        entry.wasmBindgenVersion,
+        `${label}: ${verifierId}.wasmBindgenVersion`
+      );
+    }
+    if (entry.reqwestVersion !== undefined) {
+      assertString(
+        entry.reqwestVersion,
+        `${label}: ${verifierId}.reqwestVersion`
+      );
+    }
+    if (entry.fastcryptoRev !== undefined) {
+      assertString(
+        entry.fastcryptoRev,
+        `${label}: ${verifierId}.fastcryptoRev`
+      );
+      assertValue(
+        /^[0-9a-f]{40}$/i.test(entry.fastcryptoRev),
+        `${label}: ${verifierId}.fastcryptoRev must be a 40-character git hash`
+      );
+    }
+    if (entry.dependencyVersionPins !== undefined) {
+      assertObject(
+        entry.dependencyVersionPins,
+        `${label}: ${verifierId}.dependencyVersionPins`
+      );
+      for (const [specifier, preciseVersion] of Object.entries(
+        entry.dependencyVersionPins
+      )) {
+        assertValue(
+          /^[a-zA-Z0-9_-]+(@[0-9][0-9A-Za-z.+-]*)?$/.test(specifier),
+          `${label}: ${verifierId}.dependencyVersionPins key ${specifier} must be a package name or package@version`
+        );
+        assertString(
+          preciseVersion,
+          `${label}: ${verifierId}.dependencyVersionPins.${specifier}`
+        );
+        assertValue(
+          /^[0-9][0-9A-Za-z.+-]*$/.test(preciseVersion),
+          `${label}: ${verifierId}.dependencyVersionPins.${specifier} must be a precise version`
+        );
+      }
+    }
+    if (entry.sourceVariantPath !== undefined) {
+      validateSourceVariantPath(
+        entry.sourceVariantPath,
+        `${label}: ${verifierId}.sourceVariantPath`,
+        repoRoot
+      );
+    }
     assertString(entry.tag, `${label}: ${verifierId}.tag`);
     assertString(entry.commit, `${label}: ${verifierId}.commit`);
     assertValue(
@@ -125,6 +184,12 @@ export function validateBytecodeVerifierManifest(manifest, label = "manifest") {
       Array.isArray(entry.knownFixtures),
       `${label}: ${verifierId}.knownFixtures must be an array`
     );
+    for (const [fixtureIndex, fixture] of entry.knownFixtures.entries()) {
+      validateKnownFixture(
+        fixture,
+        `${label}: ${verifierId}.knownFixtures[${fixtureIndex}]`
+      );
+    }
 
     if (entry.status === "current") {
       assertValue(
@@ -171,6 +236,54 @@ export function validateBytecodeVerifierManifest(manifest, label = "manifest") {
       );
     }
   }
+}
+
+function validateSourceVariantPath(sourceVariantPath, label, repoRoot) {
+  assertString(sourceVariantPath, label);
+  assertValue(!path.isAbsolute(sourceVariantPath), `${label} must be relative`);
+  assertValue(
+    !sourceVariantPath.split(/[\\/]+/).includes(".."),
+    `${label} must not contain .. path segments`
+  );
+
+  const resolved = path.resolve(repoRoot, sourceVariantPath);
+  const relative = path.relative(repoRoot, resolved);
+  assertValue(
+    relative && !relative.startsWith("..") && !path.isAbsolute(relative),
+    `${label} must resolve inside the repository`
+  );
+  assertValue(
+    fs.existsSync(path.join(resolved, "lib.rs")),
+    `${label} must point to a src directory containing lib.rs`
+  );
+}
+
+function validateKnownFixture(fixture, label) {
+  assertObject(fixture, label);
+  assertString(fixture.name, `${label}.name`);
+  assertValue(
+    fixture.network === "mainnet",
+    `${label}.network must be mainnet for supported verifier proof fixtures`
+  );
+  assertString(fixture.txDigest, `${label}.txDigest`);
+  assertValue(
+    fixture.intent === "publish" || fixture.intent === "upgrade",
+    `${label}.intent must be publish or upgrade`
+  );
+  assertObject(fixture.rootGit, `${label}.rootGit`);
+  assertString(fixture.rootGit.git, `${label}.rootGit.git`);
+  assertString(fixture.rootGit.rev, `${label}.rootGit.rev`);
+  if (fixture.rootGit.subdir !== undefined) {
+    assertString(fixture.rootGit.subdir, `${label}.rootGit.subdir`);
+  }
+  assertValue(
+    fixture.expectedStatus === "verified",
+    `${label}.expectedStatus must be verified`
+  );
+  assertValue(
+    fixture.expectedVerdict === "exact_bytecode_match",
+    `${label}.expectedVerdict must be exact_bytecode_match`
+  );
 }
 
 function assertObject(value, label) {

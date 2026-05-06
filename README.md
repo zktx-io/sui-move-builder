@@ -101,7 +101,7 @@ const result = await verifyMovePackageProvenance({
 });
 ```
 
-`reference.rootAddress` and `reference.packageId` only align the current build's module self address for comparison. If the package source embeds its own address in constants or other bytecode-sensitive positions, use the matching `intent` and source metadata for the artifact being checked.
+For `publish` references, `reference.rootAddress` and `reference.packageId` align the current build's module self address for comparison. For `upgrade` references, the current rebuild stays root-as-zero; package ID metadata does not rewrite the current module identity. If the package source embeds its own address in constants or other bytecode-sensitive positions, use the matching `intent` and source metadata for the artifact being checked.
 
 Verification failures may include `failureStage`. `verified`, `mismatch`, and `bytecode_version_mismatch` results do not include `failureStage`.
 

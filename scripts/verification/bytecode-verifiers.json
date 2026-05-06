@@ -22,6 +22,41 @@
       "packageName": "@zktx.io/sui-move-builder",
       "verificationWasmPath": "dist/verification/sui_move_wasm_bg.wasm",
       "knownFixtures": []
+    },
+    "sui-1.26.2": {
+      "verifierId": "sui-1.26.2",
+      "suiVersion": "1.26.2",
+      "rustVersion": "1.88.0",
+      "wasmBindgenVersion": "0.2.89",
+      "reqwestVersion": "0.11.20",
+      "fastcryptoRev": "4988a4744fcaf8bc7f60bf660d9a223ed0f54cc6",
+      "dependencyVersionPins": {
+        "mio@1.2.0": "1.0.3"
+      },
+      "sourceVariantPath": "sui-move-wasm/variants/sui-1.26.2/src",
+      "tag": "mainnet-v1.26.2",
+      "commit": "f531168c745260b60a4ec4906c9f2b22240d872d",
+      "status": "legacy",
+      "bytecodeVersion": 6,
+      "bytecodeFlavor": null,
+      "selectionReason": "Legacy verifier candidate for the final mainnet decoded bytecode version 6 source before version 7.",
+      "packageName": "@zktx.io/sui-move-builder-bytecode-verifier-sui-1.26.2",
+      "verificationWasmPath": ".sui-build/bytecode-verifiers/sui-1.26.2/dist/verification/sui_move_wasm_bg.wasm",
+      "knownFixtures": [
+        {
+          "name": "apps-kiosk",
+          "network": "mainnet",
+          "txDigest": "LexwBJLt1jMwhNsNCkU4jiWwZPaAeqwhgLy2RPZbd2n",
+          "intent": "upgrade",
+          "rootGit": {
+            "git": "https://github.com/MystenLabs/apps.git",
+            "rev": "e159ab3fc45a6f1ca46025c46c915988023af8b6",
+            "subdir": "kiosk"
+          },
+          "expectedStatus": "verified",
+          "expectedVerdict": "exact_bytecode_match"
+        }
+      ]
     }
   }
 }

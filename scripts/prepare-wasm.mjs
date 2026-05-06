@@ -19,6 +19,7 @@ import {
 const context = createWasmBuildContext();
 const {
   buildConfig,
+  repoRoot,
   restArgs,
   suiBuildConfig,
   suiWorkDir,
@@ -44,6 +45,141 @@ async function readCargoLockPackageVersion(lockPath, packageName) {
   }
 
   throw new Error(`Could not find ${packageName} in ${lockPath}`);
+}
+
+async function readCargoLockPackages(lockPath) {
+  const content = await fs.readFile(lockPath, "utf8");
+  const packages = [];
+
+  for (const section of content.split("[[package]]")) {
+    const name = section.match(/^\s*name\s*=\s*"([^"]+)"/m)?.[1];
+    const version = section.match(/^\s*version\s*=\s*"([^"]+)"/m)?.[1];
+    if (!name || !version) continue;
+    const source = section.match(/^\s*source\s*=\s*"([^"]+)"/m)?.[1];
+    packages.push({ name, version, source });
+  }
+
+  return packages;
+}
+
+async function refreshPatchedFastcryptoLocks(suiWorkDir) {
+  const lockPath = path.join(suiWorkDir, "Cargo.lock");
+  const packages = await readCargoLockPackages(lockPath);
+  const staleFastcryptoVersions = new Set(
+    packages
+      .filter(
+        (pkg) =>
+          pkg.name === "fastcrypto" &&
+          pkg.source?.includes("github.com/MystenLabs/fastcrypto")
+      )
+      .map((pkg) => pkg.version)
+  );
+
+  for (const version of staleFastcryptoVersions) {
+    console.log(
+      `Refreshing patched fastcrypto lock entry fastcrypto@${version}...`
+    );
+    const rustVersion = process.env.SUI_WASM_RUST_VERSION;
+    const args = rustVersion
+      ? [`+${rustVersion}`, "update", "-p", `fastcrypto@${version}`]
+      : ["update", "-p", `fastcrypto@${version}`];
+    await run("cargo", args, {
+      cwd: suiWorkDir,
+      env: process.env,
+    });
+  }
+}
+
+function readDependencyVersionPins() {
+  const raw = process.env.SUI_WASM_DEPENDENCY_VERSION_PINS;
+  if (!raw) {
+    return {};
+  }
+
+  const pins = JSON.parse(raw);
+  if (!pins || typeof pins !== "object" || Array.isArray(pins)) {
+    throw new Error("SUI_WASM_DEPENDENCY_VERSION_PINS must be a JSON object");
+  }
+  return pins;
+}
+
+async function refreshPinnedDependencyLocks(suiWorkDir) {
+  const pins = readDependencyVersionPins();
+  for (const [specifier, preciseVersion] of Object.entries(pins)) {
+    console.log(
+      `Pinning dependency lock entry ${specifier} to ${preciseVersion}...`
+    );
+    const rustVersion = process.env.SUI_WASM_RUST_VERSION;
+    const args = rustVersion
+      ? [
+          `+${rustVersion}`,
+          "update",
+          "-p",
+          specifier,
+          "--precise",
+          preciseVersion,
+        ]
+      : ["update", "-p", specifier, "--precise", preciseVersion];
+    await run("cargo", args, {
+      cwd: suiWorkDir,
+      env: process.env,
+    });
+  }
+}
+
+async function restoreVendoredGitFiles(repoDir, relativePaths) {
+  const existingPaths = [];
+  for (const relativePath of relativePaths) {
+    if (await fs.stat(path.join(repoDir, relativePath)).catch(() => false)) {
+      existingPaths.push(relativePath);
+    }
+  }
+
+  if (existingPaths.length === 0) {
+    return;
+  }
+
+  await run("git", ["checkout", "--", ...existingPaths], { cwd: repoDir });
+}
+
+function sourceVariantDir() {
+  const raw = process.env.SUI_WASM_SOURCE_VARIANT_PATH;
+  if (!raw) {
+    return undefined;
+  }
+  if (path.isAbsolute(raw)) {
+    throw new Error("SUI_WASM_SOURCE_VARIANT_PATH must be relative");
+  }
+  if (raw.split(/[\\/]+/).includes("..")) {
+    throw new Error("SUI_WASM_SOURCE_VARIANT_PATH must not contain ..");
+  }
+
+  const resolved = path.resolve(repoRoot, raw);
+  const relative = path.relative(repoRoot, resolved);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(
+      "SUI_WASM_SOURCE_VARIANT_PATH must resolve inside the repository"
+    );
+  }
+  return resolved;
+}
+
+async function overlaySourceVariant(crateDir) {
+  const variantDir = sourceVariantDir();
+  if (!variantDir) {
+    return;
+  }
+  if (!(await fs.stat(path.join(variantDir, "lib.rs")).catch(() => false))) {
+    throw new Error(
+      `SUI_WASM_SOURCE_VARIANT_PATH must point to a src directory containing lib.rs: ${variantDir}`
+    );
+  }
+
+  console.log(
+    `Overlaying source variant ${variantDir} into ${crateDir}/src...`
+  );
+  await fs.rm(path.join(crateDir, "src"), { recursive: true, force: true });
+  await fs.cp(variantDir, path.join(crateDir, "src"), { recursive: true });
 }
 
 async function getInstalledWasmBindgenVersion(wasmBindgenCmd) {
@@ -125,11 +261,19 @@ async function main() {
     // Copy only tracked crate sources; generated/vendor build state is recreated separately.
     const entries = await fs.readdir(localSourceDir);
     for (const entry of entries) {
-      if (entry === "vendor" || entry === "target" || entry === "pkg") continue;
+      if (
+        entry === "vendor" ||
+        entry === "target" ||
+        entry === "pkg" ||
+        entry === "variants"
+      ) {
+        continue;
+      }
       const src = path.join(localSourceDir, entry);
       const dest = path.join(crateDir, entry);
       await fs.cp(src, dest, { recursive: true });
     }
+    await overlaySourceVariant(crateDir);
 
     // 3. Patch Cargo.toml for paths
     console.log("Patching Cargo.toml paths...");
@@ -161,6 +305,12 @@ async function main() {
       /path = "sui-execution\//g,
       'path = "../../sui-execution/'
     );
+    if (process.env.SUI_WASM_BINDGEN_VERSION) {
+      cargoContent = cargoContent.replace(
+        /wasm-bindgen = "0\.2"/g,
+        `wasm-bindgen = "=${process.env.SUI_WASM_BINDGEN_VERSION}"`
+      );
+    }
 
     // Note: overrides/ folder is copied into the crate, so we keep its relative paths as is.
 
@@ -278,7 +428,9 @@ async function main() {
       );
 
       // Define vendor paths early
-      const fcCommit = buildConfig.versions.fastcrypto.rev;
+      const fcCommit =
+        process.env.SUI_WASM_FASTCRYPTO_REV ||
+        buildConfig.versions.fastcrypto.rev;
       const vendorDir = generatedVendorDir;
       const fcDir = path.join(vendorDir, "fastcrypto");
       const secpDir = path.join(vendorDir, "rust-secp256k1");
@@ -461,6 +613,19 @@ async function main() {
       }
 
       // 5.5 Vendor fastcrypto AND rust-secp256k1
+      if (await dirExists(fcDir)) {
+        const { stdout: currentFastcryptoRev } = await runCapture(
+          "git",
+          ["rev-parse", "HEAD"],
+          { cwd: fcDir }
+        );
+        if (currentFastcryptoRev.trim() !== fcCommit) {
+          console.log(
+            `Refreshing vendored fastcrypto from ${currentFastcryptoRev.trim()} to ${fcCommit}...`
+          );
+          await fs.rm(fcDir, { recursive: true, force: true });
+        }
+      }
       if (!(await dirExists(fcDir))) {
         console.log(`Vendoring fastcrypto at ${fcCommit}...`);
         await fs.mkdir(vendorDir, { recursive: true });
@@ -501,6 +666,11 @@ async function main() {
         await fs.writeFile(secpCargo, content);
       }
 
+      await restoreVendoredGitFiles(fcDir, [
+        "fastcrypto/src/secp256r1/mod.rs",
+        "fastcrypto/src/groups/ristretto255.rs",
+      ]);
+
       // Patch fastcrypto secp256r1 for the WASM-compatible dependency set.
       const fcSecp256r1 = path.join(
         fcDir,
@@ -526,7 +696,10 @@ async function main() {
         "groups",
         "ristretto255.rs"
       );
-      if (await fs.stat(fcRistretto255).catch(() => false)) {
+      if (
+        filePatches.fastcryptoRistretto255Mod &&
+        (await fs.stat(fcRistretto255).catch(() => false))
+      ) {
         console.log(
           "Patching fastcrypto groups/ristretto255.rs with compat source..."
         );
@@ -747,7 +920,7 @@ panic = "abort"
       );
       await fs.writeFile(suiTypesLib, content);
 
-      // Remove native RPC transport dependencies from Cargo.toml.
+      // Remove native RPC/consensus transport dependencies from Cargo.toml.
       const suiTypesCargo = path.join(
         suiWorkDir,
         "crates/sui-types/Cargo.toml"
@@ -762,6 +935,10 @@ panic = "abort"
         cargoContent = cargoContent.replace(
           /^prost\.workspace = true/gm,
           "# prost.workspace = true"
+        );
+        cargoContent = cargoContent.replace(
+          /^jsonrpsee\.workspace = true/gm,
+          "# jsonrpsee.workspace = true"
         );
         await fs.writeFile(suiTypesCargo, cargoContent);
       }
@@ -1081,7 +1258,10 @@ panic = "abort"
                 item === "antithesis_sdk"
               ) {
                 extraConfig = '\n[dependencies]\nrand = "0.8"\n';
-              } else if (item === "move-package-alt-compilation") {
+              } else if (
+                item === "move-package-alt-compilation" &&
+                stubTemplates[item]
+              ) {
                 extraConfig = `\n[dependencies]\nanyhow = "1.0"\nmove-model-2 = { path = "${path.join(suiWorkDir, "external-crates/move/crates/move-model-2")}" }\n`;
               } else if (item === "mysten-network") {
                 extraConfig = `\n[dependencies]\nanemo = { path = "${path.join(generatedStubsDir, "anemo-hollow-stub")}" }\n`;
@@ -1286,6 +1466,8 @@ panic = "abort"
           }
           if (content.includes("reqwest")) {
             // Keep reqwest on a blocking-compatible version without default TLS features.
+            const reqwestVersion =
+              process.env.SUI_WASM_REQWEST_VERSION || "0.12.9";
             const regex = new RegExp(
               `^\\s*reqwest(\\s*=(?:\\s*\\{[\\s\\S]*?\\}|.*$))`,
               "gm"
@@ -1293,12 +1475,11 @@ panic = "abort"
             if (regex.test(content)) {
               content = content.replace(regex, (match) => {
                 const isOptional = match.includes("optional = true");
-                return `reqwest = { version = "=0.12.9", default-features = false, features = ["json", "blocking"]${isOptional ? ", optional = true" : ""} }`;
+                return `reqwest = { version = "=${reqwestVersion}", default-features = false, features = ["json", "blocking"]${isOptional ? ", optional = true" : ""} }`;
               });
               changed = true;
             }
           }
-
           if (content.includes("getrandom")) {
             // Use getrandom 0.2 with the js feature for WASM.
             const regex = new RegExp(
@@ -1328,6 +1509,8 @@ panic = "abort"
       await patchAllCargoTomls(vendorDir);
     }
     await patchAllCargoTomls(crateDir);
+    await refreshPatchedFastcryptoLocks(suiWorkDir);
+    await refreshPinnedDependencyLocks(suiWorkDir);
 
     const wasmBindgenVersion = await readCargoLockPackageVersion(
       path.join(suiWorkDir, "Cargo.lock"),

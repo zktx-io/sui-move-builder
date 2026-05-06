@@ -505,6 +505,25 @@ expectStatus(
   "verified",
   "upgrade intent verifies upgrade bytecode"
 );
+const upgradeReferenceWithPackageIdResult = await verify(
+  files,
+  {
+    modules: upgradeReferenceOutput.modules,
+    dependencies: upgradeReferenceOutput.dependencies,
+    packageId: publishedAddress,
+  },
+  { intent: "upgrade" }
+);
+expectStatus(
+  upgradeReferenceWithPackageIdResult,
+  "verified",
+  "upgrade intent keeps zero-root bytecode identity"
+);
+expectVerdict(
+  upgradeReferenceWithPackageIdResult,
+  "exact_bytecode_match",
+  "upgrade intent keeps zero-root bytecode identity"
+);
 
 const zeroAddressConstantFiles = fixtureFiles({
   includeAddressConstant: true,

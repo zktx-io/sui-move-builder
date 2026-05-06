@@ -106,6 +106,11 @@ function selectProfiles(profileName, distDir) {
   return profiles.filter((profile) => profile.name === profileName);
 }
 
+function cargoArgs(buildArgs) {
+  const rustVersion = process.env.SUI_WASM_RUST_VERSION;
+  return rustVersion ? [`+${rustVersion}`, ...buildArgs] : buildArgs;
+}
+
 async function cleanProfileOutputs(context, profileName, profiles) {
   if (profileName === "all") {
     await fs.rm(context.distDir, { recursive: true, force: true });
@@ -167,6 +172,54 @@ async function optimizeFullWasm(profile) {
   console.log(
     `Full WASM post-processing reduced raw size by ${saved} bytes (${before} -> ${after}).`
   );
+}
+
+function patchWasmBindgenStringInputs(jsContent, profileName) {
+  const marker =
+    "patched wasm-bindgen string input path to avoid realloc-based encoding";
+  if (jsContent.includes(marker)) {
+    return { content: jsContent, patched: false };
+  }
+
+  const start = jsContent.indexOf(
+    "function passStringToWasm0(arg, malloc, realloc) {"
+  );
+  if (start === -1) {
+    return { content: jsContent, patched: false };
+  }
+
+  let depth = 0;
+  let end = -1;
+  for (let i = start; i < jsContent.length; i += 1) {
+    const char = jsContent[i];
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        end = i + 1;
+        break;
+      }
+    }
+  }
+  if (end === -1) {
+    throw new Error(
+      `Unable to patch wasm-bindgen string input support for ${profileName}.`
+    );
+  }
+
+  const uint8MemoryGetter = jsContent.includes("function getUint8Memory0()")
+    ? "getUint8Memory0"
+    : "getUint8ArrayMemory0";
+  const replacement = `function passStringToWasm0(arg, malloc, realloc) {\n    // ${marker}.\n    const buf = cachedTextEncoder.encode(arg);\n    const ptr = malloc(buf.length, 1) >>> 0;\n    getUint8Memory0().subarray(ptr, ptr + buf.length).set(buf);\n    WASM_VECTOR_LEN = buf.length;\n    return ptr;\n}\n`;
+
+  return {
+    content: `${jsContent.slice(0, start)}${replacement.replace(
+      "getUint8Memory0()",
+      `${uint8MemoryGetter}()`
+    )}${jsContent.slice(end)}`,
+    patched: true,
+  };
 }
 
 async function main() {
@@ -251,7 +304,7 @@ async function main() {
       if (!env) {
         throw new Error(`No build environment configured for ${profile.name}`);
       }
-      await run("cargo", buildArgs, { cwd: crateDir, env });
+      await run("cargo", cargoArgs(buildArgs), { cwd: crateDir, env });
 
       console.log(`Linking '${profile.name}' with wasm-bindgen...`);
       const wasmArtifact = path.join(
@@ -293,6 +346,36 @@ async function main() {
         await fs.writeFile(jsPath, jsContent);
         console.log(
           `Patched 'env' import and added 'now' polyfill for ${profile.name}.`
+        );
+      }
+
+      if (
+        jsContent.includes("async function __wbg_init(input)") &&
+        !jsContent.includes("Object.getPrototypeOf(input) === Object.prototype")
+      ) {
+        const asyncInitStart =
+          "async function __wbg_init(input) {\n    if (wasm !== undefined) return wasm;\n\n";
+        if (!jsContent.includes(asyncInitStart)) {
+          throw new Error(
+            `Unable to patch wasm-bindgen init object parameter support for ${profile.name}.`
+          );
+        }
+        jsContent = jsContent.replace(
+          asyncInitStart,
+          `async function __wbg_init(input) {\n    if (wasm !== undefined) return wasm;\n\n    if (typeof input !== 'undefined') {\n        if (Object.getPrototypeOf(input) === Object.prototype) {\n            ({ module_or_path: input } = input);\n        } else {\n            console.warn('using deprecated parameters for the initialization function; pass a single object instead')\n        }\n    }\n\n`
+        );
+        await fs.writeFile(jsPath, jsContent);
+        console.log(
+          `Patched wasm-bindgen init object parameter support for ${profile.name}.`
+        );
+      }
+
+      const stringPatch = patchWasmBindgenStringInputs(jsContent, profile.name);
+      if (stringPatch.patched) {
+        jsContent = stringPatch.content;
+        await fs.writeFile(jsPath, jsContent);
+        console.log(
+          `Patched wasm-bindgen string input encoding for ${profile.name}.`
         );
       }
 
