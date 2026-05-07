@@ -3,6 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
+  bytecodeVersionRouteCandidates,
   getRepoRoot,
   loadBytecodeVerifierManifest,
 } from "./bytecode-verifier-manifest.mjs";
@@ -29,27 +30,39 @@ export function buildVerificationRuntimeConfigSourceFromInputs(manifest) {
     manifest.bytecodeVersions
   )) {
     const decodedBytecodeVersion = Number.parseInt(versionText, 10);
-    const verifier = manifest.verifiers[route.verifier];
-    if (!verifier) {
-      throw new Error(
-        `Route for bytecode version ${versionText} names missing verifier ${route.verifier}`
-      );
-    }
+    const candidates = bytecodeVersionRouteCandidates(route).map(
+      (candidate) => {
+        const verifier = manifest.verifiers[candidate.verifier];
+        if (!verifier) {
+          throw new Error(
+            `Route for bytecode version ${versionText} names missing verifier ${candidate.verifier}`
+          );
+        }
+
+        verifiers[candidate.verifier] = {
+          verifierId: candidate.verifier,
+          epochId: verifier.epochId ?? candidate.verifier,
+          suiVersion: verifier.suiVersion,
+          decodedBytecodeVersion,
+          bytecodeFlavor: verifier.bytecodeFlavor,
+          importSpecifier: importSpecifierForRoute(
+            candidate,
+            candidate.verifier === manifest.current
+          ),
+        };
+
+        return {
+          verifierId: candidate.verifier,
+          epochId: verifier.epochId ?? candidate.verifier,
+          decodedBytecodeVersion,
+          bytecodeFlavor: candidate.flavor ?? null,
+        };
+      }
+    );
 
     routes[versionText] = {
-      verifierId: route.verifier,
       decodedBytecodeVersion,
-      bytecodeFlavor: route.flavor ?? null,
-    };
-    verifiers[route.verifier] = {
-      verifierId: route.verifier,
-      suiVersion: verifier.suiVersion,
-      decodedBytecodeVersion,
-      bytecodeFlavor: verifier.bytecodeFlavor,
-      importSpecifier: importSpecifierForRoute(
-        route,
-        route.verifier === manifest.current
-      ),
+      candidates,
     };
   }
 
@@ -121,7 +134,15 @@ function sortValue(value) {
 
 function formatTsValue(value, indentLevel) {
   if (Array.isArray(value)) {
-    return `[${value.map((item) => formatTsValue(item, indentLevel)).join(", ")}]`;
+    if (value.length === 0) {
+      return "[]";
+    }
+    const indent = "  ".repeat(indentLevel);
+    const childIndent = "  ".repeat(indentLevel + 1);
+    const lines = value.map(
+      (item) => `${childIndent}${formatTsValue(item, indentLevel + 1)},`
+    );
+    return `[\n${lines.join("\n")}\n${indent}]`;
   }
   if (value === null) {
     return "null";

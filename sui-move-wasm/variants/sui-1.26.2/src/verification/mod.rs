@@ -80,13 +80,10 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
     let reference_digest_provided = input.reference.digest.is_some();
     let reference_dependencies = normalize_optional_dependencies(input.reference.dependencies)?;
     let reference_digest = normalize_optional_digest(input.reference.digest)?;
-    let reference_root_address = normalize_optional_root_address(
-        input
-            .reference
-            .root_address
-            .clone()
-            .or(input.reference.package_id.clone()),
-    )?;
+    let reference_root_address =
+        normalize_optional_root_address(input.reference.root_address.clone())?;
+    let _reference_package_id =
+        normalize_optional_root_address(input.reference.package_id.clone())?;
     let reference_build_version_metadata = BuildVersionMetadata {
         version: input.reference.cli_version,
         build_config: input.reference.build_config,

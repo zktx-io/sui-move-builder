@@ -180,6 +180,73 @@ export function validateBytecodeVersionSourceRecords(
     assertString(record.notes, `${recordLabel}.notes`);
   }
 
+  if (sourceRecords.verifierSourceRecords !== undefined) {
+    assertValue(
+      Array.isArray(sourceRecords.verifierSourceRecords),
+      `${label}: verifierSourceRecords must be an array`
+    );
+    const seenVerifierIds = new Set(
+      sourceRecords.records.map((record) => record.verifierId)
+    );
+    for (const [
+      index,
+      record,
+    ] of sourceRecords.verifierSourceRecords.entries()) {
+      const recordLabel = `${label}: verifierSourceRecords[${index}]`;
+      assertObject(record, recordLabel);
+      assertPositiveInteger(
+        record.decodedBytecodeVersion,
+        `${recordLabel}.decodedBytecodeVersion`
+      );
+      assertValue(
+        record.bytecodeFlavor === null ||
+          (Number.isInteger(record.bytecodeFlavor) &&
+            record.bytecodeFlavor >= 0),
+        `${recordLabel}.bytecodeFlavor must be null or a non-negative integer`
+      );
+      assertString(record.verifierId, `${recordLabel}.verifierId`);
+      assertValue(
+        /^sui-[a-z0-9][a-z0-9._-]*$/.test(record.verifierId),
+        `${recordLabel}.verifierId must be a package-compatible Sui source version handle`
+      );
+      assertValue(
+        !seenVerifierIds.has(record.verifierId),
+        `${recordLabel}.verifierId must be unique across source records`
+      );
+      seenVerifierIds.add(record.verifierId);
+      validateObservedRef(
+        record.representative,
+        `${recordLabel}.representative`
+      );
+      assertValue(
+        Array.isArray(record.sourceFiles) && record.sourceFiles.length > 0,
+        `${recordLabel}.sourceFiles must be a non-empty array`
+      );
+      for (const [sourceIndex, sourceFile] of record.sourceFiles.entries()) {
+        assertString(sourceFile, `${recordLabel}.sourceFiles[${sourceIndex}]`);
+      }
+      validateSignals(
+        record.signals,
+        record.decodedBytecodeVersion,
+        recordLabel,
+        {
+          allowSourceVersionMaxAboveDecoded: true,
+        }
+      );
+      assertValue(
+        record.signals.protocolConfig.moveBinaryFormatVersions.includes(
+          record.decodedBytecodeVersion
+        ),
+        `${recordLabel}.signals.protocolConfig.moveBinaryFormatVersions must include emitted decoded bytecode version ${record.decodedBytecodeVersion}`
+      );
+      validateSourceHashes(
+        record.representativeSourceHashes,
+        `${recordLabel}.representativeSourceHashes`
+      );
+      assertString(record.notes, `${recordLabel}.notes`);
+    }
+  }
+
   const observedVersions = new Set(
     sourceRecords.inventory.observedDecodedBytecodeVersions
   );
@@ -240,7 +307,7 @@ function validateOptionalObservedRef(value, label) {
   validateObservedRef(value, label);
 }
 
-function validateSignals(signals, decodedBytecodeVersion, label) {
+function validateSignals(signals, decodedBytecodeVersion, label, options = {}) {
   assertObject(signals, `${label}.signals`);
   assertObject(signals.moveBinaryFormat, `${label}.signals.moveBinaryFormat`);
   assertPositiveInteger(
@@ -251,10 +318,17 @@ function validateSignals(signals, decodedBytecodeVersion, label) {
     signals.moveBinaryFormat.versionMax,
     `${label}.signals.moveBinaryFormat.versionMax`
   );
-  assertValue(
-    signals.moveBinaryFormat.versionMax === decodedBytecodeVersion,
-    `${label}.signals.moveBinaryFormat.versionMax must match decodedBytecodeVersion`
-  );
+  if (options.allowSourceVersionMaxAboveDecoded) {
+    assertValue(
+      signals.moveBinaryFormat.versionMax >= decodedBytecodeVersion,
+      `${label}.signals.moveBinaryFormat.versionMax must be >= decodedBytecodeVersion`
+    );
+  } else {
+    assertValue(
+      signals.moveBinaryFormat.versionMax === decodedBytecodeVersion,
+      `${label}.signals.moveBinaryFormat.versionMax must match decodedBytecodeVersion`
+    );
+  }
   assertValue(
     signals.moveBinaryFormat.versionMin <= signals.moveBinaryFormat.versionMax,
     `${label}.signals.moveBinaryFormat.versionMin must be <= versionMax`
@@ -295,12 +369,17 @@ function validateSignals(signals, decodedBytecodeVersion, label) {
       "moduleExtensionTokenPresent",
       "moduleExtensionIn2024Alpha",
       "moduleExtensionIn2024Beta",
+      "moduleLabelTokenPresent",
+      "moduleLabelIn2024Alpha",
+      "moduleLabelIn2024Beta",
       "supportsPlain2024",
     ]) {
-      assertValue(
-        typeof signals.moveCompilerEditions[field] === "boolean",
-        `${label}.signals.moveCompilerEditions.${field} must be a boolean`
-      );
+      if (signals.moveCompilerEditions[field] !== undefined) {
+        assertValue(
+          typeof signals.moveCompilerEditions[field] === "boolean",
+          `${label}.signals.moveCompilerEditions.${field} must be a boolean`
+        );
+      }
     }
     validateEditionArray(
       signals.moveCompilerEditions.validEditions,
@@ -328,10 +407,22 @@ function validateSignals(signals, decodedBytecodeVersion, label) {
       signals.moveCompilerEditions.featureListHashes,
       `${label}.signals.moveCompilerEditions.featureListHashes`
     );
+    if (signals.moveCompilerEditions.effectiveFeatureListHashes !== undefined) {
+      validateEditionHashMap(
+        signals.moveCompilerEditions.effectiveFeatureListHashes,
+        `${label}.signals.moveCompilerEditions.effectiveFeatureListHashes`
+      );
+    }
     validateEditionArray(
       signals.moveCompilerEditions.moduleExtensionEditions,
       `${label}.signals.moveCompilerEditions.moduleExtensionEditions`
     );
+    if (signals.moveCompilerEditions.moduleLabelEditions !== undefined) {
+      validateEditionArray(
+        signals.moveCompilerEditions.moduleLabelEditions,
+        `${label}.signals.moveCompilerEditions.moduleLabelEditions`
+      );
+    }
     assertValue(
       signals.moveCompilerEditions.moduleExtensionTokenPresent ||
         (!signals.moveCompilerEditions.moduleExtensionIn2024Alpha &&

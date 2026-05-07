@@ -24,7 +24,7 @@ Prepared build scripts consume existing prepared state:
 - `build:wasm:prepared:lite` writes `dist/lite`.
 - `build:wasm:prepared:full` writes `dist/full`.
 - `build:wasm:prepared:verification` writes `dist/verification`.
-- `build:verification:v6` writes decoded-bytecode-version 6 verifier files under `dist/verification/v6`.
+- `build:verification:v6` writes decoded-bytecode-version 6 verifier files under `dist/verification/v6/classic` and `dist/verification/v6/v7source-2024`.
 - `inspect:reference-artifact` decodes caller-provided reference artifact headers for fixture review. Use `--fail-on-warning` before promoting a fixture.
 - `build` runs WASM preparation, JS build, and bundled bytecode verifier builds.
 
@@ -32,16 +32,17 @@ Full builds run a Binaryen `wasm-opt` strip pass after `wasm-bindgen`. Set `WASM
 
 ## Build State Layout
 
-| Path                                          | Role                                                                          |
-| --------------------------------------------- | ----------------------------------------------------------------------------- |
-| `.sui-build/source/`                          | Pristine Sui checkout at the commit in `sui-version.json`                     |
-| `.sui-build/work/`                            | Disposable worktree where `sui-move-wasm` is overlaid and patches are applied |
-| `.sui-build/generated/stubs/`                 | Generated WASM compatibility stub crates                                      |
-| `.sui-build/generated/vendor/`                | Vendored dependency sources that need local WASM patching                     |
-| `.sui-build/generated/local-bin/`             | Local build tools such as pinned `wasm-bindgen`                               |
-| `.sui-build/patch-state.json`                 | Successful prepare marker checked by prepared builds                          |
-| `dist/full`, `dist/lite`, `dist/verification` | Generated package artifacts                                                   |
-| `dist/verification/v6`                        | Generated verifier artifact for decoded bytecode version 6                    |
+| Path                                          | Role                                                                           |
+| --------------------------------------------- | ------------------------------------------------------------------------------ |
+| `.sui-build/source/`                          | Pristine Sui checkout at the commit in `sui-version.json`                      |
+| `.sui-build/work/`                            | Disposable worktree where `sui-move-wasm` is overlaid and patches are applied  |
+| `.sui-build/generated/stubs/`                 | Generated WASM compatibility stub crates                                       |
+| `.sui-build/generated/vendor/`                | Vendored dependency sources that need local WASM patching                      |
+| `.sui-build/generated/local-bin/`             | Local build tools such as pinned `wasm-bindgen`                                |
+| `.sui-build/patch-state.json`                 | Successful prepare marker checked by prepared builds                           |
+| `dist/full`, `dist/lite`, `dist/verification` | Generated package artifacts                                                    |
+| `dist/verification/v6/classic`                | Generated classic verifier artifact for decoded bytecode version 6             |
+| `dist/verification/v6/v7source-2024`          | Generated v7-source verifier artifact that can emit decoded bytecode version 6 |
 
 Only edit tracked project sources such as `src/`, `sui-move-wasm/`, and `scripts/compat/`. `.sui-build/` is ignored build/cache state and can be removed with `npm run clean` together with `dist/`. Set `SUI_SOURCE_DIR` or `SUI_WORK_DIR` only when intentionally moving those directories.
 
@@ -95,6 +96,8 @@ Use `scripts/verification/prove-bytecode-verifier-fixture.mjs` when promoting a 
 - `ok` and `errors`: the promotion gate result.
 
 Proof fails when `referenceInspection.warnings` is non-empty. A promoted `knownFixtures` entry must record the warning-free inspection summary and expected `verified` + `exact_bytecode_match` result.
+
+Use `--refresh-fixture` to rebuild a known fixture proof from its pinned GitHub source and transaction digest into `.sui-build/bytecode-verifier-proof-runs/` instead of reusing an existing proof cache.
 
 ## CLI Comparison Checks
 

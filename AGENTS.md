@@ -17,6 +17,7 @@ The upstream Sui source must stay pristine. All generated or patched state belon
 - Treat TypeScript as host/API/snapshot glue, not as the owner of Sui package-manager semantics.
 - Treat Rust/WASM as the source of truth for graph, linkage, digest, lockfile, compiler setup, output dependencies, and test ownership.
 - Treat CLI parity as stage-level behavioral parity with the pinned Sui flow, not fixture-shaped output matching.
+- Do not make parity-sensitive decisions from intuition, expected behavior, or fixture output alone. First verify how the selected Sui CLI or pinned upstream Sui source actually behaves, then implement the WASM behavior from that evidence.
 - Do not commit generated build state unless explicitly allowed.
 
 ## Preflight
@@ -67,6 +68,8 @@ CLI parity is not just a passing test result. Treat it as a stage-by-stage match
 
 Parity checks must use the installed `sui` CLI, or the explicit binary selected by `SUI_CLI`. Do not build a separate Sui CLI inside this repository for parity comparison. A CLI version mismatch is a warning and risk, not a reason to accept mismatched output.
 
+Before changing routing, fallback, address handling, edition handling, dependency loading, lockfile behavior, compiler options, or verifier comparison semantics, confirm the selected CLI or pinned upstream Sui source behavior first. If that behavior cannot be confirmed, stop and report the missing evidence instead of choosing the behavior by assumption.
+
 When preparing a new Sui version or changing parity-sensitive code, do not add:
 
 - Silent empty-stub fallback for a missing compatibility overlay.
@@ -95,9 +98,9 @@ During a future Sui version-up, first compare the new pinned Sui version against
 
 If this repository skips Sui updates for a long period, do not assume only the immediately previous pinned version matters. Regenerate upstream tag inventory with `npm run inventory:sui-tags`, analyze skipped mainnet/testnet/devnet decoded bytecode versions with `npm run analyze:bytecode-versions`, update `BYTECODE_VERSION_HISTORY.md`, and restore any missing legacy verifier whose decoded bytecode version or bytecode serialization behavior changes and whose representative fixture proves a distinct verification outcome. The goal is to preserve evidence-changing bytecode versions, not to build every patch release.
 
-When adding or changing a legacy bytecode verifier, provide a representative transaction fixture pinned to exact source and dependency commits. Inspect the reference artifact with `npm run inspect:reference-artifact -- --artifact <path> --fail-on-warning` before promoting it, record the warning-free `referenceInspection` summary in `knownFixtures`, and prove the fixture with `scripts/verification/prove-bytecode-verifier-fixture.mjs`. A legacy verifier is useful only when it changes the evidence outcome, such as current verifier `bytecode_format_drift` versus matching legacy `exact_bytecode_match`, or when it records an intentional unsupported/failure state as diagnostic evidence.
+When adding or changing a legacy bytecode verifier, provide a representative transaction fixture pinned to exact source and dependency commits. Inspect the reference artifact with `npm run inspect:reference-artifact -- --artifact <path> --fail-on-warning` before promoting it, record the warning-free `referenceInspection` summary in `knownFixtures`, and prove the fixture with `scripts/verification/prove-bytecode-verifier-fixture.mjs`. Use `--refresh-fixture` when you need to prove from freshly fetched pinned source and transaction data instead of an existing `.sui-build` proof cache. A legacy verifier is useful only when it changes the evidence outcome, such as current verifier `bytecode_format_drift` versus matching legacy `exact_bytecode_match`, or when it records an intentional unsupported/failure state as diagnostic evidence.
 
-Move edition handling must follow the selected verifier's pinned Sui CLI/source semantics. Record valid editions, default edition, and edition feature-list evidence in `scripts/verification/bytecode-version-sources.json` and `BYTECODE_VERSION_HISTORY.md`. Do not map unknown editions to `legacy`. A verifier that predates plain `edition = "2024"` must reject it instead of treating it as `2024.alpha`.
+Move edition handling must follow the selected verifier's pinned Sui CLI/source semantics. Record valid editions, compiler `Edition::default()` evidence, missing-edition compile fallback, and edition feature-list evidence in `scripts/verification/bytecode-version-sources.json` and `BYTECODE_VERSION_HISTORY.md`. Do not map unknown editions to `legacy`. A verifier that predates plain `edition = "2024"` must reject it instead of treating it as `2024.alpha`.
 
 Porting checkpoints:
 
@@ -170,7 +173,7 @@ For a normal refactor or version-up task, produce these outputs:
 - Updated source files or scripts with narrow, reviewable changes.
 - `.sui-build/patch-state.json` from a successful prepare run when WASM preparation is part of the task.
 - `dist/lite` and/or `dist/full` only after the prepared build commands succeed.
-- Bundled bytecode verifier artifacts such as `dist/verification/v6` only after `npm run build:bytecode-verifiers` or `npm run build` succeeds.
+- Bundled bytecode verifier artifacts such as `dist/verification/v6/classic` and `dist/verification/v6/v7source-2024` only after `npm run build:bytecode-verifiers` or `npm run build` succeeds.
 - Updated README/CLI_PIPELINE content only for facts confirmed by code or tests.
 - Verified CLI and WASM full/lite runtime version exposure when version-up work produces runnable artifacts.
 - A final report listing changed files, commands run, failures, and remaining risks.

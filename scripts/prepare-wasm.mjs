@@ -199,6 +199,7 @@ async function getInstalledWasmBindgenVersion(wasmBindgenCmd) {
 async function ensureWasmBindgenCli(localBin, requiredVersion) {
   const wasmBindgenCmd = path.join(localBin, "bin/wasm-bindgen");
   const installedVersion = await getInstalledWasmBindgenVersion(wasmBindgenCmd);
+  const rustVersion = process.env.SUI_WASM_RUST_VERSION;
 
   if (installedVersion === requiredVersion) {
     return wasmBindgenCmd;
@@ -212,6 +213,7 @@ async function ensureWasmBindgenCli(localBin, requiredVersion) {
   await run(
     "cargo",
     [
+      ...(rustVersion ? [`+${rustVersion}`] : []),
       "install",
       "wasm-bindgen-cli",
       "--version",
@@ -856,8 +858,7 @@ panic = "abort"
       ) {
         const parts = content.split("[workspace.dependencies]");
         const membersPart = parts[0];
-        // Check if members part has a valid un-commented closing bracket
-        // This is a naive check but sufficient for the known issue
+        // Check whether the members array has a valid uncommented closing bracket.
         const closingIndex = membersPart.lastIndexOf("]");
         const commentIndex = membersPart.lastIndexOf("#");
         if (
@@ -901,6 +902,10 @@ panic = "abort"
       content = content.replace(
         /pub mod rpc_proto_conversions;/g,
         "// pub mod rpc_proto_conversions;"
+      );
+      content = content.replace(
+        /pub mod rpc_proto_conversions_v2beta2;/g,
+        "// pub mod rpc_proto_conversions_v2beta2;"
       );
       content = content.replace(
         /pub mod messages_grpc;/g,

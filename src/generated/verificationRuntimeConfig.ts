@@ -8,27 +8,55 @@ export const VERIFICATION_RUNTIME_CONFIG = {
   currentVerifierId: "sui-1.70.2",
   routes: {
     "6": {
-      bytecodeFlavor: null,
+      candidates: [
+        {
+          bytecodeFlavor: null,
+          decodedBytecodeVersion: 6,
+          epochId: "v6-classic",
+          verifierId: "sui-1.26.2",
+        },
+        {
+          bytecodeFlavor: null,
+          decodedBytecodeVersion: 6,
+          epochId: "v6-v7source-2024",
+          verifierId: "sui-1.58.3-v6",
+        },
+      ],
       decodedBytecodeVersion: 6,
-      verifierId: "sui-1.26.2",
     },
     "7": {
-      bytecodeFlavor: 5,
+      candidates: [
+        {
+          bytecodeFlavor: 5,
+          decodedBytecodeVersion: 7,
+          epochId: "v7-current",
+          verifierId: "sui-1.70.2",
+        },
+      ],
       decodedBytecodeVersion: 7,
-      verifierId: "sui-1.70.2",
     },
   },
   verifiers: {
     "sui-1.26.2": {
       bytecodeFlavor: null,
       decodedBytecodeVersion: 6,
-      importSpecifier: "./v6/sui_move_wasm.js",
+      epochId: "v6-classic",
+      importSpecifier: "./v6/classic/sui_move_wasm.js",
       suiVersion: "1.26.2",
       verifierId: "sui-1.26.2",
+    },
+    "sui-1.58.3-v6": {
+      bytecodeFlavor: null,
+      decodedBytecodeVersion: 6,
+      epochId: "v6-v7source-2024",
+      importSpecifier: "./v6/v7source-2024/sui_move_wasm.js",
+      suiVersion: "1.58.3",
+      verifierId: "sui-1.58.3-v6",
     },
     "sui-1.70.2": {
       bytecodeFlavor: 5,
       decodedBytecodeVersion: 7,
+      epochId: "v7-current",
       importSpecifier: null,
       suiVersion: "1.70.2",
       verifierId: "sui-1.70.2",

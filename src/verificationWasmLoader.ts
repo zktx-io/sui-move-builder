@@ -26,41 +26,73 @@ export interface LoadedVerificationWasm {
 }
 
 interface RuntimeRoute {
+  decodedBytecodeVersion: number;
+  candidates: readonly RuntimeRouteCandidate[];
+}
+
+interface RuntimeRouteCandidate {
   verifierId: string;
+  epochId: string;
   decodedBytecodeVersion: number;
   bytecodeFlavor: number | null;
 }
 
 interface RuntimeVerifier {
   verifierId: string;
+  epochId: string;
   decodedBytecodeVersion: number;
   bytecodeFlavor: number | null;
   importSpecifier: string | null;
 }
 
+export interface VerificationWasmCandidate {
+  verifierId: string;
+  epochId: string;
+  referenceBytecode: VerificationReferenceBytecode;
+  selectedVerifier: VerificationSelectedVerifier;
+  load(): Promise<LoadedVerificationWasm>;
+}
+
 const bundledBytecodeVerifierReady = new Map<
-  number,
+  string,
   Promise<VerificationWasmModule>
 >();
 
-export async function loadVerificationWasm(
+export async function loadVerificationWasmCandidates(
   input: MovePackageProvenanceInput
-): Promise<LoadedVerificationWasm> {
+): Promise<VerificationWasmCandidate[]> {
   const referenceBytecode = referenceBytecodeSummary(input.reference);
   if (input.wasm) {
-    const mod = (await loadWasm(
-      input.wasm
-    )) as unknown as VerificationWasmModule;
-    return {
-      mod,
-      referenceBytecode,
-      selectedVerifier: {
-        verifierId: "custom",
-        suiVersion: safeSuiVersion(mod),
-        decodedBytecodeVersion: referenceBytecode.decodedVersion,
-        bytecodeFlavor: referenceBytecode.flavor,
-      },
+    const customVerifier: VerificationSelectedVerifier = {
+      verifierId: input.wasmVerifier?.verifierId ?? "custom",
+      epochId: input.wasmVerifier?.epochId ?? "custom",
+      decodedBytecodeVersion:
+        input.wasmVerifier?.decodedBytecodeVersion ??
+        referenceBytecode.decodedVersion,
+      bytecodeFlavor:
+        input.wasmVerifier?.bytecodeFlavor ?? referenceBytecode.flavor,
     };
+    return [
+      {
+        verifierId: customVerifier.verifierId,
+        epochId: customVerifier.epochId ?? customVerifier.verifierId,
+        referenceBytecode,
+        selectedVerifier: customVerifier,
+        async load() {
+          const mod = (await loadWasm(
+            input.wasm
+          )) as unknown as VerificationWasmModule;
+          return {
+            mod,
+            referenceBytecode,
+            selectedVerifier: {
+              ...customVerifier,
+              suiVersion: safeSuiVersion(mod),
+            },
+          };
+        },
+      },
+    ];
   }
 
   const bytecodeVersion = referenceBytecode.decodedVersion;
@@ -68,41 +100,78 @@ export async function loadVerificationWasm(
     bytecodeVersion === undefined ||
     bytecodeVersion === VERIFICATION_RUNTIME_CONFIG.currentBytecodeVersion
   ) {
-    const mod = (await loadWasm()) as unknown as VerificationWasmModule;
     const current = currentVerifierConfig();
-    return {
-      mod,
-      referenceBytecode,
-      selectedVerifier: {
+    return [
+      {
         verifierId: current.verifierId,
-        suiVersion: safeSuiVersion(mod),
-        decodedBytecodeVersion:
-          bytecodeVersion ?? current.decodedBytecodeVersion,
-        bytecodeFlavor: referenceBytecode.flavor ?? current.bytecodeFlavor,
+        epochId: current.epochId,
+        referenceBytecode,
+        selectedVerifier: {
+          verifierId: current.verifierId,
+          epochId: current.epochId,
+          decodedBytecodeVersion:
+            bytecodeVersion ?? current.decodedBytecodeVersion,
+          bytecodeFlavor: referenceBytecode.flavor ?? current.bytecodeFlavor,
+        },
+        async load() {
+          const mod = (await loadWasm()) as unknown as VerificationWasmModule;
+          return {
+            mod,
+            referenceBytecode,
+            selectedVerifier: {
+              verifierId: current.verifierId,
+              epochId: current.epochId,
+              suiVersion: safeSuiVersion(mod),
+              decodedBytecodeVersion:
+                bytecodeVersion ?? current.decodedBytecodeVersion,
+              bytecodeFlavor:
+                referenceBytecode.flavor ?? current.bytecodeFlavor,
+            },
+          };
+        },
       },
-    };
+    ];
   }
 
   const route = routeForBytecodeVersion(bytecodeVersion);
   if (!route) {
     throw unsupportedBytecodeVersion(bytecodeVersion, referenceBytecode);
   }
-  const verifier = verifierConfig(route.verifierId);
-  if (!verifier?.importSpecifier) {
+  const candidates = orderedRouteCandidates(route).map(
+    ({ candidate, verifier }) => ({
+      verifierId: verifier.verifierId,
+      epochId: verifier.epochId,
+      referenceBytecode,
+      selectedVerifier: {
+        verifierId: verifier.verifierId,
+        epochId: verifier.epochId,
+        decodedBytecodeVersion: bytecodeVersion,
+        bytecodeFlavor: referenceBytecode.flavor,
+      },
+      async load() {
+        if (!verifier.importSpecifier) {
+          throw unsupportedBytecodeVersion(bytecodeVersion, referenceBytecode);
+        }
+        const mod = await loadBundledBytecodeVerifier(verifier);
+        return {
+          mod,
+          referenceBytecode,
+          selectedVerifier: {
+            verifierId: verifier.verifierId,
+            epochId: verifier.epochId,
+            suiVersion: safeSuiVersion(mod),
+            decodedBytecodeVersion: bytecodeVersion,
+            bytecodeFlavor:
+              referenceBytecode.flavor ?? candidate.bytecodeFlavor,
+          },
+        };
+      },
+    })
+  );
+  if (candidates.length === 0) {
     throw unsupportedBytecodeVersion(bytecodeVersion, referenceBytecode);
   }
-
-  const mod = await loadBundledBytecodeVerifier(bytecodeVersion, verifier);
-  return {
-    mod,
-    referenceBytecode,
-    selectedVerifier: {
-      verifierId: verifier.verifierId,
-      suiVersion: safeSuiVersion(mod),
-      decodedBytecodeVersion: bytecodeVersion,
-      bytecodeFlavor: referenceBytecode.flavor,
-    },
-  };
+  return candidates;
 }
 
 function unsupportedBytecodeVersion(
@@ -123,10 +192,9 @@ function unsupportedBytecodeVersion(
 }
 
 async function loadBundledBytecodeVerifier(
-  bytecodeVersion: number,
   verifier: RuntimeVerifier
 ): Promise<VerificationWasmModule> {
-  let ready = bundledBytecodeVerifierReady.get(bytecodeVersion);
+  let ready = bundledBytecodeVerifierReady.get(verifier.verifierId);
   if (!ready) {
     ready = importVerificationWasm(verifier.importSpecifier ?? "").then(
       async (mod) => {
@@ -136,7 +204,7 @@ async function loadBundledBytecodeVerifier(
         return mod;
       }
     );
-    bundledBytecodeVerifierReady.set(bytecodeVersion, ready);
+    bundledBytecodeVerifierReady.set(verifier.verifierId, ready);
   }
   return ready;
 }
@@ -178,11 +246,14 @@ function supportedBytecodeVersions(): number[] {
 }
 
 function runtimeRoutes() {
-  return VERIFICATION_RUNTIME_CONFIG.routes as Record<string, RuntimeRoute>;
+  return VERIFICATION_RUNTIME_CONFIG.routes as unknown as Record<
+    string,
+    RuntimeRoute
+  >;
 }
 
 function runtimeVerifiers() {
-  return VERIFICATION_RUNTIME_CONFIG.verifiers as Record<
+  return VERIFICATION_RUNTIME_CONFIG.verifiers as unknown as Record<
     string,
     RuntimeVerifier
   >;
@@ -194,4 +265,14 @@ function safeSuiVersion(mod: VerificationWasmModule): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function orderedRouteCandidates(route: RuntimeRoute) {
+  return route.candidates
+    .map((candidate) => {
+      const verifier = verifierConfig(candidate.verifierId);
+      if (!verifier) return undefined;
+      return { candidate, verifier };
+    })
+    .filter((value): value is NonNullable<typeof value> => Boolean(value));
 }

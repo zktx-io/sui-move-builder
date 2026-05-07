@@ -219,6 +219,27 @@ function expectDiagnostic(result, label) {
   }
 }
 
+function expectVerifierEvidence(result, label) {
+  if (!result.selectedVerifier?.verifierId) {
+    throw new Error(
+      `${label}: result should include selected verifier evidence: ${JSON.stringify(
+        result,
+        null,
+        2
+      )}`
+    );
+  }
+  if (result.referenceBytecode?.moduleCount === undefined) {
+    throw new Error(
+      `${label}: result should include reference bytecode evidence: ${JSON.stringify(
+        result,
+        null,
+        2
+      )}`
+    );
+  }
+}
+
 function withHeaderVersion(base64, version) {
   const bytes = Buffer.from(base64, "base64");
   bytes.writeUInt32LE(version, 4);
@@ -331,28 +352,41 @@ const v6Plain2024Result = await verify(files, {
 });
 expectStatus(
   v6Plain2024Result,
-  "build_failure",
-  "v6 verifier rejects plain 2024"
+  "mismatch",
+  "v6 verifier candidates try later 2024-capable compiler"
 );
 expectVerdict(
   v6Plain2024Result,
-  "unverified",
-  "v6 verifier rejects plain 2024"
+  "semantic_mismatch",
+  "v6 verifier candidates try later 2024-capable compiler"
 );
-expectFailureStage(
+expectNoFailureStage(
   v6Plain2024Result,
-  "input_validation",
-  "v6 verifier rejects plain 2024"
+  "v6 verifier candidates try later 2024-capable compiler"
 );
-expectErrorIncludes(
+expectDiagnostic(
   v6Plain2024Result,
-  "Invalid Move edition '2024'",
-  "v6 verifier rejects plain 2024"
+  "v6 verifier candidates try later 2024-capable compiler"
 );
-expectDiagnostic(v6Plain2024Result, "v6 verifier rejects plain 2024");
-if (v6Plain2024Result.selectedVerifier?.verifierId !== "sui-1.26.2") {
+if (v6Plain2024Result.selectedVerifier?.verifierId !== "sui-1.58.3-v6") {
   throw new Error(
-    `v6 reference should select bundled v6 verifier: ${JSON.stringify(
+    `v6 plain 2024 reference should select the later v6 compiler-capability verifier after classic rejects it: ${JSON.stringify(
+      v6Plain2024Result,
+      null,
+      2
+    )}`
+  );
+}
+const v6Plain2024Attempts = v6Plain2024Result.candidatesConsidered ?? [];
+if (
+  v6Plain2024Attempts[0]?.verifierId !== "sui-1.26.2" ||
+  v6Plain2024Attempts[0]?.outcome !== "compile_failed" ||
+  v6Plain2024Attempts[0]?.failureStage !== "input_validation" ||
+  v6Plain2024Attempts[1]?.verifierId !== "sui-1.58.3-v6" ||
+  v6Plain2024Attempts[1]?.outcome !== "tried_but_not_exact"
+) {
+  throw new Error(
+    `v6 plain 2024 reference should record classic rejection and fallback mismatch attempts: ${JSON.stringify(
       v6Plain2024Result,
       null,
       2
@@ -361,12 +395,38 @@ if (v6Plain2024Result.selectedVerifier?.verifierId !== "sui-1.26.2") {
 }
 if (
   v6Plain2024Result.referenceBytecode?.decodedVersion !== 6 ||
-  v6Plain2024Result.sourceCompatibility?.unsupportedEditions?.[0]
-    ?.effectiveEdition !== "2024"
+  v6Plain2024Result.sourceCompatibility?.root?.effectiveEdition !== "2024"
 ) {
   throw new Error(
-    `v6 unsupported edition result should expose bytecode and source compatibility evidence: ${JSON.stringify(
+    `v6 plain 2024 fallback result should expose bytecode and source compatibility evidence: ${JSON.stringify(
       v6Plain2024Result,
+      null,
+      2
+    )}`
+  );
+}
+
+const missingEditionFiles = {
+  ...files,
+  "Move.toml": files["Move.toml"].replace('edition = "2024"\n', ""),
+};
+const missingEditionReference = await publishReference(missingEditionFiles);
+const missingEditionResult = await verify(missingEditionFiles, {
+  modules: missingEditionReference.modules,
+});
+expectStatus(missingEditionResult, "verified", "missing edition");
+expectVerdict(missingEditionResult, "exact_bytecode_match", "missing edition");
+expectVerifierEvidence(missingEditionResult, "missing edition");
+if (
+  missingEditionResult.sourceCompatibility?.root?.declaredEdition !==
+    undefined ||
+  missingEditionResult.sourceCompatibility?.root?.effectiveEdition !==
+    "legacy" ||
+  missingEditionResult.sourceCompatibility?.root?.defaulted !== true
+) {
+  throw new Error(
+    `missing edition should use CLI-equivalent legacy fallback: ${JSON.stringify(
+      missingEditionResult,
       null,
       2
     )}`
@@ -403,6 +463,38 @@ const publishedAddress =
   "0x0000000000000000000000000000000000000000000000000000000000000042";
 const zeroAddress =
   "0x0000000000000000000000000000000000000000000000000000000000000000";
+const packageIdMetadataResult = await verify(
+  files,
+  {
+    modules: reference.modules,
+    dependencies: reference.dependencies,
+    packageId: publishedAddress,
+  },
+  { intent: "publish" }
+);
+expectStatus(
+  packageIdMetadataResult,
+  "verified",
+  "publish packageId metadata does not rewrite zero-root bytecode"
+);
+expectVerdict(
+  packageIdMetadataResult,
+  "exact_bytecode_match",
+  "publish packageId metadata does not rewrite zero-root bytecode"
+);
+if (
+  packageIdMetadataResult.currentSummary?.perModule?.[0]?.address !==
+    zeroAddress ||
+  packageIdMetadataResult.bytecodeDiffs?.length
+) {
+  throw new Error(
+    `packageId metadata should not request root address substitution: ${JSON.stringify(
+      packageIdMetadataResult,
+      null,
+      2
+    )}`
+  );
+}
 const publishedFiles = fixtureFiles({
   address: publishedAddress,
   publishedAt: publishedAddress,
@@ -760,6 +852,7 @@ const compileFailureResult = await verify(badFiles, {
 expectStatus(compileFailureResult, "build_failure", "source compile failure");
 expectFailureStage(compileFailureResult, "compile", "source compile failure");
 expectDiagnostic(compileFailureResult, "source compile failure");
+expectVerifierEvidence(compileFailureResult, "source compile failure");
 
 const unknownEditionFiles = {
   ...files,
@@ -780,6 +873,7 @@ expectErrorIncludes(
   "unknown edition"
 );
 expectDiagnostic(unknownEditionResult, "unknown edition");
+expectVerifierEvidence(unknownEditionResult, "unknown edition");
 
 const dependencyFailureFiles = {
   ...files,
@@ -816,5 +910,9 @@ expectFailureStage(
   "dependency resolution failure"
 );
 expectDiagnostic(dependencyFailureResult, "dependency resolution failure");
+expectVerifierEvidence(
+  dependencyFailureResult,
+  "dependency resolution failure"
+);
 
 console.log("[OK] verification provenance checks passed");

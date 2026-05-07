@@ -2,7 +2,7 @@
 
 This file is the human-reviewed record for verifier selection. It records which Sui source tag/commit represents each decoded Move bytecode version and what changed from the previous recorded bytecode version.
 
-Machine-readable source records live in `scripts/verification/bytecode-version-sources.json`. Scripts use that JSON to fetch the relevant Sui repository files by tag/commit. Runtime routing lives in `scripts/verification/bytecode-verifiers.json`. Generated GitHub tag inventory and source hashes live under `.sui-build/bytecode-verifiers/` and must not be committed. This file is the human and AI readable explanation copied from generated evidence after review.
+Machine-readable source records live in `scripts/verification/bytecode-version-sources.json`. Scripts use that JSON to fetch the relevant Sui repository files by tag/commit. Runtime routing lives in `scripts/verification/bytecode-verifiers.json`. Generated GitHub tag inventory and source hashes live under `.sui-build/bytecode-verifiers/` as generated state. This file is the human and AI readable explanation of reviewed generated evidence.
 
 ## Update Rules
 
@@ -44,12 +44,35 @@ Generated evidence covers 1029 upstream Sui tags: 400 network tags and 629 relea
 
 Move edition support is verifier-source-specific. The decoded bytecode version is still the first routing key; edition rules are applied by the selected verifier according to its pinned Sui source.
 
-| Verifier     | Valid editions                              | Default edition | Plain `2024` support | ModuleExtension evidence  |
-| ------------ | ------------------------------------------- | --------------- | -------------------- | ------------------------- |
-| `sui-1.26.2` | `legacy`, `2024.alpha`, `2024.beta`         | `legacy`        | No                   | Not present               |
-| `sui-1.70.2` | `legacy`, `2024.alpha`, `2024.beta`, `2024` | `2024`          | Yes                  | `2024.alpha` feature list |
+| Verifier     | Valid editions                              | Missing edition fallback | Plain `2024` support | ModuleExtension evidence  |
+| ------------ | ------------------------------------------- | ------------------------ | -------------------- | ------------------------- |
+| `sui-1.26.2` | `legacy`, `2024.alpha`, `2024.beta`         | `legacy`                 | Unsupported          | Absent                    |
+| `sui-1.70.2` | `legacy`, `2024.alpha`, `2024.beta`, `2024` | `legacy`                 | Supported            | `2024.alpha` feature list |
 
-The v6 verifier rejects plain `edition = "2024"` because `mainnet-v1.26.2` does not list that edition as valid. The current v7 verifier maps plain `2024` to the stable `E2024` edition, not to `2024.alpha`.
+The v6 classic verifier accepted edition set is `legacy`, `2024.alpha`, and `2024.beta`; plain `edition = "2024"` returns an `input_validation` failure for that candidate. Later v6 compiler-capability candidates can support plain `2024`. The current v7 verifier maps plain `2024` to the stable `E2024` edition; `2024.alpha` remains a separate edition.
+
+## Mainnet Compiler Capability Evidence
+
+Mainnet tags after `mainnet-v1.27.2` use v7-era source while protocol config still records support for emitting decoded bytecode version 6. These compiler-capability groups are source-record evidence. Active runtime routes are recorded in `scripts/verification/bytecode-verifiers.json`.
+
+| Emitted bytecode version | Mainnet tag range           | Source `VERSION_MAX` | Valid editions                              | Compiler `Edition::default()` | Plain `2024` | ModuleLabel editions              | ModuleExtension editions |
+| ------------------------ | --------------------------- | -------------------- | ------------------------------------------- | ----------------------------- | ------------ | --------------------------------- | ------------------------ |
+| 6                        | `mainnet-v1.25.1`-`v1.26.2` | 6                    | `legacy`, `2024.alpha`, `2024.beta`         | `legacy`                      | Unsupported  | Absent                            | Absent                   |
+| 6                        | `mainnet-v1.27.2`-`v1.28.4` | 7                    | `legacy`, `2024.alpha`, `2024.beta`         | `legacy`                      | Unsupported  | `2024.alpha`, `2024.beta`         | Absent                   |
+| 6                        | `mainnet-v1.29.2`           | 7                    | `legacy`, `2024.alpha`, `2024.beta`         | `legacy`                      | Unsupported  | `2024.alpha`, `2024.beta`         | Absent                   |
+| 6                        | `mainnet-v1.30.1`-`v1.37.4` | 7                    | `legacy`, `2024.alpha`, `2024.beta`         | `2024.beta`                   | Unsupported  | `2024.alpha`, `2024.beta`         | Absent                   |
+| 6                        | `mainnet-v1.38.3`-`v1.56.2` | 7                    | `legacy`, `2024.alpha`, `2024.beta`, `2024` | `2024`                        | Supported    | `2024`, `2024.alpha`, `2024.beta` | Absent                   |
+| 6                        | `mainnet-v1.57.2`-`v1.57.3` | 7                    | `legacy`, `2024.alpha`, `2024.beta`, `2024` | `2024`                        | Supported    | `2024`, `2024.alpha`, `2024.beta` | `2024.alpha`             |
+| 6                        | `mainnet-v1.58.3`-`v1.71.1` | 7                    | `legacy`, `2024.alpha`, `2024.beta`, `2024` | `2024`                        | Supported    | `2024`, `2024.alpha`, `2024.beta` | `2024.alpha`             |
+
+Observed representative: `mainnet-v1.58.3` is the first tag in the `mainnet-v1.58.3`-`v1.71.1` compiler-capability group.
+
+Known fixture lock revisions provide supporting source evidence for this late compiler-capability group. Evidence role: source-capability corroboration.
+
+| Fixture      | Reference decoded bytecode version | Root edition | Sui framework rev from `Move.lock`         | Capability match                                      |
+| ------------ | ---------------------------------- | ------------ | ------------------------------------------ | ----------------------------------------------------- |
+| `deepbookv3` | 6                                  | `2024.beta`  | `22f9fc9781732d651e18384c9a8eb1dabddf73a6` | Same signals as the `mainnet-v1.58.3`-`v1.71.1` group |
+| `deeptrade`  | 6                                  | `2024.beta`  | `4e8b6eda7d6411d80c62f39ac8a4f028e8d174c4` | Same signals as the `mainnet-v1.58.3`-`v1.71.1` group |
 
 ## Evidence Checklist
 
@@ -81,9 +104,9 @@ Each completed record should cite generated evidence for these upstream source g
 | `sui-1.70.2`        | `protocol config`        | `crates/sui-protocol-config/src/lib.rs`                                    | `de0ddb0fef7bc62cb05021a8bb7056f645ed71ac429398d7c6f46ebd091fab4e` |
 | `sui-1.70.2`        | `move compiler editions` | `external-crates/move/crates/move-compiler/src/editions/mod.rs`            | `f3d9b7660548798d111239db37fb5d2b38eed14b1d34d42a730e39863b6d45e8` |
 
-## Notes For Future Records
+## Future Record Criteria
 
-- Do not add one verifier per Sui patch release. Add verifier records only when decoded bytecode version or bytecode serialization evidence changes.
-- Keep JSON machine-oriented and this Markdown human-oriented. The JSON should identify what to fetch; this file should explain why the version matters and what changed.
-- Do not infer a representative commit from an old builder package. The representative commit must come from upstream Sui tag inventory.
-- A verifier record is not enough by itself. A supported legacy verifier also needs an isolated compat recipe and a fixture that proves a distinct verification outcome.
+- Verifier granularity: decoded bytecode version or bytecode serialization evidence change.
+- JSON role: machine-oriented fetch records. Markdown role: human-readable version meaning and change summary.
+- Representative commit source: upstream Sui tag inventory.
+- Legacy verifier support status: active with an isolated compat recipe and a fixture that proves a distinct verification outcome.

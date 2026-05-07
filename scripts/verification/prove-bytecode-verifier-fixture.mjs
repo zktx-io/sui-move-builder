@@ -2,6 +2,9 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { SuiGraphQLClient } from "@mysten/sui/graphql";
+import { SuiGrpcClient } from "@mysten/sui/grpc";
+import { Transaction } from "@mysten/sui/transactions";
 
 import { loadBytecodeVerifierManifest } from "./bytecode-verifier-manifest.mjs";
 import { inspectReferenceArtifact } from "./inspect-reference-artifact.mjs";
@@ -10,6 +13,21 @@ const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../.."
 );
+
+const networkUrls = {
+  mainnet: {
+    grpc: "https://fullnode.mainnet.sui.io:443",
+    graphql: "https://graphql.mainnet.sui.io/graphql",
+  },
+  testnet: {
+    grpc: "https://fullnode.testnet.sui.io:443",
+    graphql: "https://graphql.testnet.sui.io/graphql",
+  },
+  devnet: {
+    grpc: "https://fullnode.devnet.sui.io:443",
+    graphql: "https://graphql.devnet.sui.io/graphql",
+  },
+};
 
 function parseArgs(argv) {
   const args = {};
@@ -176,6 +194,249 @@ async function readJson(filePath) {
   return JSON.parse(await fs.readFile(filePath, "utf8"));
 }
 
+async function writeJson(filePath, value) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function readGithubToken() {
+  if (process.env.GITHUB_TOKEN) {
+    return process.env.GITHUB_TOKEN;
+  }
+  try {
+    return (
+      await fs.readFile(path.join(repoRoot, "test/.github_token"), "utf8")
+    ).trim();
+  } catch {
+    return undefined;
+  }
+}
+
+function parseGitHubUrl(gitUrl) {
+  const url = new URL(gitUrl);
+  const parts = url.pathname
+    .replace(/\.git$/, "")
+    .split("/")
+    .filter(Boolean);
+  if (url.hostname.toLowerCase() !== "github.com" || parts.length < 2) {
+    throw new Error(`Expected GitHub URL, got ${gitUrl}`);
+  }
+  return { owner: parts[0], repo: parts[1] };
+}
+
+function githubHeaders(token) {
+  const headers = { accept: "application/vnd.github+json" };
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+async function fetchGitHubTree({ git, commit, token }) {
+  const { owner, repo } = parseGitHubUrl(git);
+  const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${commit}?recursive=1`;
+  const response = await fetch(treeUrl, {
+    headers: githubHeaders(token),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch GitHub tree ${owner}/${repo}@${commit}: ${response.status} ${response.statusText}`
+    );
+  }
+  const body = await response.json();
+  if (body.truncated === true) {
+    throw new Error(
+      `GitHub tree response is truncated for ${owner}/${repo}@${commit}; verifier proof requires a complete tree`
+    );
+  }
+  if (!Array.isArray(body.tree)) {
+    throw new Error(
+      `GitHub tree response has no tree array for ${owner}/${repo}@${commit}`
+    );
+  }
+  return { owner, repo, tree: body.tree };
+}
+
+function isIncludedMovePackageFile(repoPath) {
+  const fileName = path.posix.basename(repoPath);
+  return (
+    repoPath.endsWith(".move") ||
+    fileName === "Move.toml" ||
+    fileName === "Move.lock" ||
+    fileName === "Published.toml" ||
+    /^Move\.[^.\\/]+\.toml$/.test(fileName)
+  );
+}
+
+async function fetchGitHubRawText({ owner, repo, commit, repoPath, token }) {
+  const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${commit}/${repoPath}`;
+  const response = await fetch(rawUrl, {
+    headers: githubHeaders(token),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch GitHub raw file ${owner}/${repo}@${commit}:${repoPath}: ${response.status} ${response.statusText}`
+    );
+  }
+  return Buffer.from(await response.arrayBuffer()).toString("utf8");
+}
+
+async function writeGitHubSourceSnapshot({
+  git,
+  commit,
+  packagePath,
+  outputDir,
+  token,
+}) {
+  const { owner, repo, tree } = await fetchGitHubTree({ git, commit, token });
+  const normalizedPackagePath = packagePath?.replace(/\/+$/, "");
+  await fs.rm(outputDir, { recursive: true, force: true });
+  await fs.mkdir(outputDir, { recursive: true });
+
+  for (const item of tree) {
+    if (
+      item.type !== "blob" ||
+      !isIncludedMovePackageFile(item.path) ||
+      (normalizedPackagePath &&
+        item.path !== normalizedPackagePath &&
+        !item.path.startsWith(`${normalizedPackagePath}/`))
+    ) {
+      continue;
+    }
+    const content = await fetchGitHubRawText({
+      owner,
+      repo,
+      commit,
+      repoPath: item.path,
+      token,
+    });
+    const target = path.join(outputDir, item.path);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, content);
+  }
+}
+
+async function fetchTransactionArtifact({ network, txDigest }) {
+  const urls = networkUrls[network];
+  if (!urls) {
+    throw new Error(`Unsupported fixture network: ${network}`);
+  }
+
+  try {
+    const grpcClient = new SuiGrpcClient({
+      network,
+      baseUrl: urls.grpc,
+    });
+    const transaction = await grpcClient.getTransaction({
+      digest: txDigest,
+      include: { transaction: true, effects: true, bcs: true },
+    });
+    return extractTransactionArtifact(
+      unwrapSuccessfulTransaction(transaction, txDigest),
+      "grpc"
+    );
+  } catch (grpcError) {
+    const graphqlClient = new SuiGraphQLClient({
+      network,
+      url: urls.graphql,
+    });
+    const transaction = await graphqlClient.getTransaction({
+      digest: txDigest,
+      include: { transaction: true, effects: true, bcs: true },
+    });
+    return {
+      ...extractTransactionArtifact(
+        unwrapSuccessfulTransaction(transaction, txDigest),
+        "graphql"
+      ),
+      grpcError:
+        grpcError instanceof Error ? grpcError.message : String(grpcError),
+    };
+  }
+}
+
+function unwrapSuccessfulTransaction(result, digest) {
+  if (result?.$kind === "Transaction" && result.Transaction) {
+    return result.Transaction;
+  }
+  if (result?.$kind === "FailedTransaction" && result.FailedTransaction) {
+    throw new Error(`Transaction ${digest} did not execute successfully`);
+  }
+  if (result?.digest) {
+    return result;
+  }
+  throw new Error(`Transaction ${digest} response has no transaction payload`);
+}
+
+function extractTransactionArtifact(transaction, source) {
+  const data =
+    transaction.transaction ||
+    (transaction.bcs ? Transaction.from(transaction.bcs).getData() : undefined);
+  if (!data?.commands) {
+    throw new Error(`Transaction ${transaction.digest} has no parsed commands`);
+  }
+  const artifactCommands = [];
+  for (const command of data.commands) {
+    if (command.Publish) {
+      artifactCommands.push({
+        kind: "publish",
+        modules: normalizeTransactionModules(command.Publish.modules),
+        dependencies: command.Publish.dependencies,
+        packageId: extractPublishedPackageId(transaction),
+      });
+    }
+    if (command.Upgrade) {
+      artifactCommands.push({
+        kind: "upgrade",
+        modules: normalizeTransactionModules(command.Upgrade.modules),
+        dependencies: command.Upgrade.dependencies,
+        packageId: command.Upgrade.package,
+      });
+    }
+  }
+  if (artifactCommands.length !== 1) {
+    throw new Error(
+      `Expected exactly one publish/upgrade command in ${transaction.digest}, found ${artifactCommands.length}`
+    );
+  }
+  const command = artifactCommands[0];
+  return {
+    source,
+    digest: transaction.digest,
+    status: transaction.status,
+    kind: command.kind,
+    modules: command.modules,
+    dependencies: command.dependencies.map((dep) => String(dep).toLowerCase()),
+    packageId: command.packageId,
+  };
+}
+
+function extractPublishedPackageId(transaction) {
+  const packageWrites = (transaction.effects?.changedObjects || []).filter(
+    (change) =>
+      change?.outputState === "PackageWrite" &&
+      change?.idOperation === "Created"
+  );
+  if (packageWrites.length === 0) {
+    return undefined;
+  }
+  if (packageWrites.length !== 1) {
+    throw new Error(
+      `Expected exactly one published package object in ${transaction.digest}, found ${packageWrites.length}`
+    );
+  }
+  return String(packageWrites[0].objectId).toLowerCase();
+}
+
+function normalizeTransactionModules(modules) {
+  return modules.map((module) => {
+    if (typeof module === "string") {
+      return module;
+    }
+    return Buffer.from(module).toString("base64");
+  });
+}
+
 async function loadVerifier(distDir) {
   const wasmPath = path.join(distDir, "sui_move_wasm_bg.wasm");
   const jsPath = path.join(distDir, "index.js");
@@ -188,7 +449,7 @@ async function loadVerifier(distDir) {
   const mod = await import(pathToFileURL(jsPath).href);
   const wasm = await fs.readFile(wasmPath);
   await mod.initMovePackageVerifier({ wasm });
-  return { mod, wasmPath, jsPath };
+  return { mod, wasm, wasmPath, jsPath };
 }
 
 function verificationOnlySurface(mod) {
@@ -287,12 +548,82 @@ function fixtureFromKnownFixture(fixture) {
     rev: rootGit.rev,
     subdir: rootGit.subdir || "",
     txDigest: fixture.txDigest,
-    cachedAuditDir: path.join(
-      ".sui-build",
-      "parity-transaction-artifact-output",
-      "verification",
-      fixture.name
-    ),
+    cachedAuditDir:
+      fixture.proofCacheDir ||
+      path.join(
+        ".sui-build",
+        "parity-transaction-artifact-output",
+        "verification",
+        fixture.name
+      ),
+  };
+}
+
+function fixtureFromArgs(args, fixtureName) {
+  if (!args["package-dir"] && !args.transaction) {
+    return null;
+  }
+  const required = [
+    "package-dir",
+    "transaction",
+    "network",
+    "git",
+    "rev",
+    "tx-digest",
+  ];
+  const missing = required.filter((key) => !args[key]);
+  if (missing.length > 0) {
+    throw new Error(
+      `Explicit fixture '${fixtureName}' is missing required args: ${missing
+        .map((key) => `--${key}`)
+        .join(", ")}`
+    );
+  }
+  return {
+    name: fixtureName,
+    network: args.network,
+    git: args.git,
+    rev: args.rev,
+    subdir: args.subdir || "",
+    txDigest: args["tx-digest"],
+    packageDir: args["package-dir"],
+    transactionPath: args.transaction,
+  };
+}
+
+function proofRunName(fixtureName, verifierId) {
+  return `${fixtureName}-${verifierId}`.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+async function refreshKnownFixture(fixture, verifierId) {
+  const runRoot = path.join(
+    repoRoot,
+    ".sui-build",
+    "bytecode-verifier-proof-runs",
+    proofRunName(fixture.name, verifierId)
+  );
+  const sourceRoot = path.join(runRoot, "source");
+  await fs.rm(runRoot, { recursive: true, force: true });
+  await fs.mkdir(runRoot, { recursive: true });
+
+  const token = await readGithubToken();
+  await writeGitHubSourceSnapshot({
+    git: fixture.git,
+    commit: fixture.rev,
+    packagePath: fixture.subdir,
+    outputDir: sourceRoot,
+    token,
+  });
+
+  const transaction = await fetchTransactionArtifact({
+    network: fixture.network,
+    txDigest: fixture.txDigest,
+  });
+  await writeJson(path.join(runRoot, "transaction.json"), transaction);
+
+  return {
+    ...fixture,
+    cachedAuditDir: runRoot,
   };
 }
 
@@ -357,20 +688,35 @@ function defaultSuiSourceDir(verifierId, entry) {
   return path.join(".sui-build", "bytecode-verifiers", verifierId, "source");
 }
 
-function applyVerifierDefaults(args, fixtureName, manifest) {
+function defaultDistDir(verifierId, entry) {
+  if (entry.status !== "current") {
+    return path.join(
+      ".sui-build",
+      "bytecode-verifiers",
+      verifierId,
+      "dist",
+      "verification"
+    );
+  }
+  return path.dirname(entry.verificationWasmPath);
+}
+
+function applyVerifierDefaults(args, fixtureName, manifest, knownFixture) {
   const verifierId =
     args["verifier-id"] || inferVerifierId(manifest, fixtureName);
   const entry = manifest.verifiers[verifierId];
   if (!entry) {
     throw new Error(`Unknown verifier: ${verifierId}`);
   }
-  const knownFixture = verifierFixture(entry, fixtureName);
+  const useLocalSuiSource =
+    knownFixture && knownFixture.proofDependencySource !== "github";
   return {
     ...args,
     "verifier-id": verifierId,
-    "dist-dir": args["dist-dir"] || "dist/verification",
+    "dist-dir": args["dist-dir"] || defaultDistDir(verifierId, entry),
     "sui-source-dir":
-      args["sui-source-dir"] || defaultSuiSourceDir(verifierId, entry),
+      args["sui-source-dir"] ||
+      (useLocalSuiSource ? defaultSuiSourceDir(verifierId, entry) : undefined),
     "sui-source-commit": args["sui-source-commit"] || entry.commit,
     "sui-source-tag": args["sui-source-tag"] || entry.tag,
     "expect-status": args["expect-status"] || knownFixture?.expectedStatus,
@@ -384,46 +730,82 @@ async function main() {
   let args = parseArgs(process.argv.slice(2));
   const fixtureName = args.fixture || "apps-kiosk";
   const { manifest } = loadBytecodeVerifierManifest(repoRoot);
-  const fixtureRecord = resolveFixtureRecord(
-    manifest,
-    fixtureName,
-    args["verifier-id"]
-  );
-  const fixture = fixtureFromKnownFixture(fixtureRecord.fixture);
-  args = applyVerifierDefaults(args, fixtureName, manifest);
+  const explicitFixture = fixtureFromArgs(args, fixtureName);
+  const fixtureRecord = explicitFixture
+    ? null
+    : resolveFixtureRecord(manifest, fixtureName, args["verifier-id"]);
+  const knownFixture = fixtureRecord?.fixture;
+  args = applyVerifierDefaults(args, fixtureName, manifest, knownFixture);
+  if (args["refresh-fixture"] && explicitFixture) {
+    throw new Error("--refresh-fixture is only supported for known fixtures");
+  }
+  const fixture =
+    explicitFixture ??
+    (args["refresh-fixture"]
+      ? await refreshKnownFixture(
+          fixtureFromKnownFixture(knownFixture),
+          args["verifier-id"]
+        )
+      : fixtureFromKnownFixture(knownFixture));
 
-  const auditDir = path.resolve(repoRoot, fixture.cachedAuditDir);
-  const packageDir = path.join(auditDir, "source", fixture.subdir);
-  const transactionPath = path.join(auditDir, "transaction.json");
+  const auditDir = fixture.cachedAuditDir
+    ? path.resolve(repoRoot, fixture.cachedAuditDir)
+    : null;
+  const packageDir = path.resolve(
+    repoRoot,
+    fixture.packageDir ?? path.join(auditDir, "source", fixture.subdir)
+  );
+  const transactionPath = path.resolve(
+    repoRoot,
+    fixture.transactionPath ?? path.join(auditDir, "transaction.json")
+  );
   if (!(await pathExists(packageDir)) || !(await pathExists(transactionPath))) {
     throw new Error(
-      `Missing cached ${fixture.name} audit source/transaction under ${auditDir}. Run the transaction verification audit first.`
+      `Missing ${fixture.name} proof source/transaction. Expected package at ${packageDir} and transaction at ${transactionPath}.`
     );
   }
 
   const distDir = path.resolve(repoRoot, args["dist-dir"]);
-  const suiSourceDir = path.resolve(repoRoot, args["sui-source-dir"]);
+  const suiSourceDir = args["sui-source-dir"]
+    ? path.resolve(repoRoot, args["sui-source-dir"])
+    : null;
   const transaction = await readJson(transactionPath);
   const referenceInspection = inspectReferenceArtifact(transaction);
   const files = await readMovePackageFiles(packageDir);
-  const { mod, wasmPath, jsPath } = await loadVerifier(distDir);
+  const { mod, wasm, wasmPath, jsPath } = await loadVerifier(distDir);
   const surface = verificationOnlySurface(mod);
   const suiVersion = await mod.getPinnedSuiVersion();
+  const verifierEntry = manifest.verifiers[args["verifier-id"]];
+  const progressEvents = [];
+  const githubToken = await readGithubToken();
 
   const result = await mod.verifyMovePackageProvenance({
+    wasm,
+    wasmVerifier: {
+      verifierId: args["verifier-id"],
+      epochId: verifierEntry.epochId,
+      suiVersion: verifierEntry.suiVersion,
+      decodedBytecodeVersion: verifierEntry.bytecodeVersion,
+      bytecodeFlavor: verifierEntry.bytecodeFlavor,
+    },
     files,
     intent: transaction.kind,
     network: fixture.network,
-    fetcher: new LocalSuiSourceFetcher({
-      sourceDir: suiSourceDir,
-      commit: args["sui-source-commit"],
-      tag: args["sui-source-tag"],
-    }),
+    ...(suiSourceDir
+      ? {
+          fetcher: new LocalSuiSourceFetcher({
+            sourceDir: suiSourceDir,
+            commit: args["sui-source-commit"],
+            tag: args["sui-source-tag"],
+          }),
+        }
+      : {}),
     rootGit: {
       git: fixture.git,
       rev: fixture.rev,
       subdir: fixture.subdir,
     },
+    ...(githubToken ? { githubToken } : {}),
     reference: {
       modules: transaction.modules,
       dependencies: transaction.dependencies,
@@ -431,6 +813,9 @@ async function main() {
       cliVersion: args["reference-cli-version"],
     },
     silenceWarnings: true,
+    onProgress: (event) => {
+      progressEvents.push(event);
+    },
   });
 
   const proof = {
@@ -459,6 +844,10 @@ async function main() {
       tag: args["sui-source-tag"],
     },
     referenceInspection,
+    progressEvents,
+    fetchFailures: progressEvents.filter(
+      (event) => event.type === "fetch_failed"
+    ),
     result: summarize(result),
     fullResult: result,
   };

@@ -1,6 +1,6 @@
 {
   "name": "@zktx.io/sui-move-builder",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Build Move packages in web or Node.js with dependency fetching and dump outputs.",
   "keywords": [
     "sui",
@@ -67,8 +67,12 @@
     "generate:verification-runtime-config": "node scripts/verification/generate-verification-runtime-config.mjs",
     "verify:bytecode-verifiers": "node scripts/verification/validate-bytecode-verifiers.mjs",
     "build:bytecode-verifier": "node scripts/verification/build-bytecode-verifier.mjs",
-    "build:verification:v6": "npm run build:bytecode-verifier -- --verifier sui-1.26.2",
-    "build:verification:v6:prepared": "npm run build:bytecode-verifier -- --verifier sui-1.26.2 --build-only",
+    "build:verification:v6:classic": "npm run build:bytecode-verifier -- --verifier sui-1.26.2",
+    "build:verification:v6:classic:prepared": "npm run build:bytecode-verifier -- --verifier sui-1.26.2 --build-only",
+    "build:verification:v6:v7source-2024": "npm run build:bytecode-verifier -- --verifier sui-1.58.3-v6",
+    "build:verification:v6:v7source-2024:prepared": "npm run build:bytecode-verifier -- --verifier sui-1.58.3-v6 --build-only",
+    "build:verification:v6": "npm run build:verification:v6:classic && npm run build:verification:v6:v7source-2024",
+    "build:verification:v6:prepared": "npm run build:verification:v6:classic:prepared && npm run build:verification:v6:v7source-2024:prepared",
     "build:bytecode-verifiers": "npm run build:verification:v6",
     "build:wasm:prepared": "node scripts/build-prepared-wasm.mjs --profile all",
     "build:wasm:prepared:lite": "node scripts/build-prepared-wasm.mjs --profile lite",

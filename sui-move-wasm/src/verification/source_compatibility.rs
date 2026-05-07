@@ -31,7 +31,7 @@ pub(super) fn source_compatibility_evidence(
 ) -> Option<SourceCompatibility> {
     let root_files = serde_json::from_str::<BTreeMap<String, String>>(files_json).ok()?;
     let supported_editions = supported_editions();
-    let default_edition = Edition::default().to_string();
+    let default_edition = Edition::LEGACY.to_string();
     let root = source_edition_evidence(
         "root",
         None,

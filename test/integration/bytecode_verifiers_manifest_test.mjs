@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { getSuiBuildConfig } from "../../scripts/sui-workspace.mjs";
 import { parseMoveCompilerEditions } from "../../scripts/verification/analyze-bytecode-versions.mjs";
 import {
+  bytecodeVersionRouteCandidates,
   loadBytecodeVerifierManifest,
   validateBytecodeVerifierManifest,
 } from "../../scripts/verification/bytecode-verifier-manifest.mjs";
@@ -26,6 +27,22 @@ const repoRoot = path.resolve(
   "../.."
 );
 const suiVersion = require("../../sui-version.json");
+
+function readSourceTreeText(dir) {
+  let output = "";
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      output += readSourceTreeText(fullPath);
+      continue;
+    }
+    if (entry.name.endsWith(".ts")) {
+      output += `\n// ${path.relative(repoRoot, fullPath)}\n`;
+      output += fs.readFileSync(fullPath, "utf8");
+    }
+  }
+  return output;
+}
 
 const { manifest } = loadBytecodeVerifierManifest(repoRoot);
 const { sourceRecords } = loadBytecodeVersionSourceRecords(repoRoot);
@@ -56,27 +73,81 @@ for (const [key, expected] of Object.entries(expectedCurrent)) {
   }
 }
 
+for (const [verifierId, entry] of Object.entries(manifest.verifiers)) {
+  if (Object.hasOwn(entry, "capabilities")) {
+    throw new Error(
+      `${verifierId}.capabilities must not be used as runtime route metadata; compiler capability evidence belongs in bytecode-version source records`
+    );
+  }
+}
+
 for (const [bytecodeVersion, route] of Object.entries(
   manifest.bytecodeVersions
 )) {
-  const verifier = manifest.verifiers[route.verifier];
-  if (!verifier) {
+  for (const candidate of bytecodeVersionRouteCandidates(route)) {
+    const verifier = manifest.verifiers[candidate.verifier];
+    if (!verifier) {
+      throw new Error(
+        `Bytecode version ${bytecodeVersion} route names missing verifier ${candidate.verifier}`
+      );
+    }
+    if (verifier.bytecodeVersion !== Number.parseInt(bytecodeVersion, 10)) {
+      throw new Error(
+        `Bytecode version ${bytecodeVersion} route points at verifier ${candidate.verifier} with bytecodeVersion ${verifier.bytecodeVersion}`
+      );
+    }
+    const expectedDistPath =
+      candidate.verifier === manifest.current
+        ? "dist/verification"
+        : `dist/verification/v${bytecodeVersion}/${verifier.epochId.replace(
+            /^v[0-9]+-/,
+            ""
+          )}`;
+    if (candidate.distPath !== expectedDistPath) {
+      throw new Error(
+        `Bytecode version ${bytecodeVersion} route should use ${expectedDistPath}, got ${candidate.distPath}`
+      );
+    }
+  }
+}
+
+const v6Candidates = bytecodeVersionRouteCandidates(
+  manifest.bytecodeVersions["6"]
+).map((candidate) => candidate.verifier);
+const expectedV6Candidates = ["sui-1.26.2", "sui-1.58.3-v6"];
+if (JSON.stringify(v6Candidates) !== JSON.stringify(expectedV6Candidates)) {
+  throw new Error(
+    `v6 candidates must remain limited to exact-proof compiler capability verifiers: expected ${expectedV6Candidates.join(
+      ", "
+    )}, got ${v6Candidates.join(", ")}`
+  );
+}
+for (const unprovenCandidate of ["sui-1.27.2-v6"]) {
+  if (v6Candidates.includes(unprovenCandidate)) {
     throw new Error(
-      `Bytecode version ${bytecodeVersion} route names missing verifier ${route.verifier}`
+      `${unprovenCandidate} must not be a runtime candidate without a package-independent compiler capability boundary`
     );
   }
-  if (verifier.bytecodeVersion !== Number.parseInt(bytecodeVersion, 10)) {
+}
+
+const runtimeSourceTree = readSourceTreeText(path.join(repoRoot, "src"));
+for (const forbidden of [
+  "hasModuleLabelSyntax",
+  "sourceSignalsForInput",
+  "sourceSignalMatched",
+  "compiler-version",
+  "compilerVersion",
+  "compiler_version",
+  "DeeptradeProtocol",
+  "deeptrade",
+  "apps-kiosk",
+  "nautilus",
+  "75SMrmoARyPwLvt7ZHgoBsN9NtHkAmkcXNMtnzo84K52",
+  "LexwBJLt1jMwhNsNCkU4jiWwZPaAeqwhgLy2RPZbd2n",
+]) {
+  if (runtimeSourceTree.includes(forbidden)) {
     throw new Error(
-      `Bytecode version ${bytecodeVersion} route points at verifier ${route.verifier} with bytecodeVersion ${verifier.bytecodeVersion}`
-    );
-  }
-  const expectedDistPath =
-    route.verifier === manifest.current
-      ? "dist/verification"
-      : `dist/verification/v${bytecodeVersion}`;
-  if (route.distPath !== expectedDistPath) {
-    throw new Error(
-      `Bytecode version ${bytecodeVersion} route should use ${expectedDistPath}, got ${route.distPath}`
+      `runtime verifier routing must not depend on package identity, compiler-version, or source syntax signal ${forbidden}`
     );
   }
 }

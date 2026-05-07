@@ -41,11 +41,29 @@ export function getBytecodeVerifierRoute(verifierId, repoRoot = getRepoRoot()) {
   for (const [bytecodeVersion, route] of Object.entries(
     manifest.bytecodeVersions
   )) {
-    if (route.verifier === verifierId) {
-      return { bytecodeVersion: Number.parseInt(bytecodeVersion, 10), route };
+    for (const candidate of bytecodeVersionRouteCandidates(route)) {
+      if (candidate.verifier === verifierId) {
+        return {
+          bytecodeVersion: Number.parseInt(bytecodeVersion, 10),
+          route: candidate,
+        };
+      }
     }
   }
   return undefined;
+}
+
+export function bytecodeVersionRouteCandidates(route) {
+  if (Array.isArray(route.candidates)) {
+    return route.candidates;
+  }
+  return [
+    {
+      verifier: route.verifier,
+      flavor: route.flavor ?? null,
+      distPath: route.distPath,
+    },
+  ];
 }
 
 export function isolatedVerifierRoot(repoRoot, verifierId) {
@@ -75,6 +93,12 @@ export function validateBytecodeVerifierManifest(
       record.decodedBytecodeVersion,
       record,
     ])
+  );
+  const sourceRecordByVerifier = new Map(
+    [
+      ...editionSourceRecords.records,
+      ...(editionSourceRecords.verifierSourceRecords ?? []),
+    ].map((record) => [record.verifierId, record])
   );
   assertObject(manifest, `${label} root`);
   assertValue(
@@ -109,6 +133,13 @@ export function validateBytecodeVerifierManifest(
       `${label}: ${verifierId}.verifierId must be a package-compatible Sui source version handle`
     );
     assertString(entry.suiVersion, `${label}: ${verifierId}.suiVersion`);
+    if (entry.epochId !== undefined) {
+      assertString(entry.epochId, `${label}: ${verifierId}.epochId`);
+      assertValue(
+        /^v[0-9]+-[a-z0-9][a-z0-9-]*$/.test(entry.epochId),
+        `${label}: ${verifierId}.epochId must be a semantic epoch id like v6-classic`
+      );
+    }
     if (entry.rustVersion !== undefined) {
       assertString(entry.rustVersion, `${label}: ${verifierId}.rustVersion`);
     }
@@ -204,7 +235,8 @@ export function validateBytecodeVerifierManifest(
         fixture,
         `${label}: ${verifierId}.knownFixtures[${fixtureIndex}]`,
         entry,
-        sourceRecordByVersion
+        sourceRecordByVersion,
+        sourceRecordByVerifier
       );
     }
   }
@@ -216,46 +248,64 @@ export function validateBytecodeVerifierManifest(
       String(bytecodeVersion) === version && bytecodeVersion > 0,
       `${label}: bytecodeVersions key ${version} must be a positive integer string`
     );
-    assertString(
-      route.verifier,
-      `${label}: bytecodeVersions.${version}.verifier`
-    );
-    const verifier = manifest.verifiers[route.verifier];
+    const candidates = bytecodeVersionRouteCandidates(route);
     assertValue(
-      Boolean(verifier),
-      `${label}: bytecodeVersions.${version}.verifier must name an existing verifier`
+      candidates.length > 0,
+      `${label}: bytecodeVersions.${version} must contain at least one verifier candidate`
     );
-    assertValue(
-      verifier.bytecodeVersion === bytecodeVersion,
-      `${label}: bytecodeVersions.${version}.verifier ${route.verifier} has bytecodeVersion ${verifier.bytecodeVersion}`
-    );
-    if (Object.hasOwn(route, "flavor")) {
+    if (Array.isArray(route.candidates)) {
       assertValue(
-        route.flavor === null ||
-          (Number.isInteger(route.flavor) && route.flavor >= 0),
-        `${label}: bytecodeVersions.${version}.flavor must be null or a non-negative integer`
-      );
-      assertValue(
-        route.flavor === verifier.bytecodeFlavor,
-        `${label}: bytecodeVersions.${version}.flavor must match verifier bytecodeFlavor`
+        !Object.hasOwn(route, "verifier") &&
+          !Object.hasOwn(route, "distPath") &&
+          !Object.hasOwn(route, "flavor"),
+        `${label}: bytecodeVersions.${version} must not mix candidates with single-verifier route fields`
       );
     }
-    assertString(
-      route.distPath,
-      `${label}: bytecodeVersions.${version}.distPath`
-    );
-    validateBundledDistPath(
-      route.distPath,
-      manifest.current,
-      route.verifier,
-      bytecodeVersion,
-      `${label}: bytecodeVersions.${version}.distPath`
-    );
-    assertValue(
-      verifier.verificationWasmPath ===
-        path.posix.join(route.distPath, "sui_move_wasm_bg.wasm"),
-      `${label}: ${route.verifier}.verificationWasmPath must point inside ${route.distPath}`
-    );
+    const seenCandidateVerifiers = new Set();
+    for (const [candidateIndex, candidate] of candidates.entries()) {
+      const candidateLabel = `${label}: bytecodeVersions.${version}.candidates[${candidateIndex}]`;
+      assertObject(candidate, candidateLabel);
+      assertString(candidate.verifier, `${candidateLabel}.verifier`);
+      assertValue(
+        !seenCandidateVerifiers.has(candidate.verifier),
+        `${candidateLabel}.verifier must be unique within bytecode version ${version}`
+      );
+      seenCandidateVerifiers.add(candidate.verifier);
+      const verifier = manifest.verifiers[candidate.verifier];
+      assertValue(
+        Boolean(verifier),
+        `${candidateLabel}.verifier must name an existing verifier`
+      );
+      assertValue(
+        verifier.bytecodeVersion === bytecodeVersion,
+        `${candidateLabel}.verifier ${candidate.verifier} has bytecodeVersion ${verifier.bytecodeVersion}`
+      );
+      if (Object.hasOwn(candidate, "flavor")) {
+        assertValue(
+          candidate.flavor === null ||
+            (Number.isInteger(candidate.flavor) && candidate.flavor >= 0),
+          `${candidateLabel}.flavor must be null or a non-negative integer`
+        );
+        assertValue(
+          candidate.flavor === verifier.bytecodeFlavor,
+          `${candidateLabel}.flavor must match verifier bytecodeFlavor`
+        );
+      }
+      assertString(candidate.distPath, `${candidateLabel}.distPath`);
+      validateBundledDistPath(
+        candidate.distPath,
+        manifest.current,
+        candidate.verifier,
+        bytecodeVersion,
+        verifier.epochId,
+        `${candidateLabel}.distPath`
+      );
+      assertValue(
+        verifier.verificationWasmPath ===
+          path.posix.join(candidate.distPath, "sui_move_wasm_bg.wasm"),
+        `${label}: ${candidate.verifier}.verificationWasmPath must point inside ${candidate.distPath}`
+      );
+    }
   }
 }
 
@@ -264,6 +314,7 @@ function validateBundledDistPath(
   currentVerifierId,
   verifierId,
   bytecodeVersion,
+  epochId,
   label
 ) {
   assertString(distPath, label);
@@ -275,7 +326,10 @@ function validateBundledDistPath(
   const expected =
     verifierId === currentVerifierId
       ? "dist/verification"
-      : `dist/verification/v${bytecodeVersion}`;
+      : `dist/verification/v${bytecodeVersion}/${epochId?.replace(
+          /^v[0-9]+-/,
+          ""
+        )}`;
   assertValue(distPath === expected, `${label} must be ${expected}`);
 }
 
@@ -299,7 +353,13 @@ function validateSourceVariantPath(sourceVariantPath, label, repoRoot) {
   );
 }
 
-function validateKnownFixture(fixture, label, verifier, sourceRecordByVersion) {
+function validateKnownFixture(
+  fixture,
+  label,
+  verifier,
+  sourceRecordByVersion,
+  sourceRecordByVerifier
+) {
   assertObject(fixture, label);
   assertString(fixture.name, `${label}.name`);
   assertValue(
@@ -316,6 +376,21 @@ function validateKnownFixture(fixture, label, verifier, sourceRecordByVersion) {
   assertString(fixture.rootGit.rev, `${label}.rootGit.rev`);
   if (fixture.rootGit.subdir !== undefined) {
     assertString(fixture.rootGit.subdir, `${label}.rootGit.subdir`);
+  }
+  if (fixture.proofCacheDir !== undefined) {
+    assertString(fixture.proofCacheDir, `${label}.proofCacheDir`);
+    assertValue(
+      !path.isAbsolute(fixture.proofCacheDir) &&
+        !fixture.proofCacheDir.split(/[\\/]/).includes(".."),
+      `${label}.proofCacheDir must be a repo-relative path`
+    );
+  }
+  if (fixture.proofDependencySource !== undefined) {
+    assertValue(
+      fixture.proofDependencySource === "local-sui-source" ||
+        fixture.proofDependencySource === "github",
+      `${label}.proofDependencySource must be local-sui-source or github`
+    );
   }
   assertValue(
     fixture.expectedStatus === "verified",
@@ -334,7 +409,8 @@ function validateKnownFixture(fixture, label, verifier, sourceRecordByVersion) {
     fixture.referenceManifest,
     `${label}.referenceManifest`,
     verifier,
-    sourceRecordByVersion
+    sourceRecordByVersion,
+    sourceRecordByVerifier
   );
 }
 
@@ -342,7 +418,8 @@ function validateKnownFixtureManifest(
   referenceManifest,
   label,
   verifier,
-  sourceRecordByVersion
+  sourceRecordByVersion,
+  sourceRecordByVerifier
 ) {
   assertObject(referenceManifest, label);
   assertValue(
@@ -361,29 +438,45 @@ function validateKnownFixtureManifest(
     );
   }
   const effectiveEdition =
-    referenceManifest.edition ??
-    defaultEditionForVerifier(verifier, sourceRecordByVersion);
+    referenceManifest.edition ?? missingEditionFallbackForVerifier(verifier);
   assertValue(
-    supportedEditionsForVerifier(verifier, sourceRecordByVersion).includes(
-      effectiveEdition
-    ),
+    supportedEditionsForVerifier(
+      verifier,
+      sourceRecordByVersion,
+      sourceRecordByVerifier
+    ).includes(effectiveEdition),
     `${label}.edition ${effectiveEdition} is not supported by verifier ${verifier.verifierId}`
   );
 }
 
-function supportedEditionsForVerifier(verifier, sourceRecordByVersion) {
-  return compilerEditionSignals(verifier, sourceRecordByVersion).validEditions;
+function supportedEditionsForVerifier(
+  verifier,
+  sourceRecordByVersion,
+  sourceRecordByVerifier
+) {
+  return compilerEditionSignals(
+    verifier,
+    sourceRecordByVersion,
+    sourceRecordByVerifier
+  ).validEditions;
 }
 
-function defaultEditionForVerifier(verifier, sourceRecordByVersion) {
-  return compilerEditionSignals(verifier, sourceRecordByVersion).defaultEdition;
+function missingEditionFallbackForVerifier(verifier) {
+  assertString(verifier.verifierId, "verifier.verifierId");
+  return "legacy";
 }
 
-function compilerEditionSignals(verifier, sourceRecordByVersion) {
-  const sourceRecord = sourceRecordByVersion.get(verifier.bytecodeVersion);
+function compilerEditionSignals(
+  verifier,
+  sourceRecordByVersion,
+  sourceRecordByVerifier
+) {
+  const sourceRecord =
+    sourceRecordByVerifier.get(verifier.verifierId) ??
+    sourceRecordByVersion.get(verifier.bytecodeVersion);
   assertValue(
     Boolean(sourceRecord?.signals?.moveCompilerEditions),
-    `bytecode version ${verifier.bytecodeVersion} must have moveCompilerEditions source signals`
+    `verifier ${verifier.verifierId} must have moveCompilerEditions source signals`
   );
   return sourceRecord.signals.moveCompilerEditions;
 }

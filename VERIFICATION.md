@@ -9,7 +9,8 @@ The verification entrypoint rebuilds caller-provided source and compares the res
 - `intent`: `publish` or `upgrade`
 - `reference.modules`: base64 Move modules from the reference artifact
 - `reference.dependencies`: optional dependency IDs from the reference artifact
-- `reference.packageId` or `reference.rootAddress`: optional root package address metadata
+- `reference.packageId`: optional deployed package object ID metadata
+- `reference.rootAddress`: optional explicit root address for on-chain package module comparison
 - `reference.digest`: optional package digest
 - `reference.cliVersion` and `reference.buildConfig`: optional caller-declared evidence metadata
 
@@ -19,10 +20,11 @@ The verifier does not fetch RPC, GitHub, transaction, or filesystem data. Transa
 
 The wrapper reads the decoded bytecode version from `reference.modules` and lazy-loads the matching bundled verifier:
 
-| Decoded bytecode version | Bundled verifier path  |
-| ------------------------ | ---------------------- |
-| 7                        | `dist/verification`    |
-| 6                        | `dist/verification/v6` |
+| Decoded bytecode version | Bundled verifier path                |
+| ------------------------ | ------------------------------------ |
+| 7                        | `dist/verification`                  |
+| 6                        | `dist/verification/v6/classic`       |
+| 6                        | `dist/verification/v6/v7source-2024` |
 
 The selected verifier's Sui source version is reported as `bytecodeHeaderEvidence.currentVerifierSuiVersion`. This is build-time verifier metadata, not a local CLI probe. `reference.cliVersion` is caller-declared metadata and does not replace bytecode comparison.
 
@@ -41,12 +43,18 @@ For UI display, prefer `displayMessage`; if it is absent, fall back to `error`, 
 
 Each verifier follows the Sui CLI/source version it was built from. The decoded bytecode version selects the verifier first; the verifier then applies its own Move edition rules.
 
-| Verifier     | Supported editions                          | Missing edition default | Plain `2024` |
-| ------------ | ------------------------------------------- | ----------------------- | ------------ |
-| `sui-1.26.2` | `legacy`, `2024.alpha`, `2024.beta`         | `legacy`                | Rejected     |
-| `sui-1.70.2` | `legacy`, `2024.alpha`, `2024.beta`, `2024` | `2024`                  | Accepted     |
+| Verifier        | Supported editions                          | Missing package edition fallback | Plain `2024` |
+| --------------- | ------------------------------------------- | -------------------------------- | ------------ |
+| `sui-1.26.2`    | `legacy`, `2024.alpha`, `2024.beta`         | `legacy`                         | Rejected     |
+| `sui-1.58.3-v6` | `legacy`, `2024.alpha`, `2024.beta`, `2024` | `legacy`                         | Accepted     |
+| `sui-1.70.2`    | `legacy`, `2024.alpha`, `2024.beta`, `2024` | `legacy`                         | Accepted     |
 
-Unsupported or unknown editions fail with `status: "build_failure"`, `failureStage: "input_validation"`, and `verdict: "unverified"`. The verifier does not silently fall back to `legacy`.
+The missing package edition fallback is the CLI package manifest behavior for a
+package that does not declare `[package].edition`; it is separate from the
+compiler edition enum's default value recorded in bytecode-version source
+evidence.
+
+When an attempted verifier does not support a declared edition, that candidate returns `status: "build_failure"`, `failureStage: "input_validation"`, and `verdict: "unverified"`. The wrapper may then try the next candidate for the same decoded bytecode version. The verifier does not silently fall back to `legacy`.
 
 ## Reference Artifact Inspector
 
@@ -98,7 +106,7 @@ For decoded bytecode version 6 or lower, a non-zero high byte in the raw version
 
 | Reference artifact source                                 | `intent`  | Meaning                                                                                                       |
 | --------------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------- |
-| Publish transaction modules or publish `.mv` artifacts    | `publish` | Compares publish-time bytecode and keeps the package root address selected by package metadata.               |
+| Publish transaction modules or publish `.mv` artifacts    | `publish` | Compares publish-time bytecode using the package root address selected by the source and reference modules.   |
 | Upgrade transaction modules or upgrade preparation output | `upgrade` | Compares upgrade-time bytecode. The current rebuild stays root-as-zero and does not use dump output as proxy. |
 
 `dumpMovePackage` remains a build API. Dump JSON is not a transaction provenance reference.
@@ -134,11 +142,12 @@ For decoded bytecode version 6 or lower, a non-zero high byte in the raw version
 
 ## Address Rules
 
-For `publish` references, `reference.rootAddress` and `reference.packageId` align the current build's module self address for comparison.
+For `publish` references, `reference.rootAddress` explicitly aligns the current build's module self address for on-chain package module comparison.
 
 For `upgrade` references, the current rebuild stays root-as-zero. Package ID metadata does not rewrite the current module identity.
 
-If source compiles with a root address of `0x0` but the reference contains a published package address, pass that published address as `reference.rootAddress` or `reference.packageId`.
+If source compiles with a root address of `0x0` but the reference module bytecode itself contains a published package address, pass that published address as `reference.rootAddress`.
+`reference.packageId` records the deployed package object ID and does not request root-address substitution.
 
 A conflicting non-zero current module address and requested `rootAddress` is reported as `mismatch` with `semantic_mismatch`, not as a build failure. If package source embeds its own address in constants or other bytecode-sensitive positions, use the matching `intent` and source metadata for the artifact being checked.
 

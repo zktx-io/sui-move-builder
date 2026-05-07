@@ -5,9 +5,18 @@
   "current": "sui-1.70.2",
   "bytecodeVersions": {
     "6": {
-      "verifier": "sui-1.26.2",
-      "flavor": null,
-      "distPath": "dist/verification/v6"
+      "candidates": [
+        {
+          "verifier": "sui-1.26.2",
+          "flavor": null,
+          "distPath": "dist/verification/v6/classic"
+        },
+        {
+          "verifier": "sui-1.58.3-v6",
+          "flavor": null,
+          "distPath": "dist/verification/v6/v7source-2024"
+        }
+      ]
     },
     "7": {
       "verifier": "sui-1.70.2",
@@ -27,7 +36,8 @@
       "selectionReason": "Current verifier for decoded bytecode version 7 from sui-version.json.",
       "packageName": "@zktx.io/sui-move-builder",
       "verificationWasmPath": "dist/verification/sui_move_wasm_bg.wasm",
-      "knownFixtures": []
+      "knownFixtures": [],
+      "epochId": "v7-current"
     },
     "sui-1.26.2": {
       "verifierId": "sui-1.26.2",
@@ -47,7 +57,7 @@
       "bytecodeFlavor": null,
       "selectionReason": "Legacy verifier candidate for the final mainnet decoded bytecode version 6 source before version 7.",
       "packageName": "@zktx.io/sui-move-builder",
-      "verificationWasmPath": "dist/verification/v6/sui_move_wasm_bg.wasm",
+      "verificationWasmPath": "dist/verification/v6/classic/sui_move_wasm_bg.wasm",
       "knownFixtures": [
         {
           "name": "apps-kiosk",
@@ -73,7 +83,66 @@
             "defaulted": true
           }
         }
+      ],
+      "epochId": "v6-classic"
+    },
+    "sui-1.58.3-v6": {
+      "verifierId": "sui-1.58.3-v6",
+      "suiVersion": "1.58.3",
+      "epochId": "v6-v7source-2024",
+      "tag": "mainnet-v1.58.3",
+      "commit": "a0545a819fba114903c880f928339b5cd8805a4a",
+      "rustVersion": "1.85",
+      "status": "legacy",
+      "bytecodeVersion": 6,
+      "bytecodeFlavor": null,
+      "selectionReason": "Legacy verifier candidate for decoded bytecode version 6 with later 2024 compiler capability. Clean mainnet compiler-capability inventory identifies mainnet-v1.58.3 as the first tag in the mainnet-v1.58.3 through mainnet-v1.71.1 capability group. Deepbookv3 and Deeptrade fixture Move.lock Sui framework revisions match the same capability group. Deeptrade exact proof records this verifier's route value; runtime route membership is defined by bytecodeVersions candidates.",
+      "packageName": "@zktx.io/sui-move-builder",
+      "verificationWasmPath": "dist/verification/v6/v7source-2024/sui_move_wasm_bg.wasm",
+      "knownFixtures": [
+        {
+          "name": "deeptrade",
+          "network": "mainnet",
+          "txDigest": "75SMrmoARyPwLvt7ZHgoBsN9NtHkAmkcXNMtnzo84K52",
+          "intent": "publish",
+          "rootGit": {
+            "git": "https://github.com/DeeptradeProtocol/deeptrade-core",
+            "rev": "7838028ef9edf72f7dc82dc788ba06cd94ebdd9c",
+            "subdir": "packages/deeptrade-core"
+          },
+          "proofCacheDir": ".sui-build/deeptrade-verification",
+          "proofDependencySource": "github",
+          "expectedStatus": "verified",
+          "expectedVerdict": "exact_bytecode_match",
+          "referenceInspection": {
+            "decodedVersion": 6,
+            "flavor": null,
+            "moduleCount": 13,
+            "dependencyCount": 7,
+            "warnings": []
+          },
+          "referenceManifest": {
+            "edition": "2024.beta",
+            "defaulted": false
+          }
+        }
       ]
+    },
+    "sui-1.27.2-v6": {
+      "verifierId": "sui-1.27.2-v6",
+      "suiVersion": "1.27.2",
+      "rustVersion": "1.88.0",
+      "fastcryptoRev": "c101a5176799db3eb9c801b844e7add92153d291",
+      "epochId": "v6-v7source-2024beta",
+      "tag": "mainnet-v1.27.2",
+      "commit": "9e2be6ad4185563ecd98bf35abfe92b86a0b280f",
+      "status": "legacy",
+      "bytecodeVersion": 6,
+      "bytecodeFlavor": null,
+      "selectionReason": "Investigation-only verifier entry for decoded bytecode version 6 with early v7-era ModuleLabel capability. Runtime route membership is defined by bytecodeVersions candidates.",
+      "packageName": "@zktx.io/sui-move-builder",
+      "verificationWasmPath": "dist/verification/v6/v7source-2024beta/sui_move_wasm_bg.wasm",
+      "knownFixtures": []
     }
   }
 }

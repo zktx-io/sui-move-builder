@@ -120,6 +120,18 @@ async function cleanProfileOutputs(context, profileName, profiles) {
 
   await fs.mkdir(context.distDir, { recursive: true });
   for (const profile of profiles) {
+    if (profile.name === "verification") {
+      await fs.mkdir(profile.outDir, { recursive: true });
+      for (const fileName of [
+        "sui_move_wasm.js",
+        "sui_move_wasm.d.ts",
+        "sui_move_wasm_bg.wasm",
+        "sui_move_wasm_bg.wasm.d.ts",
+      ]) {
+        await fs.rm(path.join(profile.outDir, fileName), { force: true });
+      }
+      continue;
+    }
     await fs.rm(profile.outDir, { recursive: true, force: true });
     await fs.mkdir(profile.outDir, { recursive: true });
   }

@@ -17,7 +17,7 @@ pub(super) fn root_package_snapshot(
 ) -> Result<RootPackageSnapshot, String> {
     let mut snapshot = RootPackageSnapshot {
         name: "root".to_string(),
-        edition: Edition::default(),
+        edition: Edition::LEGACY,
         flavor: Flavor::Sui,
         is_legacy: false,
         named_address_map: BTreeMap::new(),
@@ -85,7 +85,7 @@ pub(super) fn resolved_package_snapshot(
         .and_then(|manifest| manifest.package.edition.as_ref())
         .map(|edition| parse_edition(edition))
         .transpose()?
-        .unwrap_or_default();
+        .unwrap_or(Edition::LEGACY);
     let flavor = manifest
         .as_ref()
         .and_then(|manifest| manifest.package.flavor)

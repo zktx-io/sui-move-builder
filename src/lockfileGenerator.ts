@@ -3,7 +3,7 @@
  *
  * Wraps the Rust/WASM V4 lockfile generator used by dumpMovePackage.
  *
- * ORIGINAL SOURCE REFERENCES:
+ * Upstream source references:
  * - move-package-alt/src/graph/to_lockfile.rs - PackageGraph::to_pins() generates lockfile pins
  * - move-package-alt/src/schema/lockfile.rs - Pin struct definition (source, manifest_digest, deps)
  * - move-package-alt/src/package/root_package.rs:279-283 - save_lockfile_to_disk() writes lockfile
@@ -56,7 +56,8 @@ function parseLockfileV4GenerateResponse(
 export function generateMoveLockV4FromJson(
   depsJson: string,
   environment: string,
-  existingLockfile?: string, // ORIGINAL: root_package.rs:269-283 - CLI reads existing lockfile and preserves other environments
+  // Upstream reference: root_package.rs:269-283 preserves other environments.
+  existingLockfile?: string,
   rustGenerateFn?: LockfileV4GenerateFn,
   rootFiles?: Record<string, string>
 ): string {

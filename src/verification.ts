@@ -15,7 +15,7 @@ import {
 import { type LockfileV4Helpers } from "./resolver.js";
 import { displayMessageForResult } from "./verificationMessages.js";
 import {
-  loadVerificationWasm,
+  loadVerificationWasmCandidates,
   type LoadedVerificationWasm,
   type VerificationWasmModule,
 } from "./verificationWasmLoader.js";
@@ -49,7 +49,7 @@ export interface ReferenceArtifact {
   digest?: number[] | string;
   /** Root package address for on-chain package module comparison. */
   rootAddress?: string;
-  /** Alias for rootAddress when the caller has a package object ID. */
+  /** Deployed package object ID metadata. Does not request root-address substitution. */
   packageId?: string;
   /** Declared Sui CLI version for evidence only. Bytecode comparison remains authoritative. */
   cliVersion?: string;
@@ -64,9 +64,25 @@ export interface VerificationBuildConfig {
 
 export interface VerificationSelectedVerifier {
   verifierId: string;
+  epochId?: string;
   suiVersion?: string;
   decodedBytecodeVersion?: number;
   bytecodeFlavor?: number | null;
+}
+
+export type VerificationCandidateOutcome =
+  | "selected"
+  | "tried_but_not_exact"
+  | "compile_failed";
+
+export interface VerificationCandidateAttempt {
+  verifierId: string;
+  epochId?: string;
+  suiVersion?: string;
+  outcome: VerificationCandidateOutcome;
+  status?: VerificationStatus;
+  verdict?: VerificationVerdict;
+  failureStage?: VerificationFailureStage;
 }
 
 export interface VerificationReferenceBytecode {
@@ -200,6 +216,7 @@ export interface MovePackageProvenanceResult {
   displayMessage?: string;
   failureStage?: VerificationFailureStage;
   selectedVerifier?: VerificationSelectedVerifier;
+  candidatesConsidered?: VerificationCandidateAttempt[];
   referenceBytecode?: VerificationReferenceBytecode;
   sourceCompatibility?: VerificationSourceCompatibility;
   currentBuild?: VerificationCurrentBuild;
@@ -219,6 +236,11 @@ export interface MovePackageProvenanceInput extends MovePackageInput {
    */
   intent: VerificationProvenanceIntent;
   reference: ReferenceArtifact;
+  /**
+   * Evidence label for a caller-provided verification WASM.
+   * This does not affect compiler behavior; it only identifies custom WASM results.
+   */
+  wasmVerifier?: VerificationSelectedVerifier;
 }
 
 export type VerificationProvenanceIntent = Extract<
@@ -275,9 +297,9 @@ export async function verifyMovePackageProvenance(
   }
   const intent = intentResult.value;
 
-  let loaded: LoadedVerificationWasm;
+  let candidates;
   try {
-    loaded = await loadVerificationWasm(input);
+    candidates = await loadVerificationWasmCandidates(input);
   } catch (error) {
     if (isMovePackageProvenanceResult(error)) {
       return error;
@@ -285,8 +307,57 @@ export async function verifyMovePackageProvenance(
     const failure = asFailure(error, "wasm_init");
     return buildFailure(failure.error, "wasm_init");
   }
-  const { mod } = loaded;
+  const attempts: VerificationCandidateAttempt[] = [];
+  let bestResult: MovePackageProvenanceResult | undefined;
+  for (const candidate of candidates) {
+    let loaded: LoadedVerificationWasm;
+    try {
+      loaded = await candidate.load();
+    } catch (error) {
+      const failure = isMovePackageProvenanceResult(error)
+        ? error
+        : buildFailure(asFailure(error, "wasm_init").error, "wasm_init");
+      const completed = {
+        ...failure,
+        selectedVerifier:
+          failure.selectedVerifier ?? candidate.selectedVerifier,
+        referenceBytecode:
+          failure.referenceBytecode ?? candidate.referenceBytecode,
+      };
+      attempts.push(attemptForResult(completed, candidate, false));
+      bestResult = chooseBetterCandidateResult(bestResult, {
+        ...completed,
+        candidatesConsidered: attempts,
+      });
+      continue;
+    }
 
+    const result = await verifyWithLoadedWasm(input, intent, loaded);
+    const isExact =
+      result.status === "verified" && result.verdict === "exact_bytecode_match";
+    attempts.push(attemptForResult(result, candidate, isExact));
+    const completed = {
+      ...result,
+      candidatesConsidered: attempts.map((attempt) => ({ ...attempt })),
+    };
+    if (isExact) {
+      return completed;
+    }
+    bestResult = chooseBetterCandidateResult(bestResult, completed);
+  }
+
+  return (
+    bestResult ??
+    buildFailure("No verification candidate was available", "wasm_init")
+  );
+}
+
+async function verifyWithLoadedWasm(
+  input: MovePackageProvenanceInput,
+  intent: VerificationProvenanceIntent,
+  loaded: LoadedVerificationWasm
+): Promise<MovePackageProvenanceResult> {
+  const { mod } = loaded;
   let resolved;
   try {
     resolved =
@@ -320,7 +391,10 @@ export async function verifyMovePackageProvenance(
     );
   } catch (error) {
     const failure = asFailure(error, "compiler_output");
-    return buildFailure(failure.error, "verification_output");
+    return completeVerificationResult(
+      buildFailure(failure.error, "verification_output"),
+      loaded
+    );
   }
 
   try {
@@ -335,6 +409,44 @@ export async function verifyMovePackageProvenance(
       loaded
     );
   }
+}
+
+function attemptForResult(
+  result: MovePackageProvenanceResult,
+  candidate: {
+    verifierId: string;
+    epochId: string;
+    selectedVerifier: VerificationSelectedVerifier;
+  },
+  selected: boolean
+): VerificationCandidateAttempt {
+  return {
+    verifierId: candidate.verifierId,
+    epochId: candidate.epochId,
+    suiVersion: result.selectedVerifier?.suiVersion,
+    outcome: selected
+      ? "selected"
+      : result.status === "build_failure"
+        ? "compile_failed"
+        : "tried_but_not_exact",
+    status: result.status,
+    verdict: result.verdict,
+    failureStage: result.failureStage,
+  };
+}
+
+function chooseBetterCandidateResult(
+  current: MovePackageProvenanceResult | undefined,
+  candidate: MovePackageProvenanceResult
+): MovePackageProvenanceResult {
+  if (!current) return candidate;
+  if (
+    current.status === "build_failure" &&
+    candidate.status !== "build_failure"
+  ) {
+    return candidate;
+  }
+  return current;
 }
 
 function verificationIntent(

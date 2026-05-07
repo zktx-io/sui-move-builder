@@ -628,7 +628,7 @@ async function compileMovePackage(
     input.onProgress?.({ type: "lockfile_generate" });
 
     // Generate Move.lock V4
-    // ORIGINAL: root_package.rs:272-282 - Pass existing lockfile to preserve other environments
+    // Upstream reference: root_package.rs:272-282 preserves other environments.
     // Use lockfileDependencies which includes ALL packages (no linkage filtering)
     let moveLock: string;
     try {

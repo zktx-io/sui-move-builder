@@ -75,7 +75,7 @@ impl WasmCompileResult {
 
 /// Compilation output containing bytecode and dependency metadata.
 ///
-/// ORIGINAL SOURCE REFERENCES:
+/// Upstream source references:
 /// - sui/crates/sui-move-build/src/lib.rs - CompiledPackage struct
 #[derive(Serialize)]
 pub struct WasmCompilationOutput {
@@ -559,8 +559,8 @@ pub fn compute_manifest_digest_from_move_toml(
     )
 }
 
-/// Backward-compatible JSON entrypoint. New code should prefer
-/// `compute_manifest_digest_from_move_toml`.
+/// JSON entrypoint for callers that provide pre-normalized dependency data.
+/// `compute_manifest_digest_from_move_toml` keeps Move.toml semantics in Rust.
 #[cfg(not(feature = "verification"))]
 #[wasm_bindgen]
 pub fn compute_manifest_digest(deps_json: &str) -> String {

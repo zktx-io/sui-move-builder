@@ -352,8 +352,15 @@ export function parseMoveCompilerEditions(text) {
     "2024.beta": editionFeatureList(text, "E2024_BETA_FEATURES"),
     2024: editionFeatureList(text, "E2024_FEATURES"),
   };
+  const effectiveFeatureLists = effectiveEditionFeatureLists(
+    text,
+    featureLists
+  );
   const moduleExtensionEditions = Object.entries(featureLists)
     .filter(([, list]) => list.features.includes("ModuleExtension"))
+    .map(([edition]) => edition);
+  const moduleLabelEditions = Object.entries(effectiveFeatureLists)
+    .filter(([, list]) => list.features.includes("ModuleLabel"))
     .map(([edition]) => edition);
   return {
     validEditions,
@@ -365,12 +372,24 @@ export function parseMoveCompilerEditions(text) {
         list.sha256,
       ])
     ),
+    effectiveFeatureListHashes: Object.fromEntries(
+      Object.entries(effectiveFeatureLists).map(([edition, list]) => [
+        edition,
+        list.sha256,
+      ])
+    ),
     moduleExtensionEditions,
     moduleExtensionTokenPresent: /\bModuleExtension\b/.test(text),
     moduleExtensionIn2024Alpha:
       featureLists["2024.alpha"].features.includes("ModuleExtension"),
     moduleExtensionIn2024Beta:
       featureLists["2024.beta"].features.includes("ModuleExtension"),
+    moduleLabelEditions,
+    moduleLabelTokenPresent: /\bModuleLabel\b/.test(text),
+    moduleLabelIn2024Alpha:
+      effectiveFeatureLists["2024.alpha"].features.includes("ModuleLabel"),
+    moduleLabelIn2024Beta:
+      effectiveFeatureLists["2024.beta"].features.includes("ModuleLabel"),
   };
 }
 
@@ -430,6 +449,59 @@ function editionFeatureList(text, constName) {
     ],
     sha256: sha256(body),
   };
+}
+
+function effectiveEditionFeatureLists(text, featureLists) {
+  const rawByRustName = new Map([
+    ["E2024_ALPHA", featureLists["2024.alpha"].features],
+    ["E2024_BETA", featureLists["2024.beta"].features],
+    ["E2024", featureLists["2024"].features],
+    ["LEGACY", []],
+  ]);
+  const editionByRustName = new Map([
+    ["E2024_ALPHA", "2024.alpha"],
+    ["E2024_BETA", "2024.beta"],
+    ["E2024", "2024"],
+    ["LEGACY", "legacy"],
+  ]);
+  const prevByRustName = parseEditionPrevMap(text);
+
+  function collect(rustName, seen = new Set()) {
+    if (seen.has(rustName)) return [];
+    seen.add(rustName);
+    const previous = prevByRustName.get(rustName);
+    return [
+      ...(previous ? collect(previous, seen) : []),
+      ...(rawByRustName.get(rustName) ?? []),
+    ];
+  }
+
+  return Object.fromEntries(
+    [...editionByRustName.entries()]
+      .filter(([, edition]) => edition !== "legacy")
+      .map(([rustName, edition]) => {
+        const features = [...new Set(collect(rustName))].sort();
+        return [
+          edition,
+          {
+            features,
+            sha256: sha256(features.join("\n")),
+          },
+        ];
+      })
+  );
+}
+
+function parseEditionPrevMap(text) {
+  const match = text.match(
+    /fn\s+prev\(&self\)[\s\S]*?match\s+\*self\s*\{([\s\S]*?)\n\s*}/
+  );
+  const body = match?.[1] ?? "";
+  return new Map(
+    [
+      ...body.matchAll(/Self::([A-Z0-9_]+)\s*=>\s*Some\(Self::([A-Z0-9_]+)\)/g),
+    ].map(([, edition, previous]) => [edition, previous])
+  );
 }
 
 function uniqueNumbers(text, regex) {
@@ -582,6 +654,171 @@ function summarizeBoundaries(records, signatureKey, signalsKey = "signals") {
   return boundaries;
 }
 
+export function emittedBytecodeVersionsFromSignals(signals) {
+  const configuredVersions =
+    signals?.protocolConfig?.moveBinaryFormatVersions ?? [];
+  if (configuredVersions.length > 0) {
+    return [...new Set(configuredVersions)].sort((left, right) => left - right);
+  }
+  const versionMax = signals?.moveBinaryFormat?.versionMax;
+  return Number.isInteger(versionMax) && versionMax > 0 ? [versionMax] : [];
+}
+
+export function compilerCapabilitySignalsForVersion(
+  signals,
+  emittedBytecodeVersion
+) {
+  return {
+    emittedBytecodeVersion,
+    sourceMoveBinaryFormat: signals?.moveBinaryFormat
+      ? {
+          versionMin: signals.moveBinaryFormat.versionMin,
+          versionMax: signals.moveBinaryFormat.versionMax,
+          tableTypeHash: signals.moveBinaryFormat.tableTypeHash,
+        }
+      : null,
+    serializer: signals?.serializer
+      ? {
+          encodesBinaryFlavor: signals.serializer.encodesBinaryFlavor,
+          jumpTablesVersionGate: signals.serializer.jumpTablesVersionGate,
+        }
+      : null,
+    deserializer: signals?.deserializer
+      ? {
+          jumpTablesVersionGate: signals.deserializer.jumpTablesVersionGate,
+        }
+      : null,
+    protocolConfig: signals?.protocolConfig
+      ? {
+          moveBinaryFormatVersions:
+            signals.protocolConfig.moveBinaryFormatVersions,
+          minMoveBinaryFormatVersions:
+            signals.protocolConfig.minMoveBinaryFormatVersions,
+        }
+      : null,
+    moveCompilerEditions: signals?.moveCompilerEditions ?? null,
+  };
+}
+
+export function compilerCapabilitySignatureForVersion(
+  signals,
+  emittedBytecodeVersion
+) {
+  return sha256(
+    JSON.stringify(
+      compilerCapabilitySignalsForVersion(signals, emittedBytecodeVersion)
+    )
+  );
+}
+
+export function summarizeCompilerCapabilityEpochs(records) {
+  const groupsByVersion = new Map();
+
+  for (const [recordIndex, record] of records.entries()) {
+    for (const emittedBytecodeVersion of emittedBytecodeVersionsFromSignals(
+      record.signals
+    )) {
+      const signals = compilerCapabilitySignalsForVersion(
+        record.signals,
+        emittedBytecodeVersion
+      );
+      const signature = sha256(JSON.stringify(signals));
+      let groups = groupsByVersion.get(emittedBytecodeVersion);
+      if (!groups) {
+        groups = new Map();
+        groupsByVersion.set(emittedBytecodeVersion, groups);
+      }
+      let group = groups.get(signature);
+      if (!group) {
+        group = {
+          emittedBytecodeVersion,
+          signature,
+          tagCount: 0,
+          kindCounts: {},
+          firstRecordIndex: recordIndex,
+          latestRecordIndex: recordIndex,
+          firstObserved: tagSummary(record),
+          latestObserved: tagSummary(record),
+          firstMainnet: null,
+          latestMainnet: null,
+          firstRelease: null,
+          latestRelease: null,
+          signals,
+        };
+        groups.set(signature, group);
+      }
+
+      group.tagCount += 1;
+      group.kindCounts[record.kind] = (group.kindCounts[record.kind] ?? 0) + 1;
+      group.latestRecordIndex = recordIndex;
+      group.latestObserved = tagSummary(record);
+      if (record.kind === "mainnet") {
+        group.firstMainnet ??= tagSummary(record);
+        group.latestMainnet = tagSummary(record);
+      }
+      if (record.kind === "release") {
+        group.firstRelease ??= tagSummary(record);
+        group.latestRelease = tagSummary(record);
+      }
+    }
+  }
+
+  return [...groupsByVersion.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([emittedBytecodeVersion, groups]) => ({
+      emittedBytecodeVersion,
+      groups: [...groups.values()].sort(
+        (left, right) => left.firstRecordIndex - right.firstRecordIndex
+      ),
+    }));
+}
+
+function summarizeCompilerCapabilityBoundaries(records) {
+  const boundaries = [];
+  const previousSignatureByVersion = new Map();
+  for (const record of records) {
+    for (const emittedBytecodeVersion of emittedBytecodeVersionsFromSignals(
+      record.signals
+    )) {
+      const signature = compilerCapabilitySignatureForVersion(
+        record.signals,
+        emittedBytecodeVersion
+      );
+      if (
+        previousSignatureByVersion.get(emittedBytecodeVersion) !== signature
+      ) {
+        boundaries.push({
+          emittedBytecodeVersion,
+          tag: record.tag,
+          version: record.version,
+          kind: record.kind,
+          network: record.network,
+          commit: record.commit,
+          previousSignature:
+            previousSignatureByVersion.get(emittedBytecodeVersion) ?? null,
+          signature,
+          signals: compilerCapabilitySignalsForVersion(
+            record.signals,
+            emittedBytecodeVersion
+          ),
+        });
+        previousSignatureByVersion.set(emittedBytecodeVersion, signature);
+      }
+    }
+  }
+  return boundaries;
+}
+
+function tagSummary(record) {
+  return {
+    tag: record.tag,
+    kind: record.kind,
+    network: record.network,
+    version: record.version,
+    commit: record.commit,
+  };
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const inventory = await readJson(options.inventory);
@@ -618,6 +855,9 @@ async function main() {
       "bytecodeSignature",
       "bytecodeSignals"
     ),
+    compilerCapabilityEpochs: summarizeCompilerCapabilityEpochs(records),
+    compilerCapabilityBoundaries:
+      summarizeCompilerCapabilityBoundaries(records),
     semanticBoundaries: summarizeBoundaries(records, "semanticSignature"),
     sourceBoundaries: summarizeBoundaries(records, "sourceSignature"),
     records,

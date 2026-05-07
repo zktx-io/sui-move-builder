@@ -83,9 +83,10 @@ async function sha256File(filePath) {
 function sourceRecordForVerifier(repoRoot, entry) {
   const { sourceRecords, sourceRecordsPath } =
     loadBytecodeVersionSourceRecords(repoRoot);
-  const record = sourceRecords.records.find(
-    (candidate) => candidate.verifierId === entry.verifierId
-  );
+  const record = [
+    ...sourceRecords.records,
+    ...(sourceRecords.verifierSourceRecords ?? []),
+  ].find((candidate) => candidate.verifierId === entry.verifierId);
   if (!record) {
     throw new Error(
       `${entry.verifierId} must have a source record in ${sourceRecordsPath}`

@@ -107,7 +107,7 @@
           "sha256": "1783807255fc07177205f7e2dc98f14c3dabbc754160c58a46fdd8adf22d5630"
         }
       },
-      "notes": "Network-only source record for decoded bytecode version 5. No release CLI tag was found for this decoded bytecode version; the Sui tag references move-language/move through Cargo."
+      "notes": "Network-only source record for decoded bytecode version 5. Release CLI tag evidence: absent in scanned inventory. The Sui tag references move-language/move through Cargo."
     },
     {
       "decodedBytecodeVersion": 6,
@@ -167,14 +167,23 @@
           "defaultEdition": "legacy",
           "supportsPlain2024": false,
           "featureListHashes": {
+            "2024": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "2024.alpha": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "2024.beta": "1712b61c46ff9b7510bb087cc8972e5da576663ea7fcbf58ef67e0b80ff052cb",
-            "2024": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            "2024.beta": "1712b61c46ff9b7510bb087cc8972e5da576663ea7fcbf58ef67e0b80ff052cb"
+          },
+          "effectiveFeatureListHashes": {
+            "2024": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "2024.alpha": "ea6cadbba95730082fbb3225b6a89fa5d11bb35751e9b614f6b61f2e99c457fc",
+            "2024.beta": "ea6cadbba95730082fbb3225b6a89fa5d11bb35751e9b614f6b61f2e99c457fc"
           },
           "moduleExtensionEditions": [],
           "moduleExtensionTokenPresent": false,
           "moduleExtensionIn2024Alpha": false,
-          "moduleExtensionIn2024Beta": false
+          "moduleExtensionIn2024Beta": false,
+          "moduleLabelEditions": [],
+          "moduleLabelTokenPresent": false,
+          "moduleLabelIn2024Alpha": false,
+          "moduleLabelIn2024Beta": false
         }
       },
       "representativeSourceHashes": {
@@ -199,7 +208,7 @@
           "sha256": "e0b2859e9e79597c4ddd83fc67b1fa00ef25a67dc2c86a12a275da7a119e1f97"
         }
       },
-      "notes": "Supported legacy verifier source record for decoded bytecode version 6. The isolated sui-1.26.2 verifier is bundled under dist/verification/v6 after fixture proof shows a distinct exact result."
+      "notes": "Supported legacy verifier source record for decoded bytecode version 6. The isolated sui-1.26.2 verifier is bundled under dist/verification/v6/classic after fixture proof shows a distinct exact result."
     },
     {
       "decodedBytecodeVersion": 7,
@@ -248,14 +257,23 @@
           "defaultEdition": "2024",
           "supportsPlain2024": true,
           "featureListHashes": {
+            "2024": "8869002b1c51f7bf4ac28f57ce63bcabc8503749a9112fff38bd804942d7f1c6",
             "2024.alpha": "f987c63a18146b59f851bc2fc2d034a516529c2878892a98220e9c5428360264",
-            "2024.beta": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "2024": "8869002b1c51f7bf4ac28f57ce63bcabc8503749a9112fff38bd804942d7f1c6"
+            "2024.beta": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "effectiveFeatureListHashes": {
+            "2024": "f4f93f964fcc2e1ad30d5ac0ab121448c4fa47213c39fc978193a5e67487efdc",
+            "2024.alpha": "01dd736f94b1be59566da31d9bcf321c02411229d46a82775ac30337983167aa",
+            "2024.beta": "f4f93f964fcc2e1ad30d5ac0ab121448c4fa47213c39fc978193a5e67487efdc"
           },
           "moduleExtensionEditions": ["2024.alpha"],
           "moduleExtensionTokenPresent": true,
           "moduleExtensionIn2024Alpha": true,
-          "moduleExtensionIn2024Beta": false
+          "moduleExtensionIn2024Beta": false,
+          "moduleLabelEditions": ["2024", "2024.alpha", "2024.beta"],
+          "moduleLabelTokenPresent": true,
+          "moduleLabelIn2024Alpha": true,
+          "moduleLabelIn2024Beta": true
         }
       },
       "representativeSourceHashes": {
@@ -299,6 +317,176 @@
         }
       },
       "notes": "Current verifier source record. VERSION_MIN=5 is parser lower-bound evidence, not an observed verifier route. Runtime routing uses this current verifier for decoded bytecode version 7."
+    }
+  ],
+  "verifierSourceRecords": [
+    {
+      "decodedBytecodeVersion": 6,
+      "bytecodeFlavor": null,
+      "verifierId": "sui-1.27.2-v6",
+      "representative": {
+        "suiVersion": "1.27.2",
+        "tag": "mainnet-v1.27.2",
+        "commit": "9e2be6ad4185563ecd98bf35abfe92b86a0b280f"
+      },
+      "sourceFiles": [
+        "external-crates/move/crates/move-binary-format/src/file_format_common.rs",
+        "external-crates/move/crates/move-binary-format/src/serializer.rs",
+        "external-crates/move/crates/move-binary-format/src/deserializer.rs",
+        "crates/sui-protocol-config/src/lib.rs",
+        "external-crates/move/crates/move-compiler/src/editions/mod.rs"
+      ],
+      "signals": {
+        "moveBinaryFormat": {
+          "versionMin": 5,
+          "versionMax": 7,
+          "tableTypeHash": "7d9dcfb14d16718d1faf124f684fbb0243cd4789a7e1937d42f6bd8cc9d46083"
+        },
+        "serializer": {
+          "encodesBinaryFlavor": true,
+          "jumpTablesVersionGate": true,
+          "functionDefinitionHash": "751d4d4996a9ef1e810cd2705066afde1961aebb227e7d6b900ebad04436a2a1"
+        },
+        "deserializer": {
+          "jumpTablesVersionGate": true,
+          "functionDefinitionHash": "b1b22f90c678c50a353db3df9d19acf257d03458b020845609f8b2048261b190"
+        },
+        "protocolConfig": {
+          "moveBinaryFormatVersions": [6, 7],
+          "minMoveBinaryFormatVersions": [6],
+          "maxProtocolVersion": 49
+        },
+        "moveCompilerEditions": {
+          "validEditions": ["legacy", "2024.alpha", "2024.beta"],
+          "defaultEdition": "legacy",
+          "supportsPlain2024": false,
+          "featureListHashes": {
+            "2024": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "2024.alpha": "2d13f3f6dce0ca4ad9c2ed352e1e98ca6328a0f4c4c5e402e5954bb89cbe0cdf",
+            "2024.beta": "49b290867d79fc0c44d80d483102b210594115c5384965d8dda38d602a852e15"
+          },
+          "effectiveFeatureListHashes": {
+            "2024": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "2024.alpha": "92af138259ec8d22466f2bafb47a7eea14bf28136dbd0abcbc0b610fe2c5bb9e",
+            "2024.beta": "0c270773172d8ebe7c318bba5c900c7c44f5125802360854ad5fdae747c91916"
+          },
+          "moduleExtensionEditions": [],
+          "moduleExtensionTokenPresent": false,
+          "moduleExtensionIn2024Alpha": false,
+          "moduleExtensionIn2024Beta": false,
+          "moduleLabelEditions": ["2024.alpha", "2024.beta"],
+          "moduleLabelTokenPresent": true,
+          "moduleLabelIn2024Alpha": true,
+          "moduleLabelIn2024Beta": true
+        }
+      },
+      "representativeSourceHashes": {
+        "moveBinaryFormatCommon": {
+          "sourceFile": "external-crates/move/crates/move-binary-format/src/file_format_common.rs",
+          "sha256": "84d539a4c57fb55fd149593a5deb76bac59ee00be23dc9362c84f23d59962821"
+        },
+        "serializer": {
+          "sourceFile": "external-crates/move/crates/move-binary-format/src/serializer.rs",
+          "sha256": "065f401ea378c06cb8c1343b8999cefcdf420c7ab5c62bf5335545ca9f13fb46"
+        },
+        "deserializer": {
+          "sourceFile": "external-crates/move/crates/move-binary-format/src/deserializer.rs",
+          "sha256": "97d202f54fb91b96748bcf84bfba9ca964b5dfe40c514706087ee473379b3b5d"
+        },
+        "protocolConfig": {
+          "sourceFile": "crates/sui-protocol-config/src/lib.rs",
+          "sha256": "e6a8f7b0906d5be278ca911b498b71a952f8f8d7efe77d88d99aa53a0701a896"
+        },
+        "moveCompilerEditions": {
+          "sourceFile": "external-crates/move/crates/move-compiler/src/editions/mod.rs",
+          "sha256": "2bd59ef9c82981f2c60b41974e21dacd27bbfe5f28408d0110db1da945f3adcc"
+        }
+      },
+      "notes": "Investigation-only source record for decoded bytecode version 6 with early v7-era ModuleLabel capability. Runtime route status is recorded only in bytecode-verifiers.json."
+    },
+    {
+      "decodedBytecodeVersion": 6,
+      "bytecodeFlavor": null,
+      "verifierId": "sui-1.58.3-v6",
+      "representative": {
+        "suiVersion": "1.58.3",
+        "tag": "mainnet-v1.58.3",
+        "commit": "a0545a819fba114903c880f928339b5cd8805a4a"
+      },
+      "sourceFiles": [
+        "external-crates/move/crates/move-binary-format/src/file_format_common.rs",
+        "external-crates/move/crates/move-binary-format/src/serializer.rs",
+        "external-crates/move/crates/move-binary-format/src/deserializer.rs",
+        "external-crates/move/crates/move-compiler/src/editions/mod.rs",
+        "crates/sui-protocol-config/src/lib.rs"
+      ],
+      "signals": {
+        "moveBinaryFormat": {
+          "versionMin": 5,
+          "versionMax": 7,
+          "tableTypeHash": "7d9dcfb14d16718d1faf124f684fbb0243cd4789a7e1937d42f6bd8cc9d46083"
+        },
+        "serializer": {
+          "encodesBinaryFlavor": true,
+          "jumpTablesVersionGate": true,
+          "functionDefinitionHash": "751d4d4996a9ef1e810cd2705066afde1961aebb227e7d6b900ebad04436a2a1"
+        },
+        "deserializer": {
+          "jumpTablesVersionGate": true,
+          "functionDefinitionHash": "b1b22f90c678c50a353db3df9d19acf257d03458b020845609f8b2048261b190"
+        },
+        "protocolConfig": {
+          "moveBinaryFormatVersions": [6, 7],
+          "minMoveBinaryFormatVersions": [6],
+          "maxProtocolVersion": 98
+        },
+        "moveCompilerEditions": {
+          "validEditions": ["legacy", "2024.alpha", "2024.beta", "2024"],
+          "defaultEdition": "2024",
+          "supportsPlain2024": true,
+          "featureListHashes": {
+            "2024": "8869002b1c51f7bf4ac28f57ce63bcabc8503749a9112fff38bd804942d7f1c6",
+            "2024.alpha": "f987c63a18146b59f851bc2fc2d034a516529c2878892a98220e9c5428360264",
+            "2024.beta": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "effectiveFeatureListHashes": {
+            "2024": "f4f93f964fcc2e1ad30d5ac0ab121448c4fa47213c39fc978193a5e67487efdc",
+            "2024.alpha": "01dd736f94b1be59566da31d9bcf321c02411229d46a82775ac30337983167aa",
+            "2024.beta": "f4f93f964fcc2e1ad30d5ac0ab121448c4fa47213c39fc978193a5e67487efdc"
+          },
+          "moduleExtensionEditions": ["2024.alpha"],
+          "moduleExtensionTokenPresent": true,
+          "moduleExtensionIn2024Alpha": true,
+          "moduleExtensionIn2024Beta": false,
+          "moduleLabelEditions": ["2024", "2024.alpha", "2024.beta"],
+          "moduleLabelTokenPresent": true,
+          "moduleLabelIn2024Alpha": true,
+          "moduleLabelIn2024Beta": true
+        }
+      },
+      "representativeSourceHashes": {
+        "moveBinaryFormatCommon": {
+          "sourceFile": "external-crates/move/crates/move-binary-format/src/file_format_common.rs",
+          "sha256": "1b2b41d74f5f12c6625c339a56a995119abbe0c19a7f98df53c7c494b04d10e1"
+        },
+        "serializer": {
+          "sourceFile": "external-crates/move/crates/move-binary-format/src/serializer.rs",
+          "sha256": "9b297ab9d609345623a05612f8b04b96284bc404f131088570df3413794ff79a"
+        },
+        "deserializer": {
+          "sourceFile": "external-crates/move/crates/move-binary-format/src/deserializer.rs",
+          "sha256": "a952ec42806b5cc2007f6c4173e60d9d203827b354c0548b34396133ccf69e64"
+        },
+        "protocolConfig": {
+          "sourceFile": "crates/sui-protocol-config/src/lib.rs",
+          "sha256": "ecb70ebc9d5aec95661d0d30d112543ee5898405abf78029864815351d1fdeb7"
+        },
+        "moveCompilerEditions": {
+          "sourceFile": "external-crates/move/crates/move-compiler/src/editions/mod.rs",
+          "sha256": "edfed5d3b8f33f0a1b1ee70cd74cdc16c98b6cd4cc43776c0a4cb116721a1af6"
+        }
+      },
+      "notes": "Source record for decoded bytecode version 6 with later v7-era 2024 compiler capability while still targeting protocol v6 bytecode output. Clean mainnet compiler-capability inventory identifies mainnet-v1.58.3 as the first tag in the mainnet-v1.58.3 through mainnet-v1.71.1 capability group. Deepbookv3 and Deeptrade fixture Move.lock Sui framework revisions match the same capability group. Runtime route status is recorded only in bytecode-verifiers.json."
     }
   ]
 }
