@@ -78,6 +78,8 @@ When a parity fixture changes during version-up, first confirm the selected Sui 
 
 After changing verifier routing or generated verification config, rerun the generator and review the generated diff. `src/generated/verificationRuntimeConfig.ts` is evidence of the manifest state, not an independent editing surface.
 
+Release workflows must not discover third-party build tools through unauthenticated "latest release" API calls. Pin external tool versions and archive checksums in the workflow or a tracked config file, then update them deliberately with source evidence when the tool must change.
+
 ## Parity and Hardcoding Rules
 
 CLI parity is not just a passing test result. Treat it as a stage-by-stage match with the pinned Sui flow: `RootPackage` -> `PackageGraph` -> `BuildPlan` -> compiler/test runner -> output, digest, and lockfile.

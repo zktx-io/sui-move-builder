@@ -35,16 +35,12 @@ jobs:
         uses: jetli/wasm-pack-action@v0.4.0
 
       - name: Install wasm-opt (Binaryen)
+        env:
+          BINARYEN_TAG: version_129
+          BINARYEN_SHA256: 50b9fa62b9abea752da92ec57e0c555fee578760cd237c40107957715d2976ba
         run: |
-          BINARYEN_TAG=$(python - <<'PY'
-          import json
-          import urllib.request
-          url = "https://api.github.com/repos/WebAssembly/binaryen/releases/latest"
-          data = json.load(urllib.request.urlopen(url))
-          print(data["tag_name"])
-          PY
-          )
-          curl -L "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_TAG}/binaryen-${BINARYEN_TAG}-x86_64-linux.tar.gz" -o /tmp/binaryen.tar.gz
+          curl --fail --location --retry 3 --retry-delay 5 "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_TAG}/binaryen-${BINARYEN_TAG}-x86_64-linux.tar.gz" -o /tmp/binaryen.tar.gz
+          echo "${BINARYEN_SHA256}  /tmp/binaryen.tar.gz" | sha256sum --check -
           tar -xzf /tmp/binaryen.tar.gz -C /tmp
           sudo cp "/tmp/binaryen-${BINARYEN_TAG}/bin/wasm-opt" /usr/local/bin/wasm-opt
           sudo chmod +x /usr/local/bin/wasm-opt
