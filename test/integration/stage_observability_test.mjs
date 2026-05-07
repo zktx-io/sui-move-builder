@@ -33,6 +33,10 @@ function stageEvents(events) {
   return events.filter((event) => event.type === "stage_trace");
 }
 
+function fetchFailedEvents(events) {
+  return events.filter((event) => event.type === "fetch_failed");
+}
+
 function expectStages(events, expectedStages, label) {
   const stages = new Set(stageEvents(events).map((event) => event.stage));
   for (const expected of expectedStages) {
@@ -180,6 +184,69 @@ const modeFetcher = {
   },
 };
 
+const failingModeFetcher = {
+  async fetch() {
+    throw new Error("unexpected git fetch");
+  },
+  async fetchLocal(localPath) {
+    const error = new Error(`simulated local fetch failure: ${localPath}`);
+    error.code = "SIMULATED_LOCAL_FETCH_FAILURE";
+    throw error;
+  },
+  async fetchFile() {
+    return null;
+  },
+  getResolvedSha() {
+    return undefined;
+  },
+};
+
+function expectFetchFailedEvent(events, label, expectedParentSourceType) {
+  const failures = fetchFailedEvents(events);
+  if (failures.length !== 1) {
+    throw new Error(`${label} should emit exactly one fetch_failed event`);
+  }
+  const failure = failures[0];
+  if (
+    failure.dependencyName !== "mode_dep" ||
+    failure.source?.type !== "local" ||
+    failure.source?.local !== "../mode-dep" ||
+    !failure.error.includes("simulated local fetch failure") ||
+    failure.code !== "SIMULATED_LOCAL_FETCH_FAILURE" ||
+    typeof failure.parentPackageName !== "string" ||
+    failure.parentPackageName.length === 0 ||
+    failure.parentSource?.type !== expectedParentSourceType
+  ) {
+    throw new Error(
+      `${label} emitted unexpected fetch_failed event: ${JSON.stringify(
+        failure
+      )}`
+    );
+  }
+}
+
+const manifestFetchFailureEvents = [];
+const manifestFetchFailureResult = await dumpMovePackage({
+  files: modeRootFiles,
+  fetcher: failingModeFetcher,
+  onProgress: (event) => manifestFetchFailureEvents.push(event),
+});
+if (
+  !("error" in manifestFetchFailureResult) ||
+  manifestFetchFailureResult.category !== "dependency_resolution"
+) {
+  throw new Error(
+    `manifest graph fetch failure should return dependency_resolution, got ${JSON.stringify(
+      manifestFetchFailureResult
+    )}`
+  );
+}
+expectFetchFailedEvent(
+  manifestFetchFailureEvents,
+  "manifest graph fetch failure",
+  "root"
+);
+
 const inactiveModeEvents = [];
 const inactiveModeResult = await dumpMovePackage({
   files: modeRootFiles,
@@ -297,6 +364,110 @@ if (
   );
 }
 
+const lockfileFetchFailureEvents = [];
+const lockfileFetchFailureResult = await dumpMovePackage({
+  files: {
+    ...modeRootFiles,
+    "Move.lock": testnetModeResult.moveLock,
+  },
+  fetcher: failingModeFetcher,
+  modes: ["custom"],
+  network: "testnet",
+  onProgress: (event) => lockfileFetchFailureEvents.push(event),
+});
+if (
+  !("error" in lockfileFetchFailureResult) ||
+  lockfileFetchFailureResult.category !== "dependency_resolution"
+) {
+  throw new Error(
+    `Move.lock fetch failure should return dependency_resolution, got ${JSON.stringify(
+      lockfileFetchFailureResult
+    )}`
+  );
+}
+expectFetchFailedEvent(
+  lockfileFetchFailureEvents,
+  "Move.lock fetch failure",
+  "local"
+);
+
+const gitDependencyRev = "0123456789abcdef0123456789abcdef01234567";
+const gitDependencyRootFiles = {
+  "Move.toml": `
+[package]
+name = "TraceGitRoot"
+version = "0.0.0"
+edition = "2024"
+implicit-dependencies = false
+
+[dependencies]
+git_dep = { git = "https://github.com/example/repo.git", rev = "${gitDependencyRev}", subdir = "pkg" }
+`,
+  "sources/main.move": `
+module 0x0::main {
+    public fun selected(): u64 { git_dep::fixture::value() }
+}
+`,
+};
+
+const failingGitFetcher = {
+  async fetch(gitUrl) {
+    const error = new Error(`simulated git fetch failure: ${gitUrl}`);
+    error.code = "SIMULATED_GIT_FETCH_FAILURE";
+    throw error;
+  },
+  async fetchLocal() {
+    throw new Error("unexpected local fetch");
+  },
+  async fetchFile() {
+    return null;
+  },
+  getResolvedSha() {
+    return undefined;
+  },
+};
+
+const gitFetchFailureEvents = [];
+const gitFetchFailureResult = await dumpMovePackage({
+  files: gitDependencyRootFiles,
+  fetcher: failingGitFetcher,
+  onProgress: (event) => gitFetchFailureEvents.push(event),
+});
+if (
+  !("error" in gitFetchFailureResult) ||
+  gitFetchFailureResult.category !== "dependency_resolution"
+) {
+  throw new Error(
+    `git fetch failure should return dependency_resolution, got ${JSON.stringify(
+      gitFetchFailureResult
+    )}`
+  );
+}
+const gitFailures = fetchFailedEvents(gitFetchFailureEvents);
+if (gitFailures.length !== 1) {
+  throw new Error(
+    "git fetch failure should emit exactly one fetch_failed event"
+  );
+}
+const gitFailure = gitFailures[0];
+if (
+  gitFailure.dependencyName !== "git_dep" ||
+  gitFailure.source?.type !== "git" ||
+  gitFailure.source?.git !== "https://github.com/example/repo.git" ||
+  gitFailure.source?.rev !== gitDependencyRev ||
+  gitFailure.source?.subdir !== "pkg" ||
+  gitFailure.parentPackageName !== "TraceGitRoot" ||
+  gitFailure.parentSource?.type !== "root" ||
+  gitFailure.code !== "SIMULATED_GIT_FETCH_FAILURE" ||
+  !gitFailure.error.includes("simulated git fetch failure")
+) {
+  throw new Error(
+    `git fetch failure emitted unexpected fetch_failed event: ${JSON.stringify(
+      gitFailure
+    )}`
+  );
+}
+
 console.log(
-  "[OK] stage trace progress events cover manifest and Move.lock paths"
+  "[OK] stage trace and fetch failure progress events cover manifest and Move.lock paths"
 );

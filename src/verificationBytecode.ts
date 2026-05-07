@@ -39,10 +39,22 @@ function moduleBytecodeHeader(
   const rawVersionWord =
     (header[4] | (header[5] << 8) | (header[6] << 16) | (header[7] << 24)) >>>
     0;
+  const decodedVersion = rawVersionWord & 0x00ff_ffff;
+  const rawFlavor = rawVersionWord >>> 24;
   return {
-    decodedVersion: rawVersionWord & 0x00ff_ffff,
-    flavor: rawVersionWord >>> 24 || null,
+    decodedVersion,
+    flavor: bytecodeFlavor(decodedVersion, rawFlavor),
   };
+}
+
+function bytecodeFlavor(
+  decodedVersion: number,
+  rawFlavor: number
+): number | null {
+  if (rawFlavor !== 0) {
+    return rawFlavor;
+  }
+  return decodedVersion <= 6 ? null : 0;
 }
 
 function decodeBase64Prefix(

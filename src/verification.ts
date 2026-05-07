@@ -14,7 +14,6 @@ import {
 } from "./dependencyResolution.js";
 import { type LockfileV4Helpers } from "./resolver.js";
 import { displayMessageForResult } from "./verificationMessages.js";
-import { sourceCompatibilityEvidence } from "./verificationSourceCompatibility.js";
 import {
   loadVerificationWasm,
   type LoadedVerificationWasm,
@@ -297,9 +296,7 @@ export async function verifyMovePackageProvenance(
     const failure = asFailure(error, "dependency_resolution");
     return completeVerificationResult(
       buildFailure(failure.error, "dependency_resolution"),
-      loaded,
-      JSON.stringify(input.files),
-      "[]"
+      loaded
     );
   }
 
@@ -329,17 +326,13 @@ export async function verifyMovePackageProvenance(
   try {
     return completeVerificationResult(
       JSON.parse(raw) as MovePackageProvenanceResult,
-      loaded,
-      resolved.files,
-      resolved.dependencies
+      loaded
     );
   } catch (error) {
     const failure = asFailure(error, "compiler_output");
     return completeVerificationResult(
       buildFailure(failure.error, "verification_output"),
-      loaded,
-      resolved.files,
-      resolved.dependencies
+      loaded
     );
   }
 }
@@ -388,20 +381,13 @@ function isMovePackageProvenanceResult(
 
 function completeVerificationResult(
   result: MovePackageProvenanceResult,
-  loaded: LoadedVerificationWasm,
-  filesJson: string,
-  dependenciesJson: string
+  loaded: LoadedVerificationWasm
 ): MovePackageProvenanceResult {
   const completed: MovePackageProvenanceResult = {
     ...result,
     selectedVerifier: result.selectedVerifier ?? loaded.selectedVerifier,
     referenceBytecode: result.referenceBytecode ?? loaded.referenceBytecode,
   };
-  completed.sourceCompatibility ??= sourceCompatibilityEvidence(
-    filesJson,
-    dependenciesJson,
-    loaded.selectedVerifier
-  );
   completed.displayMessage ??= displayMessageForResult(completed);
   return completed;
 }

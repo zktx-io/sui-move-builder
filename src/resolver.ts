@@ -9,8 +9,15 @@ import type {
   MovePackageFetcher,
   MovePackageFetchLocalContext,
 } from "./fetcher.js";
-import type { MovePackageStageReport } from "./stageReports.js";
-import { StructuredBuildError } from "./structuredError.js";
+import type {
+  MovePackageFetchFailedReport,
+  MovePackageFetchFailedSource,
+  MovePackageStageReport,
+} from "./stageReports.js";
+import {
+  StructuredBuildError,
+  structuredErrorCode,
+} from "./structuredError.js";
 
 // Load from shared config (synchronized with scripts/build-wasm.mjs)
 import suiVersionConfig from "../sui-version.json" with { type: "json" };
@@ -115,19 +122,24 @@ export class Resolver {
   private rootSource: DependencySource | null;
   private lockfileV4Helpers: LockfileV4Helpers | undefined;
   private modes: string[];
+  private onFetchFailed:
+    | ((report: MovePackageFetchFailedReport) => void)
+    | undefined;
 
   constructor(
     fetcher: MovePackageFetcher,
     network: "mainnet" | "testnet" | "devnet" = "mainnet",
     rootSource: DependencySource | null = null,
     lockfileV4Helpers?: LockfileV4Helpers,
-    modes: string[] = []
+    modes: string[] = [],
+    onFetchFailed?: (report: MovePackageFetchFailedReport) => void
   ) {
     this.fetcher = fetcher;
     this.network = network;
     this.rootSource = rootSource;
     this.lockfileV4Helpers = lockfileV4Helpers;
     this.modes = modes;
+    this.onFetchFailed = onFetchFailed;
   }
 
   /**
@@ -314,69 +326,123 @@ export class Resolver {
   private async fetchManifestGraphPackage(
     request: ManifestGraphFetchRequest
   ): Promise<ManifestGraphFetchedPackage> {
-    const requestedSource = { ...request.source };
-    const source = { ...request.source };
-    let files: Record<string, string>;
+    try {
+      const requestedSource = { ...request.source };
+      const source = { ...request.source };
+      let files: Record<string, string>;
 
-    if (source.type === "git") {
-      if (!source.git || !source.rev) {
+      if (source.type === "git") {
+        if (!source.git || !source.rev) {
+          throw new Error(
+            `Manifest dependency '${request.dependencyName}' has invalid git source`
+          );
+        }
+        files = await this.fetcher.fetch(source.git, source.rev, source.subdir);
+        if (!files || Object.keys(files).length === 0) {
+          throw new Error(
+            `Dependency '${request.dependencyName}' from ${this.describeLockfileV4Source(source)} returned no files`
+          );
+        }
+        const resolvedSha =
+          typeof this.fetcher.getResolvedSha === "function"
+            ? this.fetcher.getResolvedSha(source.git, source.rev)
+            : undefined;
+        if (resolvedSha) {
+          source.rev = resolvedSha;
+        }
+      } else if (source.type === "local") {
+        if (!source.local) {
+          throw new Error(
+            `Manifest dependency '${request.dependencyName}' has invalid local source`
+          );
+        }
+        if (typeof this.fetcher.fetchLocal !== "function") {
+          throw new Error(
+            `Local dependency '${request.dependencyName}' at '${source.local}' requires fetcher.fetchLocal(localPath, context)`
+          );
+        }
+        files = await this.fetcher.fetchLocal(source.local, {
+          dependencyName: request.dependencyName,
+          parentPackageName: request.parentPackageName,
+          parentSource: this.lockfileV4SourceToParentDependencySource(
+            request.parentSource
+          ),
+          network: this.network,
+        });
+        if (!files || Object.keys(files).length === 0) {
+          throw new Error(
+            `Local dependency '${request.dependencyName}' at '${source.local}' returned no files`
+          );
+        }
+      } else {
         throw new Error(
-          `Manifest dependency '${request.dependencyName}' has invalid git source`
+          `Dependency '${request.dependencyName}' has unsupported source ${this.describeLockfileV4Source(source)}`
         );
       }
-      files = await this.fetcher.fetch(source.git, source.rev, source.subdir);
-      if (!files || Object.keys(files).length === 0) {
+
+      if (!this.filesIncludeMoveToml(files)) {
         throw new Error(
-          `Dependency '${request.dependencyName}' from ${this.describeLockfileV4Source(source)} returned no files`
+          `Dependency '${request.dependencyName}' from ${this.describeLockfileV4Source(source)} did not provide Move.toml`
         );
       }
-      const resolvedSha =
-        typeof this.fetcher.getResolvedSha === "function"
-          ? this.fetcher.getResolvedSha(source.git, source.rev)
-          : undefined;
-      if (resolvedSha) {
-        source.rev = resolvedSha;
-      }
-    } else if (source.type === "local") {
-      if (!source.local) {
-        throw new Error(
-          `Manifest dependency '${request.dependencyName}' has invalid local source`
-        );
-      }
-      if (typeof this.fetcher.fetchLocal !== "function") {
-        throw new Error(
-          `Local dependency '${request.dependencyName}' at '${source.local}' requires fetcher.fetchLocal(localPath, context)`
-        );
-      }
-      files = await this.fetcher.fetchLocal(source.local, {
+
+      return {
+        source,
+        requestedSource,
+        files,
+      };
+    } catch (error) {
+      this.emitFetchFailed({
         dependencyName: request.dependencyName,
+        source: request.source,
         parentPackageName: request.parentPackageName,
-        parentSource: this.lockfileV4SourceToParentDependencySource(
-          request.parentSource
-        ),
-        network: this.network,
+        parentSource: request.parentSource,
+        error,
       });
-      if (!files || Object.keys(files).length === 0) {
-        throw new Error(
-          `Local dependency '${request.dependencyName}' at '${source.local}' returned no files`
-        );
-      }
-    } else {
-      throw new Error(
-        `Dependency '${request.dependencyName}' has unsupported source ${this.describeLockfileV4Source(source)}`
-      );
+      throw error;
     }
+  }
 
-    if (!this.filesIncludeMoveToml(files)) {
-      throw new Error(
-        `Dependency '${request.dependencyName}' from ${this.describeLockfileV4Source(source)} did not provide Move.toml`
-      );
+  private emitFetchFailed(input: {
+    dependencyName: string;
+    source: LockfileV4PlanSource | DependencySource;
+    parentPackageName?: string;
+    parentSource?: LockfileV4PlanSource | DependencySource;
+    error: unknown;
+  }): void {
+    if (!this.onFetchFailed) {
+      return;
     }
+    const code = fetchFailureCode(input.error);
+    this.onFetchFailed({
+      dependencyName: input.dependencyName,
+      source: this.publicSource(input.source),
+      ...(input.parentPackageName
+        ? { parentPackageName: input.parentPackageName }
+        : {}),
+      ...(input.parentSource
+        ? { parentSource: this.publicSource(input.parentSource) }
+        : {}),
+      error:
+        input.error instanceof Error
+          ? input.error.message
+          : String(input.error),
+      ...(code ? { code } : {}),
+    });
+  }
 
+  private publicSource(
+    source: LockfileV4PlanSource | DependencySource
+  ): MovePackageFetchFailedSource {
     return {
-      source,
-      requestedSource,
-      files,
+      type: source.type,
+      ...("git" in source && source.git ? { git: source.git } : {}),
+      ...("rev" in source && source.rev ? { rev: source.rev } : {}),
+      ...("subdir" in source && source.subdir ? { subdir: source.subdir } : {}),
+      ...("local" in source && source.local ? { local: source.local } : {}),
+      ...("address" in source && source.address
+        ? { address: source.address }
+        : {}),
     };
   }
 
@@ -675,46 +741,66 @@ export class Resolver {
     parentPackageName: string,
     parentSource: DependencySource
   ): Promise<FetchedDependencySource> {
-    if (source.type === "git" && source.git && source.rev) {
-      const files = await this.fetcher.fetch(
-        source.git,
-        source.rev,
-        source.subdir
-      );
-      if (Object.keys(files).length === 0) {
-        throw new Error(
-          `Dependency '${dependencyName}' from ${this.describeSource(source)} returned no files`
+    try {
+      if (source.type === "git" && source.git && source.rev) {
+        const files = await this.fetcher.fetch(
+          source.git,
+          source.rev,
+          source.subdir
         );
+        if (Object.keys(files).length === 0) {
+          throw new Error(
+            `Dependency '${dependencyName}' from ${this.describeSource(source)} returned no files`
+          );
+        }
+        const resolvedSha =
+          typeof this.fetcher.getResolvedSha === "function"
+            ? this.fetcher.getResolvedSha(source.git, source.rev)
+            : undefined;
+        return {
+          source: {
+            type: "git",
+            git: source.git,
+            rev: resolvedSha || source.rev,
+            subdir: source.subdir,
+          },
+          files,
+        };
       }
-      const resolvedSha =
-        typeof this.fetcher.getResolvedSha === "function"
-          ? this.fetcher.getResolvedSha(source.git, source.rev)
-          : undefined;
-      return {
-        source: {
-          type: "git",
-          git: source.git,
-          rev: resolvedSha || source.rev,
-          subdir: source.subdir,
-        },
-        files,
-      };
+      if (source.type === "local" && source.local) {
+        return {
+          source: { type: "local", local: source.local },
+          files: await this.fetchLocalPackage(
+            source.local,
+            dependencyName,
+            parentPackageName,
+            parentSource
+          ),
+        };
+      }
+      throw new Error(
+        `Dependency '${dependencyName}' has unsupported source ${this.describeSource(source)}`
+      );
+    } catch (error) {
+      this.emitFetchFailed({
+        dependencyName,
+        source,
+        parentPackageName,
+        parentSource,
+        error,
+      });
+      throw error;
     }
-    if (source.type === "local" && source.local) {
-      return {
-        source: { type: "local", local: source.local },
-        files: await this.fetchLocalPackage(
-          source.local,
-          dependencyName,
-          parentPackageName,
-          parentSource
-        ),
-      };
-    }
-    throw new Error(
-      `Dependency '${dependencyName}' has unsupported source ${this.describeSource(source)}`
-    );
   }
+}
+
+function fetchFailureCode(error: unknown): string | undefined {
+  const structuredCode = structuredErrorCode(error);
+  if (structuredCode) {
+    return structuredCode;
+  }
+  const code = (error as { code?: unknown } | undefined)?.code;
+  return typeof code === "string" && code.length > 0 ? code : undefined;
 }
 
 export async function resolve(
@@ -724,7 +810,8 @@ export async function resolve(
   network: "mainnet" | "testnet" | "devnet" = "mainnet",
   rootSource?: DependencySource,
   lockfileV4Helpers?: LockfileV4Helpers,
-  modes: string[] = []
+  modes: string[] = [],
+  onFetchFailed?: (report: MovePackageFetchFailedReport) => void
 ): Promise<{
   files: string;
   dependencies: string;
@@ -736,7 +823,8 @@ export async function resolve(
     network,
     rootSource || null,
     lockfileV4Helpers,
-    modes
+    modes,
+    onFetchFailed
   );
   return resolver.resolve(rootMoveTomlContent, rootSourceFiles);
 }

@@ -67,6 +67,8 @@ pub(super) struct VerificationOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) current_summary: Option<ArtifactSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) source_compatibility: Option<SourceCompatibility>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) bytecode_header_evidence: Option<BytecodeHeaderEvidence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) differences: Vec<String>,
@@ -74,6 +76,34 @@ pub(super) struct VerificationOutput {
     pub(super) bytecode_diffs: Vec<BytecodeDiff>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) error: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SourceCompatibility {
+    pub(super) supported_editions: Vec<String>,
+    pub(super) default_edition: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) root: Option<SourceEditionEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) dependencies: Vec<SourceEditionEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) unsupported_editions: Vec<SourceEditionEvidence>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SourceEditionEvidence {
+    pub(super) source: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) package_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) manifest_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) declared_edition: Option<String>,
+    pub(super) effective_edition: String,
+    pub(super) defaulted: bool,
+    pub(super) supported: bool,
 }
 
 #[derive(Serialize, Clone)]

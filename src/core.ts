@@ -1,7 +1,10 @@
 import type { MovePackageFetcher } from "./fetcher.js";
 import { generateMoveLockV4FromJson } from "./lockfileGenerator.js";
 import { structuredErrorCode } from "./structuredError.js";
-import type { MovePackageStageReport } from "./stageReports.js";
+import type {
+  MovePackageFetchFailedReport,
+  MovePackageStageReport,
+} from "./stageReports.js";
 import {
   applyLegacyPublicationMigrationToFiles,
   compilerModes,
@@ -30,6 +33,7 @@ export type MovePackageProgressEvent =
   | { type: "compile_start" }
   | { type: "compile_complete" }
   | { type: "lockfile_generate" }
+  | ({ type: "fetch_failed" } & MovePackageFetchFailedReport)
   | ({ type: "stage_trace" } & MovePackageStageReport);
 
 /** Callback function for receiving build progress events */
@@ -37,7 +41,11 @@ export type MovePackageProgressCallback = (
   event: MovePackageProgressEvent
 ) => void;
 
-export type { MovePackageStageReport } from "./stageReports.js";
+export type {
+  MovePackageFetchFailedReport,
+  MovePackageFetchFailedSource,
+  MovePackageStageReport,
+} from "./stageReports.js";
 
 export interface MovePackageResolvedDependencies {
   /** JSON string of resolved files for the root package */

@@ -1,6 +1,7 @@
 mod compare;
 mod normalize;
 mod parse;
+mod source_compatibility;
 mod types;
 
 use crate::compiler_support::compile_impl;
@@ -11,6 +12,7 @@ use normalize::{
     normalize_optional_root_address, normalize_string_dependencies,
 };
 use parse::{bytecode_header_evidence_if_mismatch, current_sui_version, parse_artifact};
+use source_compatibility::source_compatibility_evidence;
 use types::{
     summary_for_verdict, BuildOutput, BuildVersionMetadata, VerificationInput, VerificationOutput,
     FAILURE_STAGE_COMPILE, FAILURE_STAGE_COMPILER_OUTPUT, FAILURE_STAGE_INPUT_VALIDATION,
@@ -29,6 +31,7 @@ pub(crate) fn verify_against_reference(input_json: &str) -> String {
             current_build: None,
             reference_summary: None,
             current_summary: None,
+            source_compatibility: None,
             bytecode_header_evidence: None,
             differences: Vec::new(),
             bytecode_diffs: Vec::new(),
@@ -50,6 +53,8 @@ pub(crate) fn verify_against_reference(input_json: &str) -> String {
 fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput, String> {
     let input: VerificationInput = serde_json::from_str(input_json)
         .map_err(|error| format!("Invalid verification input: {}", error))?;
+    let source_compatibility =
+        source_compatibility_evidence(input.files.as_str(), input.dependencies.as_str());
 
     let publish_intent = match verification_compile_intent(input.options.as_ref()) {
         Ok(intent) => intent == "publish",
@@ -62,6 +67,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
                 current_build: None,
                 reference_summary: None,
                 current_summary: None,
+                source_compatibility,
                 bytecode_header_evidence: None,
                 differences: Vec::new(),
                 bytecode_diffs: Vec::new(),
@@ -103,6 +109,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
                 current_build: None,
                 reference_summary: None,
                 current_summary: None,
+                source_compatibility,
                 bytecode_header_evidence: None,
                 differences: Vec::new(),
                 bytecode_diffs: Vec::new(),
@@ -129,6 +136,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
             current_build: None,
             reference_summary: Some(reference.summary),
             current_summary: None,
+            source_compatibility,
             bytecode_header_evidence: None,
             differences: Vec::new(),
             bytecode_diffs: Vec::new(),
@@ -147,6 +155,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
                 current_build: None,
                 reference_summary: Some(reference.summary),
                 current_summary: None,
+                source_compatibility,
                 bytecode_header_evidence: None,
                 differences: Vec::new(),
                 bytecode_diffs: Vec::new(),
@@ -167,6 +176,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
                 current_build: Some(current_build),
                 reference_summary: Some(reference.summary),
                 current_summary: None,
+                source_compatibility,
                 bytecode_header_evidence: None,
                 differences: Vec::new(),
                 bytecode_diffs: Vec::new(),
@@ -200,6 +210,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
                 current_build: Some(current_build),
                 reference_summary: Some(reference.summary),
                 current_summary: None,
+                source_compatibility,
                 bytecode_header_evidence: None,
                 differences: Vec::new(),
                 bytecode_diffs: Vec::new(),
@@ -219,6 +230,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
                 current_build: Some(current_build),
                 reference_summary: Some(reference.summary),
                 current_summary: Some(current.summary),
+                source_compatibility,
                 bytecode_header_evidence: None,
                 differences: Vec::new(),
                 bytecode_diffs: Vec::new(),
@@ -253,6 +265,7 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
         current_build: Some(current_build),
         reference_summary: Some(reference.summary),
         current_summary: Some(current.summary),
+        source_compatibility,
         bytecode_header_evidence,
         differences: comparison.differences,
         bytecode_diffs: comparison.bytecode_diffs,

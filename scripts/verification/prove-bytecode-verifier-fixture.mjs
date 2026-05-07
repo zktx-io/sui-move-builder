@@ -3,25 +3,13 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { loadBytecodeVerifierManifest } from "./bytecode-verifier-manifest.mjs";
 import { inspectReferenceArtifact } from "./inspect-reference-artifact.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../.."
 );
-
-const fixtures = {
-  "apps-kiosk": {
-    name: "apps-kiosk",
-    network: "mainnet",
-    git: "https://github.com/MystenLabs/apps.git",
-    rev: "e159ab3fc45a6f1ca46025c46c915988023af8b6",
-    subdir: "kiosk",
-    txDigest: "LexwBJLt1jMwhNsNCkU4jiWwZPaAeqwhgLy2RPZbd2n",
-    cachedAuditDir:
-      ".sui-build/parity-transaction-artifact-output/verification/apps-kiosk",
-  },
-};
 
 function parseArgs(argv) {
   const args = {};
@@ -277,25 +265,132 @@ function assertExpected(args, result, surface, referenceInspection) {
   return errors;
 }
 
+function verifierFixture(entry, fixtureName) {
+  return entry.knownFixtures?.find((fixture) => fixture.name === fixtureName);
+}
+
+function fixtureRecords(manifest, fixtureName) {
+  return Object.values(manifest.verifiers)
+    .map((entry) => ({
+      entry,
+      fixture: verifierFixture(entry, fixtureName),
+    }))
+    .filter((record) => record.fixture);
+}
+
+function fixtureFromKnownFixture(fixture) {
+  const rootGit = fixture.rootGit;
+  return {
+    name: fixture.name,
+    network: fixture.network,
+    git: rootGit.git,
+    rev: rootGit.rev,
+    subdir: rootGit.subdir || "",
+    txDigest: fixture.txDigest,
+    cachedAuditDir: path.join(
+      ".sui-build",
+      "parity-transaction-artifact-output",
+      "verification",
+      fixture.name
+    ),
+  };
+}
+
+function resolveFixtureRecord(manifest, fixtureName, verifierId) {
+  if (verifierId) {
+    const entry = manifest.verifiers[verifierId];
+    if (!entry) {
+      throw new Error(`Unknown verifier: ${verifierId}`);
+    }
+    const fixture = verifierFixture(entry, fixtureName);
+    if (fixture) {
+      return { entry, fixture };
+    }
+    const records = fixtureRecords(manifest, fixtureName);
+    if (records.length === 1) {
+      return records[0];
+    }
+    throw new Error(
+      `Fixture '${fixtureName}' is not listed for verifier ${verifierId}`
+    );
+  }
+
+  const records = fixtureRecords(manifest, fixtureName);
+  if (records.length === 1) {
+    return records[0];
+  }
+  if (records.length > 1) {
+    throw new Error(
+      `Fixture '${fixtureName}' is known by multiple verifiers (${records
+        .map((record) => record.entry.verifierId)
+        .join(", ")}); pass --verifier-id explicitly`
+    );
+  }
+  throw new Error(
+    `Fixture '${fixtureName}' is not listed in bytecode verifier knownFixtures`
+  );
+}
+
+function inferVerifierId(manifest, fixtureName) {
+  const candidates = fixtureRecords(manifest, fixtureName).map(
+    (record) => record.entry.verifierId
+  );
+  if (candidates.length === 1) {
+    return candidates[0];
+  }
+  if (candidates.length > 1) {
+    throw new Error(
+      `Fixture '${fixtureName}' is known by multiple verifiers (${candidates.join(
+        ", "
+      )}); pass --verifier-id explicitly`
+    );
+  }
+  throw new Error(
+    `--verifier-id is required for unknown fixture ${fixtureName}`
+  );
+}
+
+function defaultSuiSourceDir(verifierId, entry) {
+  if (entry.status === "current") {
+    return path.join(".sui-build", "source");
+  }
+  return path.join(".sui-build", "bytecode-verifiers", verifierId, "source");
+}
+
+function applyVerifierDefaults(args, fixtureName, manifest) {
+  const verifierId =
+    args["verifier-id"] || inferVerifierId(manifest, fixtureName);
+  const entry = manifest.verifiers[verifierId];
+  if (!entry) {
+    throw new Error(`Unknown verifier: ${verifierId}`);
+  }
+  const knownFixture = verifierFixture(entry, fixtureName);
+  return {
+    ...args,
+    "verifier-id": verifierId,
+    "dist-dir": args["dist-dir"] || "dist/verification",
+    "sui-source-dir":
+      args["sui-source-dir"] || defaultSuiSourceDir(verifierId, entry),
+    "sui-source-commit": args["sui-source-commit"] || entry.commit,
+    "sui-source-tag": args["sui-source-tag"] || entry.tag,
+    "expect-status": args["expect-status"] || knownFixture?.expectedStatus,
+    "expect-verdict": args["expect-verdict"] || knownFixture?.expectedVerdict,
+    "expect-verifier-id": args["expect-verifier-id"] || verifierId,
+    "expect-sui-version": args["expect-sui-version"] || entry.suiVersion,
+  };
+}
+
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  let args = parseArgs(process.argv.slice(2));
   const fixtureName = args.fixture || "apps-kiosk";
-  const fixture = fixtures[fixtureName];
-  if (!fixture) {
-    throw new Error(`Unknown fixture: ${fixtureName}`);
-  }
-  if (!args["verifier-id"]) {
-    throw new Error("--verifier-id is required");
-  }
-  if (!args["dist-dir"]) {
-    throw new Error("--dist-dir is required");
-  }
-  if (!args["sui-source-dir"]) {
-    throw new Error("--sui-source-dir is required");
-  }
-  if (!args["sui-source-commit"]) {
-    throw new Error("--sui-source-commit is required");
-  }
+  const { manifest } = loadBytecodeVerifierManifest(repoRoot);
+  const fixtureRecord = resolveFixtureRecord(
+    manifest,
+    fixtureName,
+    args["verifier-id"]
+  );
+  const fixture = fixtureFromKnownFixture(fixtureRecord.fixture);
+  args = applyVerifierDefaults(args, fixtureName, manifest);
 
   const auditDir = path.resolve(repoRoot, fixture.cachedAuditDir);
   const packageDir = path.join(auditDir, "source", fixture.subdir);

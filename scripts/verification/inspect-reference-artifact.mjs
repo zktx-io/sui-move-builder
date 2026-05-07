@@ -196,7 +196,6 @@ export function inspectReferenceArtifact(raw) {
   );
   const versions = [...new Set(modules.map((module) => module.decodedVersion))];
   const flavors = [...new Set(modules.map((module) => module.flavor))];
-  const flavor = flavors.length === 1 && flavors[0] !== 0 ? flavors[0] : null;
 
   if (versions.length !== 1) {
     throw new Error(
@@ -208,6 +207,8 @@ export function inspectReferenceArtifact(raw) {
       `Reference artifact modules must use one bytecode flavor, got ${flavors.join(", ")}`
     );
   }
+  const flavor =
+    flavors.length === 1 ? bytecodeFlavor(versions[0], flavors[0]) : undefined;
   const warnings = [];
   if (versions[0] <= 6 && flavors.some((item) => item !== 0)) {
     warnings.push(
@@ -234,6 +235,13 @@ export function inspectReferenceArtifact(raw) {
     },
     warnings,
   };
+}
+
+function bytecodeFlavor(decodedVersion, rawFlavor) {
+  if (rawFlavor !== 0) {
+    return rawFlavor;
+  }
+  return decodedVersion <= 6 ? null : 0;
 }
 
 async function main() {

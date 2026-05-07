@@ -48,6 +48,18 @@ if (v7.bytecode.decodedVersion !== 7 || v7.bytecode.flavor !== 5) {
   throw new Error(`Expected v7 flavor 5, got ${JSON.stringify(v7)}`);
 }
 
+const v7FlavorZero = inspectReferenceArtifact(fixture([moduleBase64(7, 0)]));
+if (
+  v7FlavorZero.bytecode.decodedVersion !== 7 ||
+  v7FlavorZero.bytecode.flavor !== 0
+) {
+  throw new Error(
+    `Expected v7 flavor 0 to stay observable, got ${JSON.stringify(
+      v7FlavorZero
+    )}`
+  );
+}
+
 const transactionArtifactShape = inspectReferenceArtifact({
   source: "grpc",
   digest: "transaction-digest",

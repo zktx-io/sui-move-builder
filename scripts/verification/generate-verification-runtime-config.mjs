@@ -6,7 +6,6 @@ import {
   getRepoRoot,
   loadBytecodeVerifierManifest,
 } from "./bytecode-verifier-manifest.mjs";
-import { loadBytecodeVersionSourceRecords } from "./bytecode-version-source-records.mjs";
 
 export function getVerificationRuntimeConfigPath(repoRoot = getRepoRoot()) {
   return path.join(
@@ -19,23 +18,10 @@ export function getVerificationRuntimeConfigPath(repoRoot = getRepoRoot()) {
 
 export function buildVerificationRuntimeConfigSource(repoRoot = getRepoRoot()) {
   const { manifest } = loadBytecodeVerifierManifest(repoRoot);
-  const { sourceRecords } = loadBytecodeVersionSourceRecords(repoRoot);
-  return buildVerificationRuntimeConfigSourceFromInputs(
-    manifest,
-    sourceRecords
-  );
+  return buildVerificationRuntimeConfigSourceFromInputs(manifest);
 }
 
-export function buildVerificationRuntimeConfigSourceFromInputs(
-  manifest,
-  sourceRecords
-) {
-  const sourceRecordByVersion = new Map(
-    sourceRecords.records.map((record) => [
-      Number(record.decodedBytecodeVersion),
-      record,
-    ])
-  );
+export function buildVerificationRuntimeConfigSourceFromInputs(manifest) {
   const routes = {};
   const verifiers = {};
 
@@ -44,15 +30,9 @@ export function buildVerificationRuntimeConfigSourceFromInputs(
   )) {
     const decodedBytecodeVersion = Number.parseInt(versionText, 10);
     const verifier = manifest.verifiers[route.verifier];
-    const sourceRecord = sourceRecordByVersion.get(decodedBytecodeVersion);
     if (!verifier) {
       throw new Error(
         `Route for bytecode version ${versionText} names missing verifier ${route.verifier}`
-      );
-    }
-    if (!sourceRecord?.signals?.moveCompilerEditions) {
-      throw new Error(
-        `Route for bytecode version ${versionText} needs moveCompilerEditions in bytecode-version-sources.json`
       );
     }
 
@@ -70,9 +50,6 @@ export function buildVerificationRuntimeConfigSourceFromInputs(
         route,
         route.verifier === manifest.current
       ),
-      supportedEditions:
-        sourceRecord.signals.moveCompilerEditions.validEditions,
-      defaultEdition: sourceRecord.signals.moveCompilerEditions.defaultEdition,
     };
   }
 
@@ -122,8 +99,8 @@ function importSpecifierForRoute(route, isCurrent) {
 
 function generatedHeader() {
   return `// AUTO-GENERATED. Do not edit directly.
-// Generated from scripts/verification/bytecode-verifiers.json and scripts/verification/bytecode-version-sources.json.
-// Run npm run generate:verification-runtime-config after changing either source.
+// Generated from scripts/verification/bytecode-verifiers.json.
+// Run npm run generate:verification-runtime-config after changing that source.
 
 `;
 }

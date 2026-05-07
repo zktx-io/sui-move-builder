@@ -145,7 +145,8 @@ export async function resolveSnapshotDependencies(
     input.network,
     rootGitSource(input),
     helpers,
-    packageSelectionModes(input)
+    packageSelectionModes(input),
+    (report) => input.onProgress?.({ type: "fetch_failed", ...report })
   );
 
   return {

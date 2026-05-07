@@ -13,6 +13,8 @@ export type {
   MovePackageDumpSuccess,
   MovePackageFailure,
   MovePackageFailureCategory,
+  MovePackageFetchFailedReport,
+  MovePackageFetchFailedSource,
   MovePackageGitSource,
   MovePackageInput,
   MovePackageIntent,

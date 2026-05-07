@@ -145,10 +145,15 @@ Failures return `{ error, category, code? }`. `category` is a broad stage label 
 | ------------------- | -------------------------------------------------------------------------------------------------------- |
 | `resolve_start`     | Dependency resolution started                                                                            |
 | `stage_trace`       | `stage`, `environment`, `modes`, and optional graph count fields for Rust/WASM graph and lockfile stages |
+| `fetch_failed`      | `dependencyName`, `source`, optional parent package/source, `error`, and optional structured `code`      |
 | `resolve_complete`  | `count` dependency packages selected for compiler input                                                  |
 | `compile_start`     | Compiler invocation started                                                                              |
 | `compile_complete`  | Compiler invocation completed                                                                            |
 | `lockfile_generate` | `Move.lock` V4 generation started                                                                        |
+
+`fetch_failed` is emitted for dependency-resolution package fetch failures. It is not emitted by root package loading helpers such as `fetchMovePackageFromGitHub`; callers should handle those helper errors directly. The `source.type` field currently uses `git`, `local`, `onchain`, or `root`. `source.git` mirrors the configured dependency URL, so avoid embedding credentials in Git URLs when progress events may be logged.
+
+Progress events are an additive union across package releases. Exhaustive TypeScript switches should include a default branch or be updated when upgrading.
 
 ## Move Unit Test Output
 
