@@ -33,7 +33,7 @@ The package is published with three generated variants:
 
 1. **Lite Version (Default)**: Build-focused artifact without the WASM test runner dependencies.
 2. **Full Version**: Includes the lite build APIs plus the WASM `testing` feature for Move unit test execution.
-3. **Verification Version**: Rebuilds source with the pinned verifier WASM and compares the result with caller-supplied reference bytecode for source provenance checks.
+3. **Verification Version**: Rebuilds source with the pinned verifier WASM and compares the result with caller-supplied reference bytecode for source provenance checks. The verification entrypoint also bundles decoded-bytecode-version 6 verifier artifacts under `dist/verification/v6` and lazy-loads them when reference modules require that verifier.
 
 ### Using the Lite Version (Default)
 

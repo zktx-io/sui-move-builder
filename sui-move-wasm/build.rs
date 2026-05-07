@@ -1,6 +1,15 @@
 use std::{fs, path::PathBuf};
 
 const SYSTEM_GIT_REPO: &str = "https://github.com/MystenLabs/sui.git";
+const SYSTEM_STDLIB_ID: &str = "0x0000000000000000000000000000000000000000000000000000000000000001";
+const SYSTEM_SUI_ID: &str = "0x0000000000000000000000000000000000000000000000000000000000000002";
+const SYSTEM_SUI_SYSTEM_ID: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000003";
+const SYSTEM_BRIDGE_ID: &str = "0x000000000000000000000000000000000000000000000000000000000000000b";
+const SYSTEM_STDLIB_SUBDIR: &str = "crates/sui-framework/packages/move-stdlib";
+const SYSTEM_SUI_SUBDIR: &str = "crates/sui-framework/packages/sui-framework";
+const SYSTEM_SUI_SYSTEM_SUBDIR: &str = "crates/sui-framework/packages/sui-system";
+const SYSTEM_BRIDGE_SUBDIR: &str = "crates/sui-framework/packages/bridge";
 
 fn package_version_from_lock(lock_contents: &str, package_name: &str) -> Option<String> {
     let mut in_pkg = false;
@@ -59,6 +68,74 @@ fn framework_snapshot_manifest_path(manifest_dir: &std::path::Path) -> Option<Pa
     None
 }
 
+fn emit_system_package_subdir(name: &str, path: &str) -> bool {
+    match name {
+        "MoveStdlib" => {
+            println!("cargo:rustc-env=SUI_SYSTEM_STDLIB_SUBDIR={}", path);
+            true
+        }
+        "Sui" => {
+            println!("cargo:rustc-env=SUI_SYSTEM_SUI_SUBDIR={}", path);
+            true
+        }
+        "SuiSystem" => {
+            println!("cargo:rustc-env=SUI_SYSTEM_SUI_SYSTEM_SUBDIR={}", path);
+            true
+        }
+        "Bridge" => {
+            println!("cargo:rustc-env=SUI_SYSTEM_BRIDGE_SUBDIR={}", path);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn normalize_package_id(value: &str) -> Option<String> {
+    let trimmed = value.trim().to_ascii_lowercase();
+    let hex = trimmed.strip_prefix("0x").unwrap_or(trimmed.as_str());
+    if hex.is_empty() || hex.len() > 64 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(format!("0x{:0>64}", hex))
+}
+
+fn emit_system_package_id_subdir(package_id: &str) -> bool {
+    let Some(package_id) = normalize_package_id(package_id) else {
+        return false;
+    };
+    match package_id.as_str() {
+        SYSTEM_STDLIB_ID => {
+            println!(
+                "cargo:rustc-env=SUI_SYSTEM_STDLIB_SUBDIR={}",
+                SYSTEM_STDLIB_SUBDIR
+            );
+            true
+        }
+        SYSTEM_SUI_ID => {
+            println!(
+                "cargo:rustc-env=SUI_SYSTEM_SUI_SUBDIR={}",
+                SYSTEM_SUI_SUBDIR
+            );
+            true
+        }
+        SYSTEM_SUI_SYSTEM_ID => {
+            println!(
+                "cargo:rustc-env=SUI_SYSTEM_SUI_SYSTEM_SUBDIR={}",
+                SYSTEM_SUI_SYSTEM_SUBDIR
+            );
+            true
+        }
+        SYSTEM_BRIDGE_ID => {
+            println!(
+                "cargo:rustc-env=SUI_SYSTEM_BRIDGE_SUBDIR={}",
+                SYSTEM_BRIDGE_SUBDIR
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
 fn emit_system_package_snapshot(manifest_dir: &std::path::Path) {
     let Some(path) = framework_snapshot_manifest_path(manifest_dir) else {
         println!(
@@ -93,33 +170,39 @@ fn emit_system_package_snapshot(manifest_dir: &std::path::Path) {
     let Some(rev) = latest.get("git_revision").and_then(|value| value.as_str()) else {
         return;
     };
-    let Some(packages) = latest.get("packages").and_then(|value| value.as_array()) else {
-        return;
-    };
 
     println!(
         "cargo:rustc-env=SUI_SYSTEM_PACKAGE_REPO={}",
         SYSTEM_GIT_REPO
     );
     println!("cargo:rustc-env=SUI_SYSTEM_PACKAGE_REV={}", rev);
-    for package in packages {
-        let name = package.get("name").and_then(|value| value.as_str());
-        let path = package.get("path").and_then(|value| value.as_str());
-        match (name, path) {
-            (Some("MoveStdlib"), Some(path)) => {
-                println!("cargo:rustc-env=SUI_SYSTEM_STDLIB_SUBDIR={}", path);
+
+    let mut emitted_package_count = 0;
+    if let Some(packages) = latest.get("packages").and_then(|value| value.as_array()) {
+        for package in packages {
+            let name = package.get("name").and_then(|value| value.as_str());
+            let path = package.get("path").and_then(|value| value.as_str());
+            if let (Some(name), Some(path)) = (name, path) {
+                if emit_system_package_subdir(name, path) {
+                    emitted_package_count += 1;
+                }
             }
-            (Some("Sui"), Some(path)) => {
-                println!("cargo:rustc-env=SUI_SYSTEM_SUI_SUBDIR={}", path);
-            }
-            (Some("SuiSystem"), Some(path)) => {
-                println!("cargo:rustc-env=SUI_SYSTEM_SUI_SYSTEM_SUBDIR={}", path);
-            }
-            (Some("Bridge"), Some(path)) => {
-                println!("cargo:rustc-env=SUI_SYSTEM_BRIDGE_SUBDIR={}", path);
-            }
-            _ => {}
         }
+    } else if let Some(package_ids) = latest.get("package_ids").and_then(|value| value.as_array()) {
+        for package_id in package_ids {
+            let Some(package_id) = package_id.as_str() else {
+                continue;
+            };
+            if emit_system_package_id_subdir(package_id) {
+                emitted_package_count += 1;
+            }
+        }
+    }
+    if emitted_package_count == 0 {
+        println!(
+            "cargo:warning=sui-move-wasm found framework snapshot {}, but it did not expose supported system package entries",
+            path.to_string_lossy()
+        );
     }
     println!("cargo:rerun-if-changed={}", path.to_string_lossy());
 }
