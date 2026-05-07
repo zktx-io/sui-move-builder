@@ -320,6 +320,46 @@ function validateKnownFixture(fixture, label, verifier) {
     `${label}.referenceInspection`,
     verifier
   );
+  validateKnownFixtureManifest(
+    fixture.referenceManifest,
+    `${label}.referenceManifest`,
+    verifier
+  );
+}
+
+function validateKnownFixtureManifest(referenceManifest, label, verifier) {
+  assertObject(referenceManifest, label);
+  assertValue(
+    referenceManifest.edition === null ||
+      typeof referenceManifest.edition === "string",
+    `${label}.edition must be a string or null`
+  );
+  assertValue(
+    typeof referenceManifest.defaulted === "boolean",
+    `${label}.defaulted must be a boolean`
+  );
+  if (referenceManifest.defaulted) {
+    assertValue(
+      referenceManifest.edition === null,
+      `${label}.edition must be null when defaulted`
+    );
+  }
+  const effectiveEdition =
+    referenceManifest.edition ?? defaultEditionForVerifier(verifier);
+  assertValue(
+    supportedEditionsForVerifier(verifier).includes(effectiveEdition),
+    `${label}.edition ${effectiveEdition} is not supported by verifier ${verifier.verifierId}`
+  );
+}
+
+function supportedEditionsForVerifier(verifier) {
+  return verifier.bytecodeVersion === 6
+    ? ["legacy", "2024.alpha", "2024.beta"]
+    : ["legacy", "2024.alpha", "2024.beta", "2024"];
+}
+
+function defaultEditionForVerifier(verifier) {
+  return verifier.bytecodeVersion === 6 ? "legacy" : "2024";
 }
 
 function validateKnownFixtureInspection(inspection, label, verifier) {

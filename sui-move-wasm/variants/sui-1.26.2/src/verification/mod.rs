@@ -120,18 +120,19 @@ fn verify_against_reference_impl(input_json: &str) -> Result<VerificationOutput,
     };
     let compile_result = compile_impl(&input.files, &input.dependencies, options_json);
     if !compile_result.success() {
+        let error = compile_result.output();
         return Ok(VerificationOutput {
             status: "build_failure",
             verdict: Some(VERDICT_UNVERIFIED),
             summary: Some(summary_for_verdict(VERDICT_UNVERIFIED)),
-            failure_stage: Some(FAILURE_STAGE_COMPILE),
+            failure_stage: Some(compile_failure_stage(error.as_str())),
             current_build: None,
             reference_summary: Some(reference.summary),
             current_summary: None,
             bytecode_header_evidence: None,
             differences: Vec::new(),
             bytecode_diffs: Vec::new(),
-            error: Some(compile_result.output()),
+            error: Some(error),
         });
     }
 
@@ -285,5 +286,13 @@ fn verification_compile_intent(options: Option<&serde_json::Value>) -> Result<&s
             "Invalid verification intent '{}'. Expected one of: publish, upgrade",
             value
         )),
+    }
+}
+
+fn compile_failure_stage(error: &str) -> &'static str {
+    if error.starts_with("Invalid Move edition ") {
+        FAILURE_STAGE_INPUT_VALIDATION
+    } else {
+        FAILURE_STAGE_COMPILE
     }
 }

@@ -221,8 +221,12 @@ function summarize(result) {
     status: result.status,
     verdict: result.verdict,
     summary: result.summary,
+    displayMessage: result.displayMessage,
     failureStage: result.failureStage,
     error: result.error,
+    selectedVerifier: result.selectedVerifier,
+    referenceBytecode: result.referenceBytecode,
+    sourceCompatibility: result.sourceCompatibility,
     currentModuleCount: result.currentBuild?.modules?.length,
     referenceModuleCount: result.referenceSummary?.moduleCount,
     bytecodeDiffCount: result.bytecodeDiffs?.length ?? 0,
@@ -247,12 +251,22 @@ function assertExpected(args, result, surface, referenceInspection) {
       `expected verdict ${args["expect-verdict"]}, got ${result.verdict}`
     );
   }
+  const selectedVerifier = result.selectedVerifier;
+  const actualSuiVersion = selectedVerifier?.suiVersion ?? result.suiVersion;
   if (
-    args["expect-sui-version"] &&
-    result.suiVersion !== args["expect-sui-version"]
+    args["expect-verifier-id"] &&
+    selectedVerifier?.verifierId !== args["expect-verifier-id"]
   ) {
     errors.push(
-      `expected verifier Sui version ${args["expect-sui-version"]}, got ${result.suiVersion}`
+      `expected selected verifier ${args["expect-verifier-id"]}, got ${selectedVerifier?.verifierId}`
+    );
+  }
+  if (
+    args["expect-sui-version"] &&
+    actualSuiVersion !== args["expect-sui-version"]
+  ) {
+    errors.push(
+      `expected selected verifier Sui version ${args["expect-sui-version"]}, got ${actualSuiVersion}`
     );
   }
   if (surface.forbiddenExportsPresent.length > 0) {

@@ -14,10 +14,10 @@ use super::types::{PackageGroup, ResolvedPackageSnapshot, RootPackageSnapshot};
 pub(super) fn root_package_snapshot(
     files: &BTreeMap<String, String>,
     set_unpublished_deps_to_zero: bool,
-) -> RootPackageSnapshot {
+) -> Result<RootPackageSnapshot, String> {
     let mut snapshot = RootPackageSnapshot {
         name: "root".to_string(),
-        edition: Edition::LEGACY,
+        edition: Edition::default(),
         flavor: Flavor::Sui,
         is_legacy: false,
         named_address_map: BTreeMap::new(),
@@ -33,7 +33,7 @@ pub(super) fn root_package_snapshot(
     if let Some(manifest) = parse_source_manifest(files) {
         snapshot.name = manifest.package.name.to_string();
         if let Some(edition) = manifest.package.edition.as_ref() {
-            snapshot.edition = parse_edition(edition);
+            snapshot.edition = parse_edition(edition)?;
         }
         if let Some(flavor) = manifest.package.flavor {
             snapshot.flavor = flavor;
@@ -71,26 +71,27 @@ pub(super) fn root_package_snapshot(
         }
     }
 
-    snapshot
+    Ok(snapshot)
 }
 
 pub(super) fn resolved_package_snapshot(
     pkg_group: &PackageGroup,
     root_dependency_aliases: &BTreeSet<String>,
     set_unpublished_deps_to_zero: bool,
-) -> ResolvedPackageSnapshot {
+) -> Result<ResolvedPackageSnapshot, String> {
     let manifest = parse_source_manifest(&pkg_group.files);
     let mut edition = manifest
         .as_ref()
         .and_then(|manifest| manifest.package.edition.as_ref())
         .map(|edition| parse_edition(edition))
-        .unwrap_or(Edition::LEGACY);
+        .transpose()?
+        .unwrap_or_default();
     let flavor = manifest
         .as_ref()
         .and_then(|manifest| manifest.package.flavor)
         .unwrap_or(Flavor::Sui);
     if let Some(edition_override) = pkg_group.edition.as_ref() {
-        edition = parse_edition(edition_override);
+        edition = parse_edition(edition_override)?;
     }
 
     let mut named_address_map = BTreeMap::new();
@@ -162,7 +163,7 @@ pub(super) fn resolved_package_snapshot(
         .and_then(|id| parse_hex_address_to_bytes(id))
         .or(fallback_dep_id);
 
-    ResolvedPackageSnapshot {
+    Ok(ResolvedPackageSnapshot {
         package_id: pkg_group.name.clone(),
         display_name: pkg_group
             .display_name
@@ -177,5 +178,5 @@ pub(super) fn resolved_package_snapshot(
             package_manifest_name(pkg_group).as_deref(),
             root_dependency_aliases,
         ),
-    }
+    })
 }

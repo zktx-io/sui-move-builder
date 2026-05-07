@@ -118,7 +118,7 @@ pub(crate) fn build_compiler_input(
     dep_packages: &[PackageGroup],
     mode: CompilerInputMode,
 ) -> Result<CompilerInput, String> {
-    let root_snapshot = root_package_snapshot(files, mode.set_unpublished_deps_to_zero());
+    let root_snapshot = root_package_snapshot(files, mode.set_unpublished_deps_to_zero())?;
     let dependency_paths = dependency_file_paths(dep_packages);
     let root_targets =
         source_paths_for_package(files, mode.root_test_mode(), None, Some(&dependency_paths));
@@ -142,7 +142,7 @@ pub(crate) fn build_compiler_input(
             pkg_group,
             &root_snapshot.dependency_aliases,
             mode.set_unpublished_deps_to_zero(),
-        );
+        )?;
 
         if let Some((sort_name, bytes)) = dependency_output_id_entry(&snapshot) {
             if emitted_dependency_ids.insert(bytes) {

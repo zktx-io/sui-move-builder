@@ -67,6 +67,10 @@
             "moduleCount": 6,
             "dependencyCount": 2,
             "warnings": []
+          },
+          "referenceManifest": {
+            "edition": null,
+            "defaulted": true
           }
         }
       ]

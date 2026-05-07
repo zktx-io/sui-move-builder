@@ -58,6 +58,37 @@ export interface VerificationBuildConfig {
   flavor?: string;
 }
 
+export interface VerificationSelectedVerifier {
+  verifierId: string;
+  suiVersion?: string;
+  decodedBytecodeVersion?: number;
+  bytecodeFlavor?: number | null;
+}
+
+export interface VerificationReferenceBytecode {
+  decodedVersion?: number;
+  flavor?: number | null;
+  moduleCount: number;
+}
+
+export interface VerificationSourceEditionEvidence {
+  source: "root" | "dependency";
+  packageName?: string;
+  manifestPath?: string;
+  declaredEdition?: string;
+  effectiveEdition: string;
+  defaulted: boolean;
+  supported: boolean;
+}
+
+export interface VerificationSourceCompatibility {
+  supportedEditions: string[];
+  defaultEdition: string;
+  root?: VerificationSourceEditionEvidence;
+  dependencies?: VerificationSourceEditionEvidence[];
+  unsupportedEditions: VerificationSourceEditionEvidence[];
+}
+
 export interface VerificationModuleSummary {
   length: number;
   version: number;
@@ -162,7 +193,11 @@ export interface MovePackageProvenanceResult {
   status: VerificationStatus;
   verdict?: VerificationVerdict;
   summary?: string;
+  displayMessage?: string;
   failureStage?: VerificationFailureStage;
+  selectedVerifier?: VerificationSelectedVerifier;
+  referenceBytecode?: VerificationReferenceBytecode;
+  sourceCompatibility?: VerificationSourceCompatibility;
   currentBuild?: VerificationCurrentBuild;
   referenceSummary?: VerificationArtifactSummary;
   currentSummary?: VerificationArtifactSummary;
@@ -210,12 +245,20 @@ type VerificationWasmInitializerModule = VerificationWasmModule & {
   default(init?: unknown): Promise<unknown>;
 };
 
+interface LoadedVerificationWasm {
+  mod: VerificationWasmModule;
+  selectedVerifier: VerificationSelectedVerifier;
+  referenceBytecode: VerificationReferenceBytecode;
+}
+
 interface BundledBytecodeVerifierRoute {
   verifierId: string;
   importSpecifier: string;
 }
 
+const CURRENT_VERIFIER_ID = "sui-1.70.2";
 const CURRENT_BYTECODE_VERSION = 7;
+const CURRENT_BYTECODE_FLAVOR = 5;
 const BUNDLED_BYTECODE_VERIFIER_ROUTES: ReadonlyMap<
   number,
   BundledBytecodeVerifierRoute
@@ -270,9 +313,9 @@ export async function verifyMovePackageProvenance(
   }
   const intent = intentResult.value;
 
-  let mod: VerificationWasmModule;
+  let loaded: LoadedVerificationWasm;
   try {
-    mod = await loadVerificationWasm(input);
+    loaded = await loadVerificationWasm(input);
   } catch (error) {
     if (isMovePackageProvenanceResult(error)) {
       return error;
@@ -280,6 +323,7 @@ export async function verifyMovePackageProvenance(
     const failure = asFailure(error, "wasm_init");
     return buildFailure(failure.error, "wasm_init");
   }
+  const { mod } = loaded;
 
   let resolved;
   try {
@@ -288,7 +332,12 @@ export async function verifyMovePackageProvenance(
       (await resolveVerificationDependencies(input, mod));
   } catch (error) {
     const failure = asFailure(error, "dependency_resolution");
-    return buildFailure(failure.error, "dependency_resolution");
+    return completeVerificationResult(
+      buildFailure(failure.error, "dependency_resolution"),
+      loaded,
+      JSON.stringify(input.files),
+      "[]"
+    );
   }
 
   let raw: string;
@@ -315,10 +364,20 @@ export async function verifyMovePackageProvenance(
   }
 
   try {
-    return JSON.parse(raw) as MovePackageProvenanceResult;
+    return completeVerificationResult(
+      JSON.parse(raw) as MovePackageProvenanceResult,
+      loaded,
+      resolved.files,
+      resolved.dependencies
+    );
   } catch (error) {
     const failure = asFailure(error, "compiler_output");
-    return buildFailure(failure.error, "verification_output");
+    return completeVerificationResult(
+      buildFailure(failure.error, "verification_output"),
+      loaded,
+      resolved.files,
+      resolved.dependencies
+    );
   }
 }
 
@@ -350,6 +409,7 @@ function buildFailure(
     status: "build_failure",
     failureStage,
     error,
+    displayMessage: `Verification failed at ${failureStage}: ${error}`,
   };
 }
 
@@ -365,40 +425,77 @@ function isMovePackageProvenanceResult(
 
 async function loadVerificationWasm(
   input: MovePackageProvenanceInput
-): Promise<VerificationWasmModule> {
+): Promise<LoadedVerificationWasm> {
+  const referenceBytecode = referenceBytecodeSummary(input.reference);
   if (input.wasm) {
-    return (await loadWasm(input.wasm)) as unknown as VerificationWasmModule;
+    const mod = (await loadWasm(
+      input.wasm
+    )) as unknown as VerificationWasmModule;
+    return {
+      mod,
+      referenceBytecode,
+      selectedVerifier: {
+        verifierId: "custom",
+        suiVersion: safeSuiVersion(mod),
+        decodedBytecodeVersion: referenceBytecode.decodedVersion,
+        bytecodeFlavor: referenceBytecode.flavor,
+      },
+    };
   }
 
-  const bytecodeVersion = referenceBytecodeVersion(input.reference);
+  const bytecodeVersion = referenceBytecode.decodedVersion;
   if (
     bytecodeVersion === undefined ||
     bytecodeVersion === CURRENT_BYTECODE_VERSION
   ) {
-    return (await loadWasm()) as unknown as VerificationWasmModule;
+    const mod = (await loadWasm()) as unknown as VerificationWasmModule;
+    return {
+      mod,
+      referenceBytecode,
+      selectedVerifier: {
+        verifierId: CURRENT_VERIFIER_ID,
+        suiVersion: safeSuiVersion(mod),
+        decodedBytecodeVersion: bytecodeVersion ?? CURRENT_BYTECODE_VERSION,
+        bytecodeFlavor: referenceBytecode.flavor ?? CURRENT_BYTECODE_FLAVOR,
+      },
+    };
   }
 
   const route = BUNDLED_BYTECODE_VERIFIER_ROUTES.get(bytecodeVersion);
   if (!route) {
-    throw unsupportedBytecodeVersion(bytecodeVersion);
+    throw unsupportedBytecodeVersion(bytecodeVersion, referenceBytecode);
   }
 
-  return loadBundledBytecodeVerifier(bytecodeVersion, route);
+  const mod = await loadBundledBytecodeVerifier(bytecodeVersion, route);
+  return {
+    mod,
+    referenceBytecode,
+    selectedVerifier: {
+      verifierId: route.verifierId,
+      suiVersion: safeSuiVersion(mod),
+      decodedBytecodeVersion: bytecodeVersion,
+      bytecodeFlavor: referenceBytecode.flavor,
+    },
+  };
 }
 
 function unsupportedBytecodeVersion(
-  bytecodeVersion: number
+  bytecodeVersion: number,
+  referenceBytecode: VerificationReferenceBytecode
 ): MovePackageProvenanceResult {
+  const error = `Unsupported decoded bytecode version ${bytecodeVersion}. Supported bundled verifier versions: ${[
+    CURRENT_BYTECODE_VERSION,
+    ...BUNDLED_BYTECODE_VERIFIER_ROUTES.keys(),
+  ]
+    .sort((left, right) => left - right)
+    .join(", ")}`;
   return {
     status: "bytecode_version_mismatch",
     verdict: "unverified",
     summary: `Decoded bytecode version ${bytecodeVersion} is not supported by this verifier package.`,
-    error: `Unsupported decoded bytecode version ${bytecodeVersion}. Supported bundled verifier versions: ${[
-      CURRENT_BYTECODE_VERSION,
-      ...BUNDLED_BYTECODE_VERIFIER_ROUTES.keys(),
-    ]
-      .sort((left, right) => left - right)
-      .join(", ")}`,
+    displayMessage: `Verification failed: ${error}`,
+    referenceBytecode,
+    error,
   };
 }
 
@@ -429,24 +526,35 @@ async function importVerificationWasm(
   return dynamicImport(specifier);
 }
 
-function referenceBytecodeVersion(
+function referenceBytecodeSummary(
   reference: ReferenceArtifact
-): number | undefined {
+): VerificationReferenceBytecode {
   const versions = new Set<number>();
+  const flavors = new Set<number | null>();
   for (const moduleBase64 of reference.modules) {
-    const version = moduleBytecodeVersion(moduleBase64);
-    if (version === undefined) {
-      return undefined;
+    const header = moduleBytecodeHeader(moduleBase64);
+    if (!header) {
+      return { moduleCount: reference.modules.length };
     }
-    versions.add(version);
+    versions.add(header.decodedVersion);
+    flavors.add(header.flavor);
   }
-  if (versions.size !== 1) {
-    return undefined;
-  }
-  return versions.values().next().value as number;
+  return {
+    moduleCount: reference.modules.length,
+    decodedVersion:
+      versions.size === 1
+        ? (versions.values().next().value as number)
+        : undefined,
+    flavor:
+      flavors.size === 1
+        ? (flavors.values().next().value as number | null)
+        : undefined,
+  };
 }
 
-function moduleBytecodeVersion(moduleBase64: string): number | undefined {
+function moduleBytecodeHeader(
+  moduleBase64: string
+): { decodedVersion: number; flavor: number | null } | undefined {
   const header = decodeBase64Prefix(moduleBase64, 8);
   if (!header || header.length < 8) {
     return undefined;
@@ -454,7 +562,185 @@ function moduleBytecodeVersion(moduleBase64: string): number | undefined {
   const rawVersionWord =
     (header[4] | (header[5] << 8) | (header[6] << 16) | (header[7] << 24)) >>>
     0;
-  return rawVersionWord & 0x00ff_ffff;
+  return {
+    decodedVersion: rawVersionWord & 0x00ff_ffff,
+    flavor: rawVersionWord >>> 24 || null,
+  };
+}
+
+function safeSuiVersion(mod: VerificationWasmModule): string | undefined {
+  try {
+    return mod.sui_version();
+  } catch {
+    return undefined;
+  }
+}
+
+function completeVerificationResult(
+  result: MovePackageProvenanceResult,
+  loaded: LoadedVerificationWasm,
+  filesJson: string,
+  dependenciesJson: string
+): MovePackageProvenanceResult {
+  const completed: MovePackageProvenanceResult = {
+    ...result,
+    selectedVerifier: result.selectedVerifier ?? loaded.selectedVerifier,
+    referenceBytecode: result.referenceBytecode ?? loaded.referenceBytecode,
+  };
+  completed.sourceCompatibility ??= sourceCompatibilityEvidence(
+    filesJson,
+    dependenciesJson,
+    loaded.selectedVerifier
+  );
+  completed.displayMessage ??= displayMessageForResult(completed);
+  return completed;
+}
+
+function displayMessageForResult(result: MovePackageProvenanceResult): string {
+  const verifier = result.selectedVerifier?.verifierId
+    ? ` using verifier ${result.selectedVerifier.verifierId}`
+    : "";
+  const version =
+    result.referenceBytecode?.decodedVersion !== undefined
+      ? ` for decoded bytecode version ${result.referenceBytecode.decodedVersion}`
+      : "";
+  if (result.status === "verified") {
+    return `Verification succeeded${verifier}${version}: ${
+      result.verdict ?? "verified"
+    }.`;
+  }
+  const stage = result.failureStage ? ` at ${result.failureStage}` : "";
+  const reason =
+    result.error ?? result.summary ?? result.verdict ?? result.status;
+  return `Verification failed${stage}${verifier}${version}: ${reason}`;
+}
+
+function sourceCompatibilityEvidence(
+  filesJson: string,
+  dependenciesJson: string,
+  selectedVerifier: VerificationSelectedVerifier
+): VerificationSourceCompatibility | undefined {
+  const supportedEditions =
+    selectedVerifier.decodedBytecodeVersion === 6
+      ? ["legacy", "2024.alpha", "2024.beta"]
+      : ["legacy", "2024.alpha", "2024.beta", "2024"];
+  const defaultEdition =
+    selectedVerifier.decodedBytecodeVersion === 6 ? "legacy" : "2024";
+  const unsupportedEditions: VerificationSourceEditionEvidence[] = [];
+  const rootFiles = parseJsonObject(filesJson);
+  const root = rootFiles
+    ? sourceEditionEvidence(
+        "root",
+        rootFiles,
+        undefined,
+        supportedEditions,
+        defaultEdition
+      )
+    : undefined;
+  if (root && !root.supported) {
+    unsupportedEditions.push(root);
+  }
+
+  const dependencies: VerificationSourceEditionEvidence[] = [];
+  const dependencyGroups = parseJsonArray(dependenciesJson);
+  for (const group of dependencyGroups) {
+    if (!group || typeof group !== "object") {
+      continue;
+    }
+    const files = parseRecord((group as any).files);
+    if (!files) {
+      continue;
+    }
+    const evidence = sourceEditionEvidence(
+      "dependency",
+      files,
+      typeof (group as any).name === "string" ? (group as any).name : undefined,
+      supportedEditions,
+      defaultEdition
+    );
+    dependencies.push(evidence);
+    if (!evidence.supported) {
+      unsupportedEditions.push(evidence);
+    }
+  }
+
+  return {
+    supportedEditions,
+    defaultEdition,
+    root,
+    dependencies,
+    unsupportedEditions,
+  };
+}
+
+function sourceEditionEvidence(
+  source: "root" | "dependency",
+  files: Record<string, string>,
+  packageName: string | undefined,
+  supportedEditions: readonly string[],
+  defaultEdition: string
+): VerificationSourceEditionEvidence {
+  const manifestPath = Object.keys(files).find((path) =>
+    path.endsWith("Move.toml")
+  );
+  const manifest = manifestPath ? files[manifestPath] : undefined;
+  const declaredEdition = manifest
+    ? moveTomlStringField(manifest, "edition")
+    : undefined;
+  const parsedName = manifest
+    ? moveTomlStringField(manifest, "name")
+    : undefined;
+  const effectiveEdition = declaredEdition ?? defaultEdition;
+  return {
+    source,
+    packageName: packageName ?? parsedName,
+    manifestPath,
+    declaredEdition,
+    effectiveEdition,
+    defaulted: declaredEdition === undefined,
+    supported: supportedEditions.includes(effectiveEdition),
+  };
+}
+
+function moveTomlStringField(
+  content: string,
+  field: string
+): string | undefined {
+  const match = content.match(
+    new RegExp(`^\\s*${field}\\s*=\\s*["']([^"']+)["']`, "m")
+  );
+  return match?.[1];
+}
+
+function parseJsonObject(value: string): Record<string, string> | undefined {
+  return parseRecord(parseJson(value));
+}
+
+function parseJsonArray(value: string): unknown[] {
+  const parsed = parseJson(value);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function parseJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const output: Record<string, string> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== "string") {
+      return undefined;
+    }
+    output[key] = item;
+  }
+  return output;
 }
 
 function decodeBase64Prefix(

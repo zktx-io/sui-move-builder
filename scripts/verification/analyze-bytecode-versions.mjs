@@ -345,26 +345,91 @@ function parseProtocolConfig(text) {
 }
 
 export function parseMoveCompilerEditions(text) {
+  const validEditions = parseValidEditions(text);
+  const defaultEdition = parseDefaultEdition(text);
+  const featureLists = {
+    "2024.alpha": editionFeatureList(text, "E2024_ALPHA_FEATURES"),
+    "2024.beta": editionFeatureList(text, "E2024_BETA_FEATURES"),
+    2024: editionFeatureList(text, "E2024_FEATURES"),
+  };
+  const moduleExtensionEditions = Object.entries(featureLists)
+    .filter(([, list]) => list.features.includes("ModuleExtension"))
+    .map(([edition]) => edition);
   return {
+    validEditions,
+    defaultEdition,
+    supportsPlain2024: validEditions.includes("2024"),
+    featureListHashes: Object.fromEntries(
+      Object.entries(featureLists).map(([edition, list]) => [
+        edition,
+        list.sha256,
+      ])
+    ),
+    moduleExtensionEditions,
     moduleExtensionTokenPresent: /\bModuleExtension\b/.test(text),
-    moduleExtensionIn2024Alpha: editionFeatureListIncludes(
-      text,
-      "E2024_ALPHA_FEATURES",
-      "ModuleExtension"
-    ),
-    moduleExtensionIn2024Beta: editionFeatureListIncludes(
-      text,
-      "E2024_BETA_FEATURES",
-      "ModuleExtension"
-    ),
+    moduleExtensionIn2024Alpha:
+      featureLists["2024.alpha"].features.includes("ModuleExtension"),
+    moduleExtensionIn2024Beta:
+      featureLists["2024.beta"].features.includes("ModuleExtension"),
   };
 }
 
-function editionFeatureListIncludes(text, constName, featureName) {
+function parseValidEditions(text) {
+  const match = text.match(/VALID\s*:[^=]*=\s*&\[([\s\S]*?)\];/);
+  if (!match) {
+    return [];
+  }
+  return [
+    ...new Set(
+      [...match[1].matchAll(/Edition::([A-Z0-9_]+)/g)]
+        .concat([...match[1].matchAll(/Self::([A-Z0-9_]+)/g)])
+        .map((edition) => editionName(edition[1]))
+        .filter(Boolean)
+    ),
+  ];
+}
+
+function parseDefaultEdition(text) {
+  const match = text.match(
+    /impl\s+Default\s+for\s+Edition[\s\S]*?fn\s+default\(\)\s*->\s*Self\s*\{([\s\S]*?)\}/
+  );
+  if (!match) {
+    return null;
+  }
+  const editionMatch = match[1].match(/(?:Self|Edition)::([A-Z0-9_]+)/);
+  return editionMatch ? editionName(editionMatch[1]) : null;
+}
+
+function editionName(rustName) {
+  switch (rustName) {
+    case "LEGACY":
+      return "legacy";
+    case "E2024_ALPHA":
+      return "2024.alpha";
+    case "E2024_BETA":
+      return "2024.beta";
+    case "E2024":
+      return "2024";
+    default:
+      return null;
+  }
+}
+
+function editionFeatureList(text, constName) {
   const match = text.match(
     new RegExp(`const\\s+${constName}\\s*:[^=]*=\\s*&\\[([\\s\\S]*?)\\];`)
   );
-  return Boolean(match?.[1]?.includes(`FeatureGate::${featureName}`));
+  const body = match?.[1]?.trim() ?? "";
+  return {
+    features: [
+      ...new Set(
+        [...body.matchAll(/FeatureGate::([A-Za-z0-9_]+)/g)].map(
+          (feature) => feature[1]
+        )
+      ),
+    ],
+    sha256: sha256(body),
+  };
 }
 
 function uniqueNumbers(text, regex) {

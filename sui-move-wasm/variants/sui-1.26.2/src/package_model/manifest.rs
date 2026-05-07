@@ -68,12 +68,15 @@ pub(super) fn is_explicit_root_dependency(
             .any(|alias| root_dependency_aliases.contains(alias))
 }
 
-pub(super) fn parse_edition(edition_str: &str) -> Edition {
+pub(super) fn parse_edition(edition_str: &str) -> Result<Edition, String> {
     match edition_str {
-        "legacy" => Edition::LEGACY,
-        "2024" | "2024.alpha" => Edition::E2024_ALPHA,
-        "2024.beta" => Edition::E2024_BETA,
-        _ => Edition::LEGACY,
+        "legacy" => Ok(Edition::LEGACY),
+        "2024.alpha" => Ok(Edition::E2024_ALPHA),
+        "2024.beta" => Ok(Edition::E2024_BETA),
+        value => Err(format!(
+            "Invalid Move edition '{}'. Sui 1.26.2 supports editions: legacy, 2024.alpha, 2024.beta",
+            value
+        )),
     }
 }
 

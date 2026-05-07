@@ -163,6 +163,15 @@
           "minMoveBinaryFormatVersions": [6]
         },
         "moveCompilerEditions": {
+          "validEditions": ["legacy", "2024.alpha", "2024.beta"],
+          "defaultEdition": "legacy",
+          "supportsPlain2024": false,
+          "featureListHashes": {
+            "2024.alpha": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "2024.beta": "1712b61c46ff9b7510bb087cc8972e5da576663ea7fcbf58ef67e0b80ff052cb",
+            "2024": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "moduleExtensionEditions": [],
           "moduleExtensionTokenPresent": false,
           "moduleExtensionIn2024Alpha": false,
           "moduleExtensionIn2024Beta": false
@@ -235,6 +244,15 @@
           "minMoveBinaryFormatVersions": [6]
         },
         "moveCompilerEditions": {
+          "validEditions": ["legacy", "2024.alpha", "2024.beta", "2024"],
+          "defaultEdition": "2024",
+          "supportsPlain2024": true,
+          "featureListHashes": {
+            "2024.alpha": "f987c63a18146b59f851bc2fc2d034a516529c2878892a98220e9c5428360264",
+            "2024.beta": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "2024": "8869002b1c51f7bf4ac28f57ce63bcabc8503749a9112fff38bd804942d7f1c6"
+          },
+          "moduleExtensionEditions": ["2024.alpha"],
           "moduleExtensionTokenPresent": true,
           "moduleExtensionIn2024Alpha": true,
           "moduleExtensionIn2024Beta": false

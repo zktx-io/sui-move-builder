@@ -207,11 +207,26 @@ function expectNoFailureStage(result, label) {
   }
 }
 
+function expectDiagnostic(result, label) {
+  if (!result.displayMessage && !result.error && !result.summary) {
+    throw new Error(
+      `${label}: verification failure should include displayMessage, error, or summary: ${JSON.stringify(
+        result,
+        null,
+        2
+      )}`
+    );
+  }
+}
+
 function withHeaderVersion(base64, version) {
   const bytes = Buffer.from(base64, "base64");
   bytes.writeUInt32LE(version, 4);
   return bytes.toString("base64");
 }
+
+const v6ReferenceModule =
+  "oRzrCwYAAAALAQAEAgQaAx4pBEcIBU9lB7QBowEI1wJABpcDCgqhAwoMqwNFDfADAgAKAQ4AAQIAAAAGAAECDAEAAQEDDAEAAQEEAAEAAQAFAAEBAAANAgEBAAEGDAECAAIBBwQBAwACBgELBgcDAAIGAQwJCgEAAwMEAwUIAgsDBwsCAQkABgsDAQkAAwACBwsCAQkABwsEAQkAAwkACAAIAQQJAQcLAgEJAAYLAwEJAAkCAgcLAgEJAAYIAQIJAQYLAgEJAAEGCQIBCQABBgsEAQkAAQMCCQAIAAIJAQcLBAEJAAZDb25maWcEUnVsZQ5UcmFuc2ZlclBvbGljeRFUcmFuc2ZlclBvbGljeUNhcA9UcmFuc2ZlclJlcXVlc3QDYWRkC2FkZF9yZWNlaXB0CGFkZF9ydWxlC2R1bW15X2ZpZWxkC2Zsb29yX3ByaWNlEGZsb29yX3ByaWNlX3J1bGUIZ2V0X3J1bGUEcGFpZAVwcm92ZQ90cmFuc2Zlcl9wb2xpY3kAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAwgAAAAAAAAAAAACAQgBAQIBCQMAAQAAAQgJEgALAAsBCwISATgAAgEBAAAFGgsADAIJEgALAi44AQwDCgEuOAILAxAAFCYEEQUVCwEBBwAnCRIACwE4AwIBAAA=";
 
 const files = fixtureFiles();
 const reference = await publishReference(files);
@@ -308,6 +323,53 @@ if (
 ) {
   throw new Error(
     "bytecode header evidence should include reference version metadata"
+  );
+}
+
+const v6Plain2024Result = await verify(files, {
+  modules: [v6ReferenceModule],
+});
+expectStatus(
+  v6Plain2024Result,
+  "build_failure",
+  "v6 verifier rejects plain 2024"
+);
+expectVerdict(
+  v6Plain2024Result,
+  "unverified",
+  "v6 verifier rejects plain 2024"
+);
+expectFailureStage(
+  v6Plain2024Result,
+  "input_validation",
+  "v6 verifier rejects plain 2024"
+);
+expectErrorIncludes(
+  v6Plain2024Result,
+  "Invalid Move edition '2024'",
+  "v6 verifier rejects plain 2024"
+);
+expectDiagnostic(v6Plain2024Result, "v6 verifier rejects plain 2024");
+if (v6Plain2024Result.selectedVerifier?.verifierId !== "sui-1.26.2") {
+  throw new Error(
+    `v6 reference should select bundled v6 verifier: ${JSON.stringify(
+      v6Plain2024Result,
+      null,
+      2
+    )}`
+  );
+}
+if (
+  v6Plain2024Result.referenceBytecode?.decodedVersion !== 6 ||
+  v6Plain2024Result.sourceCompatibility?.unsupportedEditions?.[0]
+    ?.effectiveEdition !== "2024"
+) {
+  throw new Error(
+    `v6 unsupported edition result should expose bytecode and source compatibility evidence: ${JSON.stringify(
+      v6Plain2024Result,
+      null,
+      2
+    )}`
   );
 }
 
@@ -697,6 +759,27 @@ const compileFailureResult = await verify(badFiles, {
 });
 expectStatus(compileFailureResult, "build_failure", "source compile failure");
 expectFailureStage(compileFailureResult, "compile", "source compile failure");
+expectDiagnostic(compileFailureResult, "source compile failure");
+
+const unknownEditionFiles = {
+  ...files,
+  "Move.toml": files["Move.toml"].replace(
+    'edition = "2024"',
+    'edition = "2099"'
+  ),
+};
+const unknownEditionResult = await verify(unknownEditionFiles, {
+  modules: reference.modules,
+});
+expectStatus(unknownEditionResult, "build_failure", "unknown edition");
+expectVerdict(unknownEditionResult, "unverified", "unknown edition");
+expectFailureStage(unknownEditionResult, "input_validation", "unknown edition");
+expectErrorIncludes(
+  unknownEditionResult,
+  "Invalid Move edition '2099'",
+  "unknown edition"
+);
+expectDiagnostic(unknownEditionResult, "unknown edition");
 
 const dependencyFailureFiles = {
   ...files,
@@ -732,5 +815,6 @@ expectFailureStage(
   "dependency_resolution",
   "dependency resolution failure"
 );
+expectDiagnostic(dependencyFailureResult, "dependency resolution failure");
 
 console.log("[OK] verification provenance checks passed");

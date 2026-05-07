@@ -295,17 +295,83 @@ function validateSignals(signals, decodedBytecodeVersion, label) {
       "moduleExtensionTokenPresent",
       "moduleExtensionIn2024Alpha",
       "moduleExtensionIn2024Beta",
+      "supportsPlain2024",
     ]) {
       assertValue(
         typeof signals.moveCompilerEditions[field] === "boolean",
         `${label}.signals.moveCompilerEditions.${field} must be a boolean`
       );
     }
+    validateEditionArray(
+      signals.moveCompilerEditions.validEditions,
+      `${label}.signals.moveCompilerEditions.validEditions`
+    );
+    assertValue(
+      signals.moveCompilerEditions.defaultEdition === null ||
+        typeof signals.moveCompilerEditions.defaultEdition === "string",
+      `${label}.signals.moveCompilerEditions.defaultEdition must be a string or null`
+    );
+    if (signals.moveCompilerEditions.defaultEdition !== null) {
+      assertValue(
+        signals.moveCompilerEditions.validEditions.includes(
+          signals.moveCompilerEditions.defaultEdition
+        ),
+        `${label}.signals.moveCompilerEditions.defaultEdition must be included in validEditions`
+      );
+    }
+    assertValue(
+      signals.moveCompilerEditions.supportsPlain2024 ===
+        signals.moveCompilerEditions.validEditions.includes("2024"),
+      `${label}.signals.moveCompilerEditions.supportsPlain2024 must match validEditions`
+    );
+    validateEditionHashMap(
+      signals.moveCompilerEditions.featureListHashes,
+      `${label}.signals.moveCompilerEditions.featureListHashes`
+    );
+    validateEditionArray(
+      signals.moveCompilerEditions.moduleExtensionEditions,
+      `${label}.signals.moveCompilerEditions.moduleExtensionEditions`
+    );
     assertValue(
       signals.moveCompilerEditions.moduleExtensionTokenPresent ||
         (!signals.moveCompilerEditions.moduleExtensionIn2024Alpha &&
-          !signals.moveCompilerEditions.moduleExtensionIn2024Beta),
+          !signals.moveCompilerEditions.moduleExtensionIn2024Beta &&
+          signals.moveCompilerEditions.moduleExtensionEditions.length === 0),
       `${label}.signals.moveCompilerEditions ModuleExtension edition flags require moduleExtensionTokenPresent`
+    );
+    assertValue(
+      signals.moveCompilerEditions.moduleExtensionIn2024Alpha ===
+        signals.moveCompilerEditions.moduleExtensionEditions.includes(
+          "2024.alpha"
+        ),
+      `${label}.signals.moveCompilerEditions.moduleExtensionIn2024Alpha must match moduleExtensionEditions`
+    );
+    assertValue(
+      signals.moveCompilerEditions.moduleExtensionIn2024Beta ===
+        signals.moveCompilerEditions.moduleExtensionEditions.includes(
+          "2024.beta"
+        ),
+      `${label}.signals.moveCompilerEditions.moduleExtensionIn2024Beta must match moduleExtensionEditions`
+    );
+  }
+}
+
+function validateEditionArray(value, label) {
+  assertValue(Array.isArray(value), `${label} must be an array`);
+  for (const [index, item] of value.entries()) {
+    assertValue(
+      typeof item === "string",
+      `${label}[${index}] must be a string`
+    );
+  }
+}
+
+function validateEditionHashMap(value, label) {
+  assertObject(value, label);
+  for (const [edition, hash] of Object.entries(value)) {
+    assertValue(
+      typeof hash === "string" && /^[0-9a-f]{64}$/i.test(hash),
+      `${label}.${edition} must be a SHA-256 hex digest`
     );
   }
 }

@@ -156,6 +156,17 @@ const invalidCompilerEditionSignals = {
 invalidCompilerEditionSignals.records[0].signals = {
   ...invalidCompilerEditionSignals.records[0].signals,
   moveCompilerEditions: {
+    validEditions: ["legacy", "2024.alpha", "2024.beta"],
+    defaultEdition: "legacy",
+    supportsPlain2024: false,
+    featureListHashes: {
+      "2024.alpha":
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "2024.beta":
+        "1712b61c46ff9b7510bb087cc8972e5da576663ea7fcbf58ef67e0b80ff052cb",
+      2024: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    },
+    moduleExtensionEditions: ["2024.alpha"],
     moduleExtensionTokenPresent: false,
     moduleExtensionIn2024Alpha: true,
     moduleExtensionIn2024Beta: false,
@@ -176,6 +187,14 @@ try {
 }
 
 const compilerEditionSignals = parseMoveCompilerEditions(`
+impl Edition {
+    pub const VALID: &'static [Self] = &[Self::LEGACY, Self::E2024_ALPHA, Self::E2024_BETA];
+}
+impl Default for Edition {
+    fn default() -> Self {
+        Self::LEGACY
+    }
+}
 const E2024_ALPHA_FEATURES: &[FeatureGate] = &[
     FeatureGate::ModuleExtension,
 ];
@@ -184,12 +203,17 @@ const E2024_BETA_FEATURES: &[FeatureGate] = &[
 ];
 `);
 if (
+  compilerEditionSignals.defaultEdition !== "legacy" ||
+  compilerEditionSignals.supportsPlain2024 ||
+  compilerEditionSignals.validEditions.join(",") !==
+    "legacy,2024.alpha,2024.beta" ||
   !compilerEditionSignals.moduleExtensionTokenPresent ||
   !compilerEditionSignals.moduleExtensionIn2024Alpha ||
-  compilerEditionSignals.moduleExtensionIn2024Beta
+  compilerEditionSignals.moduleExtensionIn2024Beta ||
+  compilerEditionSignals.moduleExtensionEditions.join(",") !== "2024.alpha"
 ) {
   throw new Error(
-    `Compiler edition parser should detect ModuleExtension alpha membership only: ${JSON.stringify(
+    `Compiler edition parser should detect edition defaults and ModuleExtension alpha membership only: ${JSON.stringify(
       compilerEditionSignals
     )}`
   );
@@ -213,6 +237,10 @@ const invalidFixtureManifest = {
           },
           expectedStatus: "verified",
           expectedVerdict: "exact_bytecode_match",
+          referenceManifest: {
+            edition: null,
+            defaulted: true,
+          },
         },
       ],
     },
@@ -254,6 +282,10 @@ const invalidFixtureWarningManifest = {
             moduleCount: 1,
             dependencyCount: 0,
             warnings: ["warning"],
+          },
+          referenceManifest: {
+            edition: null,
+            defaulted: true,
           },
         },
       ],

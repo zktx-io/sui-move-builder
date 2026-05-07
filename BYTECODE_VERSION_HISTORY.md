@@ -40,32 +40,46 @@ Generated evidence covers 1029 upstream Sui tags: 400 network tags and 629 relea
 | v6 pin     | `sui_v1.24.1_1715125390_release` | `testnet-v1.25.0`               | Protocol config starts recording `move_binary_format_version = Some(6)` and `min_move_binary_format_version = Some(6)`.                     |
 | v7         | `sui_v1.26.2_1717632279_release` | `testnet-v1.27.0`               | `file_format_common.rs` records `VERSION_MAX = 7`; serializer encodes `BinaryFlavor`; serializer/deserializer add jump-table version gates. |
 
+## Move Edition Evidence
+
+Move edition support is verifier-source-specific. The decoded bytecode version is still the first routing key; edition rules are applied by the selected verifier according to its pinned Sui source.
+
+| Verifier     | Valid editions                              | Default edition | Plain `2024` support | ModuleExtension evidence  |
+| ------------ | ------------------------------------------- | --------------- | -------------------- | ------------------------- |
+| `sui-1.26.2` | `legacy`, `2024.alpha`, `2024.beta`         | `legacy`        | No                   | Not present               |
+| `sui-1.70.2` | `legacy`, `2024.alpha`, `2024.beta`, `2024` | `2024`          | Yes                  | `2024.alpha` feature list |
+
+The v6 verifier rejects plain `edition = "2024"` because `mainnet-v1.26.2` does not list that edition as valid. The current v7 verifier maps plain `2024` to the stable `E2024` edition, not to `2024.alpha`.
+
 ## Evidence Checklist
 
 Each completed record should cite generated evidence for these upstream source groups:
 
-| Evidence group                   | Purpose                                                                                |
-| -------------------------------- | -------------------------------------------------------------------------------------- |
-| `file_format_common.rs`          | Decoded bytecode version range, binary flavor support, and table layout.               |
-| `serializer.rs`                  | Serialization behavior that can change module bytes without changing source semantics. |
-| `deserializer.rs`                | Deserialization behavior and version gates used by verifier evidence.                  |
-| `sui-protocol-config/src/lib.rs` | Protocol-configured Move binary format versions.                                       |
+| Evidence group                      | Purpose                                                                                |
+| ----------------------------------- | -------------------------------------------------------------------------------------- |
+| `file_format_common.rs`             | Decoded bytecode version range, binary flavor support, and table layout.               |
+| `serializer.rs`                     | Serialization behavior that can change module bytes without changing source semantics. |
+| `deserializer.rs`                   | Deserialization behavior and version gates used by verifier evidence.                  |
+| `sui-protocol-config/src/lib.rs`    | Protocol-configured Move binary format versions.                                       |
+| `move-compiler/src/editions/mod.rs` | Move edition validity, defaults, and edition feature lists.                            |
 
 ## Source Hashes
 
-| Record              | Evidence group          | Source file                                                                | SHA-256                                                            |
-| ------------------- | ----------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `sui-devnet-0.13.2` | `file_format_common.rs` | `language/move-binary-format/src/file_format_common.rs`                    | `2c5149988d344e0ae64c2f5898aaaae290d5435419d179e216f1e53c7b87b0bf` |
-| `sui-devnet-0.13.2` | `serializer.rs`         | `language/move-binary-format/src/serializer.rs`                            | `99e6bbed9a9bca4c77d7649c6dabe53c7fd8f730655f7a4a5a52d6690eec68ea` |
-| `sui-devnet-0.13.2` | `deserializer.rs`       | `language/move-binary-format/src/deserializer.rs`                          | `1783807255fc07177205f7e2dc98f14c3dabbc754160c58a46fdd8adf22d5630` |
-| `sui-1.26.2`        | `file_format_common.rs` | `external-crates/move/crates/move-binary-format/src/file_format_common.rs` | `68c372a43a2f3272597eb1fb25b5ded799f8be0e9ae2e77ced5c016efbbd6fda` |
-| `sui-1.26.2`        | `serializer.rs`         | `external-crates/move/crates/move-binary-format/src/serializer.rs`         | `62399dd85b9759bb51858fff2d518af77f0d0a8af4aebaec4be5fdb6c1f3dd9d` |
-| `sui-1.26.2`        | `deserializer.rs`       | `external-crates/move/crates/move-binary-format/src/deserializer.rs`       | `c2afcbec0876e178f9fab317cd26df51e0d306a9ee570f5b4d5bf4606f1828f4` |
-| `sui-1.26.2`        | `protocol config`       | `crates/sui-protocol-config/src/lib.rs`                                    | `65d196c9fa72138d4c363f0e9f07dd42c87b3f33cf8b0d13b26d2a9f10caead0` |
-| `sui-1.70.2`        | `file_format_common.rs` | `external-crates/move/crates/move-binary-format/src/file_format_common.rs` | `1b2b41d74f5f12c6625c339a56a995119abbe0c19a7f98df53c7c494b04d10e1` |
-| `sui-1.70.2`        | `serializer.rs`         | `external-crates/move/crates/move-binary-format/src/serializer.rs`         | `9b297ab9d609345623a05612f8b04b96284bc404f131088570df3413794ff79a` |
-| `sui-1.70.2`        | `deserializer.rs`       | `external-crates/move/crates/move-binary-format/src/deserializer.rs`       | `5413482f3c9e556f60a01981864df207079634a5aab6c22b23da22f076aae014` |
-| `sui-1.70.2`        | `protocol config`       | `crates/sui-protocol-config/src/lib.rs`                                    | `de0ddb0fef7bc62cb05021a8bb7056f645ed71ac429398d7c6f46ebd091fab4e` |
+| Record              | Evidence group           | Source file                                                                | SHA-256                                                            |
+| ------------------- | ------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `sui-devnet-0.13.2` | `file_format_common.rs`  | `language/move-binary-format/src/file_format_common.rs`                    | `2c5149988d344e0ae64c2f5898aaaae290d5435419d179e216f1e53c7b87b0bf` |
+| `sui-devnet-0.13.2` | `serializer.rs`          | `language/move-binary-format/src/serializer.rs`                            | `99e6bbed9a9bca4c77d7649c6dabe53c7fd8f730655f7a4a5a52d6690eec68ea` |
+| `sui-devnet-0.13.2` | `deserializer.rs`        | `language/move-binary-format/src/deserializer.rs`                          | `1783807255fc07177205f7e2dc98f14c3dabbc754160c58a46fdd8adf22d5630` |
+| `sui-1.26.2`        | `file_format_common.rs`  | `external-crates/move/crates/move-binary-format/src/file_format_common.rs` | `68c372a43a2f3272597eb1fb25b5ded799f8be0e9ae2e77ced5c016efbbd6fda` |
+| `sui-1.26.2`        | `serializer.rs`          | `external-crates/move/crates/move-binary-format/src/serializer.rs`         | `62399dd85b9759bb51858fff2d518af77f0d0a8af4aebaec4be5fdb6c1f3dd9d` |
+| `sui-1.26.2`        | `deserializer.rs`        | `external-crates/move/crates/move-binary-format/src/deserializer.rs`       | `c2afcbec0876e178f9fab317cd26df51e0d306a9ee570f5b4d5bf4606f1828f4` |
+| `sui-1.26.2`        | `protocol config`        | `crates/sui-protocol-config/src/lib.rs`                                    | `65d196c9fa72138d4c363f0e9f07dd42c87b3f33cf8b0d13b26d2a9f10caead0` |
+| `sui-1.26.2`        | `move compiler editions` | `external-crates/move/crates/move-compiler/src/editions/mod.rs`            | `e0b2859e9e79597c4ddd83fc67b1fa00ef25a67dc2c86a12a275da7a119e1f97` |
+| `sui-1.70.2`        | `file_format_common.rs`  | `external-crates/move/crates/move-binary-format/src/file_format_common.rs` | `1b2b41d74f5f12c6625c339a56a995119abbe0c19a7f98df53c7c494b04d10e1` |
+| `sui-1.70.2`        | `serializer.rs`          | `external-crates/move/crates/move-binary-format/src/serializer.rs`         | `9b297ab9d609345623a05612f8b04b96284bc404f131088570df3413794ff79a` |
+| `sui-1.70.2`        | `deserializer.rs`        | `external-crates/move/crates/move-binary-format/src/deserializer.rs`       | `5413482f3c9e556f60a01981864df207079634a5aab6c22b23da22f076aae014` |
+| `sui-1.70.2`        | `protocol config`        | `crates/sui-protocol-config/src/lib.rs`                                    | `de0ddb0fef7bc62cb05021a8bb7056f645ed71ac429398d7c6f46ebd091fab4e` |
+| `sui-1.70.2`        | `move compiler editions` | `external-crates/move/crates/move-compiler/src/editions/mod.rs`            | `f3d9b7660548798d111239db37fb5d2b38eed14b1d34d42a730e39863b6d45e8` |
 
 ## Notes For Future Records
 

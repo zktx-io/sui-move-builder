@@ -97,6 +97,8 @@ If this repository skips Sui updates for a long period, do not assume only the i
 
 When adding or changing a legacy bytecode verifier, provide a representative transaction fixture pinned to exact source and dependency commits. Inspect the reference artifact with `npm run inspect:reference-artifact -- --artifact <path> --fail-on-warning` before promoting it, record the warning-free `referenceInspection` summary in `knownFixtures`, and prove the fixture with `scripts/verification/prove-bytecode-verifier-fixture.mjs`. A legacy verifier is useful only when it changes the evidence outcome, such as current verifier `bytecode_format_drift` versus matching legacy `exact_bytecode_match`, or when it records an intentional unsupported/failure state as diagnostic evidence.
 
+Move edition handling must follow the selected verifier's pinned Sui CLI/source semantics. Record valid editions, default edition, and edition feature-list evidence in `scripts/verification/bytecode-version-sources.json` and `BYTECODE_VERSION_HISTORY.md`. Do not map unknown editions to `legacy`. A verifier that predates plain `edition = "2024"` must reject it instead of treating it as `2024.alpha`.
+
 Porting checkpoints:
 
 - Keep V4 `Move.lock` fetch-plan, graph validation, and generation in Rust/WASM. TypeScript may fetch snapshots and adapt wire data, but it must not add package-manager semantics when Rust or an upstream Sui crate can own them.

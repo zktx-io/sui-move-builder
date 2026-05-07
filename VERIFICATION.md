@@ -28,6 +28,26 @@ The selected verifier's Sui source version is reported as `bytecodeHeaderEvidenc
 
 Declared `reference.cliVersion` and `reference.buildConfig` are returned as evidence when provided. They are caller-provided metadata and are not used as a substitute for bytecode comparison.
 
+Verification results also include:
+
+- `displayMessage`: one UI-ready summary string. Show this first for failures.
+- `selectedVerifier`: verifier ID, baked Sui source version, decoded bytecode version, and bytecode flavor when known.
+- `referenceBytecode`: decoded bytecode version/flavor/module count from the reference modules.
+- `sourceCompatibility`: root/dependency manifest edition evidence and unsupported edition entries when detected.
+
+For UI display, prefer `displayMessage`; if it is absent, fall back to `error`, then `summary`.
+
+## Move Edition Compatibility
+
+Each verifier follows the Sui CLI/source version it was built from. The decoded bytecode version selects the verifier first; the verifier then applies its own Move edition rules.
+
+| Verifier     | Supported editions                          | Missing edition default | Plain `2024` |
+| ------------ | ------------------------------------------- | ----------------------- | ------------ |
+| `sui-1.26.2` | `legacy`, `2024.alpha`, `2024.beta`         | `legacy`                | Rejected     |
+| `sui-1.70.2` | `legacy`, `2024.alpha`, `2024.beta`, `2024` | `2024`                  | Accepted     |
+
+Unsupported or unknown editions fail with `status: "build_failure"`, `failureStage: "input_validation"`, and `verdict: "unverified"`. The verifier does not silently fall back to `legacy`.
+
 ## Reference Artifact Inspector
 
 Use the inspector before adding a new reference fixture:
