@@ -10,6 +10,10 @@ const repoRoot = path.resolve(
 const targets = [
   "AGENTS.md",
   "README.md",
+  "VERIFICATION.md",
+  "PACKAGE_BEHAVIOR.md",
+  "DEVELOPMENT.md",
+  "BYTECODE_VERSION_HISTORY.md",
   "SECURITY.md",
   "CLI_PIPELINE.md",
   "scripts",

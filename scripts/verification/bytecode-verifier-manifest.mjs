@@ -193,7 +193,8 @@ export function validateBytecodeVerifierManifest(
     for (const [fixtureIndex, fixture] of entry.knownFixtures.entries()) {
       validateKnownFixture(
         fixture,
-        `${label}: ${verifierId}.knownFixtures[${fixtureIndex}]`
+        `${label}: ${verifierId}.knownFixtures[${fixtureIndex}]`,
+        entry
       );
     }
   }
@@ -288,7 +289,7 @@ function validateSourceVariantPath(sourceVariantPath, label, repoRoot) {
   );
 }
 
-function validateKnownFixture(fixture, label) {
+function validateKnownFixture(fixture, label, verifier) {
   assertObject(fixture, label);
   assertString(fixture.name, `${label}.name`);
   assertValue(
@@ -313,6 +314,40 @@ function validateKnownFixture(fixture, label) {
   assertValue(
     fixture.expectedVerdict === "exact_bytecode_match",
     `${label}.expectedVerdict must be exact_bytecode_match`
+  );
+  validateKnownFixtureInspection(
+    fixture.referenceInspection,
+    `${label}.referenceInspection`,
+    verifier
+  );
+}
+
+function validateKnownFixtureInspection(inspection, label, verifier) {
+  assertObject(inspection, label);
+  assertValue(
+    inspection.decodedVersion === verifier.bytecodeVersion,
+    `${label}.decodedVersion must match verifier bytecodeVersion`
+  );
+  assertValue(
+    inspection.flavor === verifier.bytecodeFlavor,
+    `${label}.flavor must match verifier bytecodeFlavor`
+  );
+  assertValue(
+    Number.isInteger(inspection.moduleCount) && inspection.moduleCount > 0,
+    `${label}.moduleCount must be a positive integer`
+  );
+  assertValue(
+    Number.isInteger(inspection.dependencyCount) &&
+      inspection.dependencyCount >= 0,
+    `${label}.dependencyCount must be a non-negative integer`
+  );
+  assertValue(
+    Array.isArray(inspection.warnings),
+    `${label}.warnings must be an array`
+  );
+  assertValue(
+    inspection.warnings.length === 0,
+    `${label}.warnings must be empty for promoted verifier fixtures`
   );
 }
 

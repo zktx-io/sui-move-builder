@@ -3,6 +3,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { inspectReferenceArtifact } from "./inspect-reference-artifact.mjs";
+
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../.."
@@ -228,8 +230,13 @@ function summarize(result) {
   };
 }
 
-function assertExpected(args, result, surface) {
+function assertExpected(args, result, surface, referenceInspection) {
   const errors = [];
+  if (referenceInspection.warnings.length > 0) {
+    errors.push(
+      `reference artifact inspection failed (warnings as errors): ${referenceInspection.warnings.join("; ")}`
+    );
+  }
   if (args["expect-status"] && result.status !== args["expect-status"]) {
     errors.push(
       `expected status ${args["expect-status"]}, got ${result.status}`
@@ -288,6 +295,7 @@ async function main() {
   const distDir = path.resolve(repoRoot, args["dist-dir"]);
   const suiSourceDir = path.resolve(repoRoot, args["sui-source-dir"]);
   const transaction = await readJson(transactionPath);
+  const referenceInspection = inspectReferenceArtifact(transaction);
   const files = await readMovePackageFiles(packageDir);
   const { mod, wasmPath, jsPath } = await loadVerifier(distDir);
   const surface = verificationOnlySurface(mod);
@@ -341,6 +349,7 @@ async function main() {
       commit: args["sui-source-commit"],
       tag: args["sui-source-tag"],
     },
+    referenceInspection,
     result: summarize(result),
     fullResult: result,
   };
@@ -348,7 +357,8 @@ async function main() {
   const errors = assertExpected(
     { ...args, "expect-sui-version": args["expect-sui-version"] },
     { ...result, suiVersion },
-    surface
+    surface,
+    referenceInspection
   );
   proof.ok = errors.length === 0;
   proof.errors = errors;

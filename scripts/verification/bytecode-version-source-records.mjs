@@ -286,6 +286,28 @@ function validateSignals(signals, decodedBytecodeVersion, label) {
     signals.protocolConfig.minMoveBinaryFormatVersions,
     `${label}.signals.protocolConfig.minMoveBinaryFormatVersions`
   );
+  if (signals.moveCompilerEditions !== undefined) {
+    assertObject(
+      signals.moveCompilerEditions,
+      `${label}.signals.moveCompilerEditions`
+    );
+    for (const field of [
+      "moduleExtensionTokenPresent",
+      "moduleExtensionIn2024Alpha",
+      "moduleExtensionIn2024Beta",
+    ]) {
+      assertValue(
+        typeof signals.moveCompilerEditions[field] === "boolean",
+        `${label}.signals.moveCompilerEditions.${field} must be a boolean`
+      );
+    }
+    assertValue(
+      signals.moveCompilerEditions.moduleExtensionTokenPresent ||
+        (!signals.moveCompilerEditions.moduleExtensionIn2024Alpha &&
+          !signals.moveCompilerEditions.moduleExtensionIn2024Beta),
+      `${label}.signals.moveCompilerEditions ModuleExtension edition flags require moduleExtensionTokenPresent`
+    );
+  }
 }
 
 function validateSourceHashes(value, label) {

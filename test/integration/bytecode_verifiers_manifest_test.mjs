@@ -1,8 +1,10 @@
 import { createRequire } from "node:module";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { getSuiBuildConfig } from "../../scripts/sui-workspace.mjs";
+import { parseMoveCompilerEditions } from "../../scripts/verification/analyze-bytecode-versions.mjs";
 import {
   loadBytecodeVerifierManifest,
   validateBytecodeVerifierManifest,
@@ -11,6 +13,7 @@ import {
   loadBytecodeVersionSourceRecords,
   validateBytecodeVersionSourceRecords,
 } from "../../scripts/verification/bytecode-version-source-records.mjs";
+import { inspectReferenceArtifact } from "../../scripts/verification/inspect-reference-artifact.mjs";
 import { createWasmBuildContext } from "../../scripts/wasm/context.mjs";
 
 const require = createRequire(import.meta.url);
@@ -146,6 +149,52 @@ try {
   }
 }
 
+const invalidCompilerEditionSignals = {
+  ...sourceRecords,
+  records: sourceRecords.records.map((record) => ({ ...record })),
+};
+invalidCompilerEditionSignals.records[0].signals = {
+  ...invalidCompilerEditionSignals.records[0].signals,
+  moveCompilerEditions: {
+    moduleExtensionTokenPresent: false,
+    moduleExtensionIn2024Alpha: true,
+    moduleExtensionIn2024Beta: false,
+  },
+};
+try {
+  validateBytecodeVersionSourceRecords(
+    invalidCompilerEditionSignals,
+    "invalid compiler edition signal test"
+  );
+  throw new Error(
+    "Source records should reject ModuleExtension edition flags without token presence"
+  );
+} catch (error) {
+  if (!String(error?.message ?? error).includes("require")) {
+    throw error;
+  }
+}
+
+const compilerEditionSignals = parseMoveCompilerEditions(`
+const E2024_ALPHA_FEATURES: &[FeatureGate] = &[
+    FeatureGate::ModuleExtension,
+];
+const E2024_BETA_FEATURES: &[FeatureGate] = &[
+    FeatureGate::SomeOtherFeature,
+];
+`);
+if (
+  !compilerEditionSignals.moduleExtensionTokenPresent ||
+  !compilerEditionSignals.moduleExtensionIn2024Alpha ||
+  compilerEditionSignals.moduleExtensionIn2024Beta
+) {
+  throw new Error(
+    `Compiler edition parser should detect ModuleExtension alpha membership only: ${JSON.stringify(
+      compilerEditionSignals
+    )}`
+  );
+}
+
 const invalidFixtureManifest = {
   ...manifest,
   verifiers: {
@@ -178,6 +227,88 @@ try {
 } catch (error) {
   if (!String(error?.message ?? error).includes("network must be mainnet")) {
     throw error;
+  }
+}
+
+const invalidFixtureWarningManifest = {
+  ...manifest,
+  verifiers: {
+    ...manifest.verifiers,
+    [manifest.current]: {
+      ...current,
+      knownFixtures: [
+        {
+          name: "warning-fixture",
+          network: "mainnet",
+          txDigest: "digest",
+          intent: "publish",
+          rootGit: {
+            git: "https://github.com/MystenLabs/example.git",
+            rev: "abc123",
+          },
+          expectedStatus: "verified",
+          expectedVerdict: "exact_bytecode_match",
+          referenceInspection: {
+            decodedVersion: current.bytecodeVersion,
+            flavor: current.bytecodeFlavor,
+            moduleCount: 1,
+            dependencyCount: 0,
+            warnings: ["warning"],
+          },
+        },
+      ],
+    },
+  },
+};
+try {
+  validateBytecodeVerifierManifest(
+    invalidFixtureWarningManifest,
+    "invalid known fixture warning test"
+  );
+  throw new Error("Verifier manifest should reject fixture warning records");
+} catch (error) {
+  if (!String(error?.message ?? error).includes("warnings must be empty")) {
+    throw error;
+  }
+}
+
+for (const verifier of Object.values(manifest.verifiers)) {
+  for (const fixture of verifier.knownFixtures) {
+    const transactionPath = path.join(
+      repoRoot,
+      ".sui-build",
+      "parity-transaction-artifact-output",
+      "verification",
+      fixture.name,
+      "transaction.json"
+    );
+    if (!fs.existsSync(transactionPath)) {
+      continue;
+    }
+    const inspection = inspectReferenceArtifact(
+      JSON.parse(fs.readFileSync(transactionPath, "utf8"))
+    );
+    if (inspection.warnings.length > 0) {
+      throw new Error(
+        `${fixture.name} cached transaction inspection must have no warnings: ${inspection.warnings.join(
+          "; "
+        )}`
+      );
+    }
+    const expectedInspection = fixture.referenceInspection;
+    const actualInspection = {
+      decodedVersion: inspection.bytecode.decodedVersion,
+      flavor: inspection.bytecode.flavor,
+      moduleCount: inspection.artifact.moduleCount,
+      dependencyCount: inspection.artifact.dependencyCount,
+    };
+    for (const [key, actual] of Object.entries(actualInspection)) {
+      if (actual !== expectedInspection[key]) {
+        throw new Error(
+          `${fixture.name} known fixture ${key} must match cached transaction inspection: expected ${expectedInspection[key]}, got ${actual}`
+        );
+      }
+    }
   }
 }
 

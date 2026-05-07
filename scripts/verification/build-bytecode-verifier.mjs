@@ -188,6 +188,40 @@ async function syncBundledVerificationDist(repoRoot, entry, root) {
   );
 }
 
+async function syncIsolatedVerificationRoute(repoRoot, entry, root) {
+  const routeInfo = getBytecodeVerifierRoute(entry.verifierId, repoRoot);
+  if (!routeInfo || entry.status === "current") {
+    return;
+  }
+
+  const sourceDir = path.join(root, "dist", "verification");
+  const routeRelative = path.relative(
+    path.join(repoRoot, "dist", "verification"),
+    path.join(repoRoot, routeInfo.route.distPath)
+  );
+  const targetDir = path.join(sourceDir, routeRelative);
+
+  await fs.rm(targetDir, { recursive: true, force: true });
+  await fs.mkdir(targetDir, { recursive: true });
+  for (const fileName of [
+    "sui_move_wasm.js",
+    "sui_move_wasm.d.ts",
+    "sui_move_wasm_bg.wasm",
+    "sui_move_wasm_bg.wasm.d.ts",
+  ]) {
+    await fs.copyFile(
+      path.join(sourceDir, fileName),
+      path.join(targetDir, fileName)
+    );
+  }
+  console.log(
+    `[OK] ${entry.verifierId} isolated verifier route copied to ${path.relative(
+      repoRoot,
+      targetDir
+    )}`
+  );
+}
+
 function ensureRustTarget(entry, repoRoot, env) {
   if (!entry.rustVersion) return;
   run(
@@ -293,6 +327,7 @@ async function main() {
   }
   if (shouldBuildJs(options)) {
     buildVerificationJs(repoRoot, root);
+    await syncIsolatedVerificationRoute(repoRoot, entry, root);
     await syncBundledVerificationDist(repoRoot, entry, root);
   }
 

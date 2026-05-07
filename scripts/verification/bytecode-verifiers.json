@@ -60,7 +60,14 @@
             "subdir": "kiosk"
           },
           "expectedStatus": "verified",
-          "expectedVerdict": "exact_bytecode_match"
+          "expectedVerdict": "exact_bytecode_match",
+          "referenceInspection": {
+            "decodedVersion": 6,
+            "flavor": null,
+            "moduleCount": 6,
+            "dependencyCount": 2,
+            "warnings": []
+          }
         }
       ]
     }

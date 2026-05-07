@@ -1,0 +1,138 @@
+# Verification
+
+The verification entrypoint rebuilds caller-provided source and compares the result with caller-provided reference Move bytecode. It reports source-to-bytecode comparison evidence; it does not execute transactions.
+
+## Inputs
+
+`verifyMovePackageProvenance` uses the same source snapshot and dependency resolution inputs as the build APIs, plus:
+
+- `intent`: `publish` or `upgrade`
+- `reference.modules`: base64 Move modules from the reference artifact
+- `reference.dependencies`: optional dependency IDs from the reference artifact
+- `reference.packageId` or `reference.rootAddress`: optional root package address metadata
+- `reference.digest`: optional package digest
+- `reference.cliVersion` and `reference.buildConfig`: optional caller-declared evidence metadata
+
+The verifier does not fetch RPC, GitHub, transaction, or filesystem data. Transaction callers extract `Publish` or `Upgrade` externally and pass the matching reference artifact.
+
+## Bytecode Version Routing
+
+The wrapper reads the decoded bytecode version from `reference.modules` and lazy-loads the matching bundled verifier:
+
+| Decoded bytecode version | Bundled verifier path  |
+| ------------------------ | ---------------------- |
+| 7                        | `dist/verification`    |
+| 6                        | `dist/verification/v6` |
+
+The selected verifier's Sui source version is reported as `bytecodeHeaderEvidence.currentVerifierSuiVersion`. This is build-time verifier metadata, not a local CLI probe. `reference.cliVersion` is caller-declared metadata and does not replace bytecode comparison.
+
+Declared `reference.cliVersion` and `reference.buildConfig` are returned as evidence when provided. They are caller-provided metadata and are not used as a substitute for bytecode comparison.
+
+## Reference Artifact Inspector
+
+Use the inspector before adding a new reference fixture:
+
+```bash
+npm run inspect:reference-artifact -- --artifact ./reference.json
+```
+
+The command decodes the Move bytecode header from `modules`, reports decoded bytecode version, bytecode flavor when present, module count, dependency count, and any caller-provided fixture metadata. It does not fetch source, RPC data, or transaction data.
+
+Use `--fail-on-warning` when checking an artifact before fixture promotion:
+
+```bash
+npm run inspect:reference-artifact -- --artifact ./reference.json --fail-on-warning
+```
+
+When `--fail-on-warning` is set, warning-bearing artifacts fail the command and `--out` is not written. Run the command without `--fail-on-warning` if you need the inspection JSON while diagnosing the warning.
+
+Accepted input shapes:
+
+```json
+{
+  "modules": ["...base64..."],
+  "dependencies": ["0x1"],
+  "packageId": "0x...",
+  "txDigest": "...",
+  "network": "mainnet",
+  "intent": "publish",
+  "rootGit": {
+    "git": "https://github.com/owner/repo.git",
+    "rev": "0123456789abcdef0123456789abcdef01234567",
+    "subdir": "path/to/package"
+  }
+}
+```
+
+The inspector also accepts:
+
+- `{ "reference": { ... } }` wrappers.
+- Existing transaction audit artifacts with `modules` plus top-level `digest` and transaction-shaped metadata such as `kind`, `status`, or `source: "grpc" | "graphql"`. In that shape, `digest` is treated as the transaction digest.
+- Older flat source metadata fields: `sourceGit`, `sourceRev`, and `sourceSubdir`.
+
+`modules` is the only required field for header inspection. `dependencies`, `packageId`, `txDigest`, `network`, `intent`, and `rootGit` are optional metadata for fixture review. A supported verifier fixture still needs pinned source metadata before it can be promoted to `knownFixtures`.
+
+For decoded bytecode version 6 or lower, a non-zero high byte in the raw version word is reported as a warning because those versions normally do not encode Sui flavor in the header.
+
+## Intent
+
+| Reference artifact source                                 | `intent`  | Meaning                                                                                                       |
+| --------------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------- |
+| Publish transaction modules or publish `.mv` artifacts    | `publish` | Compares publish-time bytecode and keeps the package root address selected by package metadata.               |
+| Upgrade transaction modules or upgrade preparation output | `upgrade` | Compares upgrade-time bytecode. The current rebuild stays root-as-zero and does not use dump output as proxy. |
+
+`dumpMovePackage` remains a build API. Dump JSON is not a transaction provenance reference.
+
+## Status
+
+| `status`                    | Meaning                                                                                             |
+| --------------------------- | --------------------------------------------------------------------------------------------------- |
+| `verified`                  | The selected verifier accepted the source/reference comparison. Check `verdict` for the match type. |
+| `bytecode_version_mismatch` | Header or recognized bytecode format evidence differs without a semantic mismatch classification.   |
+| `mismatch`                  | Bytecode, module identity, dependency, digest, or address evidence differs semantically.            |
+| `build_failure`             | Source resolution, compilation, or verifier execution failed before comparison completed.           |
+| `invalid_reference`         | Caller-provided reference bytes or metadata could not be parsed as a supported reference.           |
+
+`verified`, `mismatch`, and `bytecode_version_mismatch` results do not include `failureStage`. Failure statuses may include it.
+
+`bytecode_version_mismatch` results may include populated `differences` and `bytecodeDiffs` fields. Treat those fields as comparison evidence.
+
+## Verdicts
+
+`verdict` is an evidence classification, not a transaction execution result.
+
+| `verdict`                          | Meaning                                                                                                            |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `exact_bytecode_match`             | Reference modules match the current source rebuild byte-for-byte.                                                  |
+| `root_address_substitution_match`  | Reference modules match after applying root-address substitution, but raw module bytes differ.                     |
+| `bytecode_version_header_mismatch` | The only module difference is the Move bytecode version word.                                                      |
+| `bytecode_format_drift`            | Module identity and shape match, and differences are limited to bytecode version metadata and `function_defs`.     |
+| `semantic_mismatch`                | Module identity, shape, dependency/digest data, or bytecode tables differ beyond recognized bytecode format drift. |
+| `unverified`                       | The verifier could not classify the comparison, usually because input validation, dependency, or build failed.     |
+
+`verified` with `exact_bytecode_match` is the only byte-for-byte match result. `verified` with `root_address_substitution_match` means compiled-module comparison matched after documented root-address substitution, but raw bytes did not match. When root-address substitution is applied, current module summaries keep the pre-substitution address in `originalAddress`.
+
+## Address Rules
+
+For `publish` references, `reference.rootAddress` and `reference.packageId` align the current build's module self address for comparison.
+
+For `upgrade` references, the current rebuild stays root-as-zero. Package ID metadata does not rewrite the current module identity.
+
+If source compiles with a root address of `0x0` but the reference contains a published package address, pass that published address as `reference.rootAddress` or `reference.packageId`.
+
+A conflicting non-zero current module address and requested `rootAddress` is reported as `mismatch` with `semantic_mismatch`, not as a build failure. If package source embeds its own address in constants or other bytecode-sensitive positions, use the matching `intent` and source metadata for the artifact being checked.
+
+## Failure Stages
+
+| `failureStage`          | Meaning                                                                                       |
+| ----------------------- | --------------------------------------------------------------------------------------------- |
+| `wasm_init`             | The verification WASM module could not initialize.                                            |
+| `dependency_resolution` | Source snapshot dependency resolution failed before Rust verification ran.                    |
+| `input_validation`      | JS or Rust rejected the verification input or caller-provided reference artifact.             |
+| `compile`               | Rust compilation of the caller-provided source snapshot failed.                               |
+| `compiler_output`       | Rust could not parse or normalize current build output JSON, digest, or bytecode module data. |
+| `verification_output`   | The JS wrapper could not call the verifier or could not parse the verifier JSON response.     |
+
+## Byte-For-Byte Match Requirements
+
+Older decoded bytecode versions require source snapshots and dependency snapshots, or a fetcher, pinned to revisions the selected verifier can compile. A matching decoded bytecode version alone is not enough; the rebuilt raw modules must match the reference bytes.

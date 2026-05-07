@@ -1,6 +1,6 @@
 {
   "name": "@zktx.io/sui-move-builder",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Build Move packages in web or Node.js with dependency fetching and dump outputs.",
   "keywords": [
     "sui",
@@ -44,7 +44,14 @@
     "access": "public"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "VERIFICATION.md",
+    "PACKAGE_BEHAVIOR.md",
+    "DEVELOPMENT.md",
+    "CLI_PIPELINE.md",
+    "SECURITY.md",
+    "BYTECODE_VERSION_HISTORY.md"
   ],
   "sideEffects": false,
   "scripts": {
@@ -56,6 +63,7 @@
     "prepare:wasm": "node scripts/prepare-wasm.mjs",
     "inventory:sui-tags": "node scripts/verification/inventory-sui-tags.mjs",
     "analyze:bytecode-versions": "node scripts/verification/analyze-bytecode-versions.mjs",
+    "inspect:reference-artifact": "node scripts/verification/inspect-reference-artifact.mjs",
     "verify:bytecode-verifiers": "node scripts/verification/validate-bytecode-verifiers.mjs",
     "build:bytecode-verifier": "node scripts/verification/build-bytecode-verifier.mjs",
     "build:verification:v6": "npm run build:bytecode-verifier -- --verifier sui-1.26.2",

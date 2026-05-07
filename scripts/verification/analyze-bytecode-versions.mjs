@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { SUI_REPO_URL } from "../sui-workspace.mjs";
 import { getRepoRoot } from "./bytecode-verifier-manifest.mjs";
@@ -34,6 +35,14 @@ const SOURCE_FILE_GROUPS = [
   {
     id: "protocolConfig",
     candidates: ["crates/sui-protocol-config/src/lib.rs"],
+  },
+  {
+    id: "moveCompilerEditions",
+    candidates: [
+      "external-crates/move/crates/move-compiler/src/editions/mod.rs",
+      "external-crates/move/move-compiler/src/editions/mod.rs",
+    ],
+    legacyMoveCandidate: "language/move-compiler/src/editions/mod.rs",
   },
 ];
 
@@ -335,6 +344,29 @@ function parseProtocolConfig(text) {
   };
 }
 
+export function parseMoveCompilerEditions(text) {
+  return {
+    moduleExtensionTokenPresent: /\bModuleExtension\b/.test(text),
+    moduleExtensionIn2024Alpha: editionFeatureListIncludes(
+      text,
+      "E2024_ALPHA_FEATURES",
+      "ModuleExtension"
+    ),
+    moduleExtensionIn2024Beta: editionFeatureListIncludes(
+      text,
+      "E2024_BETA_FEATURES",
+      "ModuleExtension"
+    ),
+  };
+}
+
+function editionFeatureListIncludes(text, constName, featureName) {
+  const match = text.match(
+    new RegExp(`const\\s+${constName}\\s*:[^=]*=\\s*&\\[([\\s\\S]*?)\\];`)
+  );
+  return Boolean(match?.[1]?.includes(`FeatureGate::${featureName}`));
+}
+
 function uniqueNumbers(text, regex) {
   return [
     ...new Set(
@@ -400,11 +432,15 @@ async function analyzeTag(options, tag) {
   const serializer = files.serializer?.text;
   const deserializer = files.deserializer?.text;
   const protocol = files.protocolConfig?.text;
+  const moveCompilerEditions = files.moveCompilerEditions?.text;
   const signals = {
     moveBinaryFormat: fileFormat ? parseMoveBinaryFormat(fileFormat) : null,
     serializer: serializer ? parseSerializer(serializer) : null,
     deserializer: deserializer ? parseDeserializer(deserializer) : null,
     protocolConfig: protocol ? parseProtocolConfig(protocol) : null,
+    moveCompilerEditions: moveCompilerEditions
+      ? parseMoveCompilerEditions(moveCompilerEditions)
+      : null,
   };
   const bytecodeSignals = extractBytecodeSignals(signals);
 
@@ -529,7 +565,12 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error(error.message || error);
-  process.exit(1);
-});
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main().catch((error) => {
+    console.error(error.message || error);
+    process.exit(1);
+  });
+}
