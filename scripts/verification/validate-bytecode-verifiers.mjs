@@ -5,6 +5,7 @@ import {
   loadBytecodeVerifierManifest,
 } from "./bytecode-verifier-manifest.mjs";
 import { loadBytecodeVersionSourceRecords } from "./bytecode-version-source-records.mjs";
+import { assertVerificationRuntimeConfigFresh } from "./generate-verification-runtime-config.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -37,6 +38,7 @@ function main() {
       );
     }
   }
+  assertVerificationRuntimeConfigFresh(repoRoot);
 
   console.log(
     `[OK] ${manifestPath}: ${Object.keys(manifest.verifiers).length} bytecode verifier(s), current ${manifest.current}`

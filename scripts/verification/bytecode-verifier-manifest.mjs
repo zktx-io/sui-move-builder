@@ -1,13 +1,13 @@
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+
+import { loadBytecodeVersionSourceRecords } from "./bytecode-version-source-records.mjs";
+import { getRepoRoot } from "./repo-root.mjs";
 
 const require = createRequire(import.meta.url);
 
-export function getRepoRoot() {
-  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-}
+export { getRepoRoot } from "./repo-root.mjs";
 
 export function getBytecodeVerifierManifestPath(repoRoot = getRepoRoot()) {
   return path.join(
@@ -65,8 +65,17 @@ export function defaultCompatDir(repoRoot, verifierId) {
 export function validateBytecodeVerifierManifest(
   manifest,
   label = "manifest",
-  repoRoot = getRepoRoot()
+  repoRoot = getRepoRoot(),
+  sourceRecords
 ) {
+  const editionSourceRecords =
+    sourceRecords ?? loadBytecodeVersionSourceRecords(repoRoot).sourceRecords;
+  const sourceRecordByVersion = new Map(
+    editionSourceRecords.records.map((record) => [
+      record.decodedBytecodeVersion,
+      record,
+    ])
+  );
   assertObject(manifest, `${label} root`);
   assertValue(
     manifest.schemaVersion === 1,
@@ -194,7 +203,8 @@ export function validateBytecodeVerifierManifest(
       validateKnownFixture(
         fixture,
         `${label}: ${verifierId}.knownFixtures[${fixtureIndex}]`,
-        entry
+        entry,
+        sourceRecordByVersion
       );
     }
   }
@@ -289,7 +299,7 @@ function validateSourceVariantPath(sourceVariantPath, label, repoRoot) {
   );
 }
 
-function validateKnownFixture(fixture, label, verifier) {
+function validateKnownFixture(fixture, label, verifier, sourceRecordByVersion) {
   assertObject(fixture, label);
   assertString(fixture.name, `${label}.name`);
   assertValue(
@@ -323,11 +333,17 @@ function validateKnownFixture(fixture, label, verifier) {
   validateKnownFixtureManifest(
     fixture.referenceManifest,
     `${label}.referenceManifest`,
-    verifier
+    verifier,
+    sourceRecordByVersion
   );
 }
 
-function validateKnownFixtureManifest(referenceManifest, label, verifier) {
+function validateKnownFixtureManifest(
+  referenceManifest,
+  label,
+  verifier,
+  sourceRecordByVersion
+) {
   assertObject(referenceManifest, label);
   assertValue(
     referenceManifest.edition === null ||
@@ -345,21 +361,31 @@ function validateKnownFixtureManifest(referenceManifest, label, verifier) {
     );
   }
   const effectiveEdition =
-    referenceManifest.edition ?? defaultEditionForVerifier(verifier);
+    referenceManifest.edition ??
+    defaultEditionForVerifier(verifier, sourceRecordByVersion);
   assertValue(
-    supportedEditionsForVerifier(verifier).includes(effectiveEdition),
+    supportedEditionsForVerifier(verifier, sourceRecordByVersion).includes(
+      effectiveEdition
+    ),
     `${label}.edition ${effectiveEdition} is not supported by verifier ${verifier.verifierId}`
   );
 }
 
-function supportedEditionsForVerifier(verifier) {
-  return verifier.bytecodeVersion === 6
-    ? ["legacy", "2024.alpha", "2024.beta"]
-    : ["legacy", "2024.alpha", "2024.beta", "2024"];
+function supportedEditionsForVerifier(verifier, sourceRecordByVersion) {
+  return compilerEditionSignals(verifier, sourceRecordByVersion).validEditions;
 }
 
-function defaultEditionForVerifier(verifier) {
-  return verifier.bytecodeVersion === 6 ? "legacy" : "2024";
+function defaultEditionForVerifier(verifier, sourceRecordByVersion) {
+  return compilerEditionSignals(verifier, sourceRecordByVersion).defaultEdition;
+}
+
+function compilerEditionSignals(verifier, sourceRecordByVersion) {
+  const sourceRecord = sourceRecordByVersion.get(verifier.bytecodeVersion);
+  assertValue(
+    Boolean(sourceRecord?.signals?.moveCompilerEditions),
+    `bytecode version ${verifier.bytecodeVersion} must have moveCompilerEditions source signals`
+  );
+  return sourceRecord.signals.moveCompilerEditions;
 }
 
 function validateKnownFixtureInspection(inspection, label, verifier) {

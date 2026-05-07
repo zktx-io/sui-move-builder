@@ -10,6 +10,10 @@ import {
   validateBytecodeVerifierManifest,
 } from "../../scripts/verification/bytecode-verifier-manifest.mjs";
 import {
+  assertVerificationRuntimeConfigFresh,
+  buildVerificationRuntimeConfigSource,
+} from "../../scripts/verification/generate-verification-runtime-config.mjs";
+import {
   loadBytecodeVersionSourceRecords,
   validateBytecodeVersionSourceRecords,
 } from "../../scripts/verification/bytecode-version-source-records.mjs";
@@ -85,6 +89,20 @@ for (const bytecodeVersion of Object.keys(manifest.bytecodeVersions)) {
     throw new Error(
       `Bytecode version ${bytecodeVersion} route must have a source record`
     );
+  }
+}
+
+const runtimeConfigSource = buildVerificationRuntimeConfigSource(repoRoot);
+assertVerificationRuntimeConfigFresh(repoRoot, runtimeConfigSource);
+try {
+  assertVerificationRuntimeConfigFresh(
+    repoRoot,
+    runtimeConfigSource.replace("sui-1.26.2", "sui-1.26.1")
+  );
+  throw new Error("Runtime config freshness check should reject stale source");
+} catch (error) {
+  if (!String(error?.message ?? error).includes("is stale")) {
+    throw error;
   }
 }
 

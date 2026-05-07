@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import path from "node:path";
 
-import { getRepoRoot } from "./bytecode-verifier-manifest.mjs";
+import { getRepoRoot } from "./repo-root.mjs";
 
 const require = createRequire(import.meta.url);
 
