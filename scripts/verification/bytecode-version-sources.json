@@ -213,11 +213,11 @@
     {
       "decodedBytecodeVersion": 7,
       "bytecodeFlavor": 5,
-      "verifierId": "sui-1.70.2",
+      "verifierId": "sui-1.71.1",
       "representative": {
-        "suiVersion": "1.70.2",
-        "tag": "mainnet-v1.70.2",
-        "commit": "6d4ec0b0621dd9555753c9ecd5be021b25a0d267"
+        "suiVersion": "1.71.1",
+        "tag": "mainnet-v1.71.1",
+        "commit": "2f5992f189cd24445cd010ccf0aa7ff418ff93b1"
       },
       "firstObserved": {
         "tag": "testnet-v1.27.0",
@@ -291,7 +291,7 @@
         },
         "protocolConfig": {
           "sourceFile": "crates/sui-protocol-config/src/lib.rs",
-          "sha256": "de0ddb0fef7bc62cb05021a8bb7056f645ed71ac429398d7c6f46ebd091fab4e"
+          "sha256": "aaca9ab6788c9587d33d3371fe088857ea55a05dfc2e45227681d0ab32c59940"
         },
         "moveCompilerEditions": {
           "sourceFile": "external-crates/move/crates/move-compiler/src/editions/mod.rs",

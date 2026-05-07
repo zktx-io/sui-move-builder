@@ -27,7 +27,7 @@ Generated evidence covers 1029 upstream Sui tags: 400 network tags and 629 relea
 | ------------------------ | ------ | ------------------- | ------------------ | ---------------------- | ------------------------------------------ | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
 | 5                        | None   | `sui-devnet-0.13.2` | `devnet-0.1.0`     | `devnet-0.13.2`        | `7fff531f90d912d2d2d77c5eca2e98c3c23ccdcf` | `devnet-0.13.2`                               | Network-only pre-release record. Sui references `move-language/move`; `VERSION_MAX` is 5, no Sui flavor is encoded, and jump tables are absent. | Source record only                     |
 | 6                        | None   | `sui-1.26.2`        | `devnet-0.14.0`    | `mainnet-v1.26.2`      | `f531168c745260b60a4ec4906c9f2b22240d872d` | `sui_v1.26.2_1717632279_release`              | First decoded bytecode version observed in release CLI tags. `VERSION_MAX` is 6, no Sui flavor is encoded, and jump tables are absent.          | `apps-kiosk` exact fixture             |
-| 7                        | 5      | `sui-1.70.2`        | `testnet-v1.27.0`  | `mainnet-v1.70.2`      | `6d4ec0b0621dd9555753c9ecd5be021b25a0d267` | Not observed                                  | `VERSION_MAX` becomes 7, Sui flavor is encoded in the header, and function code units include version-gated jump tables.                        | Current provenance and artifact audits |
+| 7                        | 5      | `sui-1.71.1`        | `testnet-v1.27.0`  | `mainnet-v1.71.1`      | `2f5992f189cd24445cd010ccf0aa7ff418ff93b1` | Not observed                                  | `VERSION_MAX` becomes 7, Sui flavor is encoded in the header, and function code units include version-gated jump tables.                        | Current provenance and artifact audits |
 
 ## Boundary Evidence
 
@@ -47,7 +47,7 @@ Move edition support is verifier-source-specific. The decoded bytecode version i
 | Verifier     | Valid editions                              | Missing edition fallback | Plain `2024` support | ModuleExtension evidence  |
 | ------------ | ------------------------------------------- | ------------------------ | -------------------- | ------------------------- |
 | `sui-1.26.2` | `legacy`, `2024.alpha`, `2024.beta`         | `legacy`                 | Unsupported          | Absent                    |
-| `sui-1.70.2` | `legacy`, `2024.alpha`, `2024.beta`, `2024` | `legacy`                 | Supported            | `2024.alpha` feature list |
+| `sui-1.71.1` | `legacy`, `2024.alpha`, `2024.beta`, `2024` | `legacy`                 | Supported            | `2024.alpha` feature list |
 
 The v6 classic verifier accepted edition set is `legacy`, `2024.alpha`, and `2024.beta`; plain `edition = "2024"` returns an `input_validation` failure for that candidate. Later v6 compiler-capability candidates can support plain `2024`. The current v7 verifier maps plain `2024` to the stable `E2024` edition; `2024.alpha` remains a separate edition.
 
@@ -98,11 +98,11 @@ Each completed record should cite generated evidence for these upstream source g
 | `sui-1.26.2`        | `deserializer.rs`        | `external-crates/move/crates/move-binary-format/src/deserializer.rs`       | `c2afcbec0876e178f9fab317cd26df51e0d306a9ee570f5b4d5bf4606f1828f4` |
 | `sui-1.26.2`        | `protocol config`        | `crates/sui-protocol-config/src/lib.rs`                                    | `65d196c9fa72138d4c363f0e9f07dd42c87b3f33cf8b0d13b26d2a9f10caead0` |
 | `sui-1.26.2`        | `move compiler editions` | `external-crates/move/crates/move-compiler/src/editions/mod.rs`            | `e0b2859e9e79597c4ddd83fc67b1fa00ef25a67dc2c86a12a275da7a119e1f97` |
-| `sui-1.70.2`        | `file_format_common.rs`  | `external-crates/move/crates/move-binary-format/src/file_format_common.rs` | `1b2b41d74f5f12c6625c339a56a995119abbe0c19a7f98df53c7c494b04d10e1` |
-| `sui-1.70.2`        | `serializer.rs`          | `external-crates/move/crates/move-binary-format/src/serializer.rs`         | `9b297ab9d609345623a05612f8b04b96284bc404f131088570df3413794ff79a` |
-| `sui-1.70.2`        | `deserializer.rs`        | `external-crates/move/crates/move-binary-format/src/deserializer.rs`       | `5413482f3c9e556f60a01981864df207079634a5aab6c22b23da22f076aae014` |
-| `sui-1.70.2`        | `protocol config`        | `crates/sui-protocol-config/src/lib.rs`                                    | `de0ddb0fef7bc62cb05021a8bb7056f645ed71ac429398d7c6f46ebd091fab4e` |
-| `sui-1.70.2`        | `move compiler editions` | `external-crates/move/crates/move-compiler/src/editions/mod.rs`            | `f3d9b7660548798d111239db37fb5d2b38eed14b1d34d42a730e39863b6d45e8` |
+| `sui-1.71.1`        | `file_format_common.rs`  | `external-crates/move/crates/move-binary-format/src/file_format_common.rs` | `1b2b41d74f5f12c6625c339a56a995119abbe0c19a7f98df53c7c494b04d10e1` |
+| `sui-1.71.1`        | `serializer.rs`          | `external-crates/move/crates/move-binary-format/src/serializer.rs`         | `9b297ab9d609345623a05612f8b04b96284bc404f131088570df3413794ff79a` |
+| `sui-1.71.1`        | `deserializer.rs`        | `external-crates/move/crates/move-binary-format/src/deserializer.rs`       | `5413482f3c9e556f60a01981864df207079634a5aab6c22b23da22f076aae014` |
+| `sui-1.71.1`        | `protocol config`        | `crates/sui-protocol-config/src/lib.rs`                                    | `aaca9ab6788c9587d33d3371fe088857ea55a05dfc2e45227681d0ab32c59940` |
+| `sui-1.71.1`        | `move compiler editions` | `external-crates/move/crates/move-compiler/src/editions/mod.rs`            | `f3d9b7660548798d111239db37fb5d2b38eed14b1d34d42a730e39863b6d45e8` |
 
 ## Future Record Criteria
 

@@ -219,6 +219,12 @@ The following JSON block is checked against `scripts/compat/manifest.json` by
       "category": "native-attestation",
       "reachability": "only when the linked upstream crate calls this patched module",
       "behavior": "native returns a not-supported error code"
+    },
+    "rangeproofs": {
+      "compatFile": "rangeproofs.rs",
+      "category": "cryptography",
+      "reachability": "only when the linked upstream crate calls this patched module",
+      "behavior": "native returns a not-supported error code"
     }
   },
   "emptyStubCrates": {

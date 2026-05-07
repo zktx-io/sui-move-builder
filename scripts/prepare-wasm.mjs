@@ -992,6 +992,23 @@ panic = "abort"
             path.join(nativesSrc, "crypto/nitro_attestation.rs")
           );
 
+          const rangeproofsTarget = path.join(
+            nativesSrc,
+            "crypto/rangeproofs.rs"
+          );
+          if (await fs.stat(rangeproofsTarget).catch(() => false)) {
+            if (!filePatches.rangeproofs) {
+              throw new Error(
+                `Missing filePatches.rangeproofs in ${compatManifest.manifestPath}; ${rangeproofsTarget} exists in the selected Sui source.`
+              );
+            }
+            console.log(`  Stubbing rangeproofs in ${v}...`);
+            await fs.copyFile(
+              path.join(compatDir, filePatches.rangeproofs),
+              rangeproofsTarget
+            );
+          }
+
           // Patch lib.rs to remove ONLY cost params, keep registration
           const nLib = path.join(nativesSrc, "lib.rs");
           if (await fs.stat(nLib).catch(() => false)) {

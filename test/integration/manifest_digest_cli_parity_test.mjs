@@ -253,14 +253,38 @@ implicit-dependencies = false
 legacy_collision_root = "0x0"
 
 [dependencies]
-same-name = { local = "../regular-dep" }
+same-name = { local = "../same-name-regular-dep" }
 
 [dev-dependencies]
-same_name = { local = "../dev-dep" }
+same_name = { local = "../same-name-dev-dep" }
 `;
 await writePackage(legacyCollisionRoot, {
   "Move.toml": legacyCollisionMoveToml,
   "sources/root.move": "module legacy_collision_root::root {}",
+});
+await writePackage(path.join(legacyDir, "same-name-regular-dep"), {
+  "Move.toml": `
+[package]
+name = "same-name"
+version = "0.0.0"
+implicit-dependencies = false
+
+[addresses]
+same_name = "0x0"
+`,
+  "sources/regular.move": "module same_name::regular {}",
+});
+await writePackage(path.join(legacyDir, "same-name-dev-dep"), {
+  "Move.toml": `
+[package]
+name = "same_name"
+version = "0.0.0"
+implicit-dependencies = false
+
+[addresses]
+same_name = "0x0"
+`,
+  "sources/dev.move": "module same_name::dev {}",
 });
 const legacyCollisionWasmDigest = moveTomlDigest(
   legacyCollisionMoveToml,
@@ -269,7 +293,7 @@ const legacyCollisionWasmDigest = moveTomlDigest(
 const legacyCollisionExpectedDigest = digestFromJson([
   {
     name: "same_name",
-    local: "../dev-dep",
+    local: "../same-name-dev-dep",
     modes: ["test"],
     use_environment: "mainnet",
   },

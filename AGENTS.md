@@ -62,6 +62,22 @@ Publication update helpers consume successful external execution results and pre
 
 Run build, parity, audit, and browser verification serially. These commands share `.sui-build`, `dist`, and Sui CLI cache state, so the default process does not use background jobs or parallel npm runners.
 
+## Version-Up Review Checklist
+
+Before implementing a Sui version-up, map the full dependency and artifact flow: `sui-version.json` -> pinned upstream source -> active compat manifest -> prepare patch targets -> Cargo workspace dependencies -> WASM profiles -> verification routes -> generated runtime config -> tests and docs. Use that map to decide the order of changes and the verification commands, not only the first failing command.
+
+For every upstream native module, source file, cost parameter, or registration path newly added or newly imported by the pinned Sui source, inspect the selected upstream source before adding a compat patch. If the file is replaced by `scripts/compat`, compare exported public functions, required structs, native registrations, and `lib.rs` cost-parameter wiring. Add or update an automated compat-surface check when a missing manifest entry or stale stub would otherwise be discovered only during a later Cargo build.
+
+Treat `prepare:wasm` Cargo failures as whole-workspace manifest and dependency-graph failures until proven narrower. Inspect the crate named in the error, its direct and transitive local path dependencies, and the selected upstream workspace root before deciding whether the fix belongs in the active compat manifest, a verifier-specific compat manifest, a source variant, or the local crate dependency list.
+
+Any change to the local `sui-move-wasm` crate dependencies, build features, compat stubs, or prepared overlay can affect legacy verifier builds. After such a change, rebuild the affected legacy verifier recipes through `npm run build:bytecode-verifier -- --verifier <verifier-id>` or the aggregate verifier build. If a legacy verifier needs adaptation, add an isolated verifier-specific compat recipe; do not rely on the current compat overlay or allow a fallback to current patches.
+
+For security-sensitive stubs, compare the error behavior with the nearest existing compat replacement before choosing abort codes, exported symbols, or reachability text. Crypto and signature stubs should fail closed, document their runtime reachability and security impact, and have a manifest entry that makes the replacement auditable.
+
+When a parity fixture changes during version-up, first confirm the selected Sui CLI or pinned upstream source behavior that forces the fixture change. Preserve the property under test, rename or restructure the fixture only as needed to avoid unrelated state coupling, and avoid normalizing output just to keep an older expected value.
+
+After changing verifier routing or generated verification config, rerun the generator and review the generated diff. `src/generated/verificationRuntimeConfig.ts` is evidence of the manifest state, not an independent editing surface.
+
 ## Parity and Hardcoding Rules
 
 CLI parity is not just a passing test result. Treat it as a stage-by-stage match with the pinned Sui flow: `RootPackage` -> `PackageGraph` -> `BuildPlan` -> compiler/test runner -> output, digest, and lockfile.
@@ -177,6 +193,18 @@ For a normal refactor or version-up task, produce these outputs:
 - Updated README/CLI_PIPELINE content only for facts confirmed by code or tests.
 - Verified CLI and WASM full/lite runtime version exposure when version-up work produces runnable artifacts.
 - A final report listing changed files, commands run, failures, and remaining risks.
+
+Artifact-specific duties:
+
+- `sui-version.json`: update it only when the pinned Sui version changes. Confirm the selected Sui version, tag, and commit from upstream, then keep CLI reports, WASM version exports, verification manifests, generated runtime config, and documentation in agreement with that pin.
+- `.sui-build/patch-state.json`: produce it only through `npm run prepare:wasm`. Confirm that it records the selected version, tag, commit, compat manifest, and applied patch state. Do not hand-edit it.
+- `dist/lite` and `dist/full`: build them only from a successful prepared workspace with `npm run build:wasm:prepared:lite` and `npm run build:wasm:prepared:full`. Rebuild them after any Rust, compat, prepared source, or version pin change that can affect WASM output. After JS build, verify their public pinned Sui version APIs.
+- `dist/verification`: treat this as the current verifier artifact. Build it from the prepared current workspace with `npm run build:wasm:prepared:verification` or as part of `npm run build`. When the current verifier ID or route changes, update `scripts/verification/bytecode-verifiers.json`, regenerate `src/generated/verificationRuntimeConfig.ts`, and verify the verification WASM version API.
+- `dist/verification/v<decoded-bytecode-version>/<verifier-route>`: treat these as legacy verifier artifacts. Build them only through `npm run build:bytecode-verifier -- --verifier <verifier-id>` or the package scripts that call it. Confirm the verifier has an isolated compat recipe, does not fall back to the current compat overlay, has manifest route metadata, and has fixture evidence when it is a supported runtime candidate.
+- `scripts/compat/manifest.json` and files under `scripts/compat/`: update the manifest in the same change as any compat file addition, deletion, rename, or security-sensitive behavior change. For crypto, signature, randomness, storage, networking, TLS, lock, and filesystem replacements, record reachability and security impact before trusting the build result.
+- `scripts/verification/bytecode-version-sources.json` and `BYTECODE_VERSION_HISTORY.md`: before changing verifier routing during a Sui version-up, compare the new pinned Sui source with the previous current verifier for decoded bytecode version and bytecode serialization evidence. If decoded bytecode version, flavor, table layout, serializer behavior, deserializer behavior, or compiler edition capability changes, record the evidence and preserve the previous current verifier as legacy when it has a distinct verification outcome. If those evidence-changing fields are unchanged, update the current verifier record only and document the non-routing source change, such as protocol config drift, in the final report.
+- `src/generated/verificationRuntimeConfig.ts`: regenerate it from `scripts/verification/bytecode-verifiers.json`; do not hand-edit it.
+- `README.md`, `CLI_PIPELINE.md`, `VERIFICATION.md`, and `SECURITY.md`: update them only for current facts confirmed by source, prepare/build output, or tests. When `AGENTS.md`, `README.md`, or `CLI_PIPELINE.md` changes, run the required documentation checks before submitting.
 
 If a check cannot run, record the exact reason. Do not describe skipped or blocked checks as passed. Distinguish sandbox, permission, network, missing local tool, and real code/test failures.
 

@@ -140,6 +140,7 @@
     "fastcryptoSecp256r1Mod": "fastcrypto_secp256r1_mod.rs",
     "fastcryptoRistretto255Mod": "fastcrypto_ristretto255_mod.rs",
     "nitroAttestation": "nitro_attestation.rs",
+    "rangeproofs": "rangeproofs.rs",
     "moveUnitTestRunner": "move_unit_test_runner_patch.rs"
   }
 }

@@ -177,7 +177,7 @@ try {
   }
 }
 
-const invalidCaseVerifierId = "Sui-1.70.2";
+const invalidCaseVerifierId = "Sui-1.71.1";
 const invalidCaseManifest = {
   ...manifest,
   current: invalidCaseVerifierId,

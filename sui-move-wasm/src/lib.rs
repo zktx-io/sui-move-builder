@@ -28,7 +28,7 @@ use sui_types::{
     base_types::{SuiAddress, TxContext},
     digests::TransactionDigest,
     in_memory_storage::InMemoryStorage,
-    metrics::LimitsMetrics,
+    metrics::ExecutionMetrics,
 };
 use wasm_bindgen::prelude::*;
 
@@ -241,7 +241,7 @@ impl VMTestSetup for SuiWasmVMTestSetup {
     ) -> NativeContextExtensions<'ext> {
         let mut ext = NativeContextExtensions::default();
         let registry = prometheus::Registry::new();
-        let metrics = Arc::new(LimitsMetrics::new(&registry));
+        let metrics = Arc::new(ExecutionMetrics::new(&registry));
 
         ext.add(sui_move_natives::object_runtime::ObjectRuntime::new(
             store,

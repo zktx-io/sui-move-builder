@@ -591,9 +591,9 @@ let (min_depth, min_pkg, other_pkg) = if new_depth < *old_depth {
 
 ```json
 {
-  "version": "1.70.2",
-  "tag": "mainnet-v1.70.2",
-  "commit": "6d4ec0b0621dd9555753c9ecd5be021b25a0d267"
+  "version": "1.71.1",
+  "tag": "mainnet-v1.71.1",
+  "commit": "2f5992f189cd24445cd010ccf0aa7ff418ff93b1"
 }
 ```
 

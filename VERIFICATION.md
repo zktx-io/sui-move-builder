@@ -47,7 +47,7 @@ Each verifier follows the Sui CLI/source version it was built from. The decoded 
 | --------------- | ------------------------------------------- | -------------------------------- | ------------ |
 | `sui-1.26.2`    | `legacy`, `2024.alpha`, `2024.beta`         | `legacy`                         | Rejected     |
 | `sui-1.58.3-v6` | `legacy`, `2024.alpha`, `2024.beta`, `2024` | `legacy`                         | Accepted     |
-| `sui-1.70.2`    | `legacy`, `2024.alpha`, `2024.beta`, `2024` | `legacy`                         | Accepted     |
+| `sui-1.71.1`    | `legacy`, `2024.alpha`, `2024.beta`, `2024` | `legacy`                         | Accepted     |
 
 The missing package edition fallback is the CLI package manifest behavior for a
 package that does not declare `[package].edition`; it is separate from the

@@ -5,7 +5,7 @@
 export const VERIFICATION_RUNTIME_CONFIG = {
   currentBytecodeFlavor: 5,
   currentBytecodeVersion: 7,
-  currentVerifierId: "sui-1.70.2",
+  currentVerifierId: "sui-1.71.1",
   routes: {
     "6": {
       candidates: [
@@ -30,7 +30,7 @@ export const VERIFICATION_RUNTIME_CONFIG = {
           bytecodeFlavor: 5,
           decodedBytecodeVersion: 7,
           epochId: "v7-current",
-          verifierId: "sui-1.70.2",
+          verifierId: "sui-1.71.1",
         },
       ],
       decodedBytecodeVersion: 7,
@@ -53,13 +53,13 @@ export const VERIFICATION_RUNTIME_CONFIG = {
       suiVersion: "1.58.3",
       verifierId: "sui-1.58.3-v6",
     },
-    "sui-1.70.2": {
+    "sui-1.71.1": {
       bytecodeFlavor: 5,
       decodedBytecodeVersion: 7,
       epochId: "v7-current",
       importSpecifier: null,
-      suiVersion: "1.70.2",
-      verifierId: "sui-1.70.2",
+      suiVersion: "1.71.1",
+      verifierId: "sui-1.71.1",
     },
   },
 } as const;

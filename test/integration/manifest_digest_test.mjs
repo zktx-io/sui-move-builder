@@ -214,17 +214,17 @@ implicit-dependencies = false
 legacy_pkg = "0x0"
 
 [dependencies]
-same-name = { local = "../regular-dep" }
+same-name = { local = "../same-name-regular-dep" }
 
 [dev-dependencies]
-same_name = { local = "../dev-dep" }
+same_name = { local = "../same-name-dev-dep" }
 `;
 assertEqual(
   digestFromMoveToml(legacyNormalizedCollisionMoveToml, "LegacyPkg"),
   digestFromJson([
     {
       name: "same_name",
-      local: "../dev-dep",
+      local: "../same-name-dev-dep",
       modes: ["test"],
       use_environment: "mainnet",
     },
