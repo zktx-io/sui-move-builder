@@ -159,7 +159,7 @@ const result = await verifyMovePackageProvenance({
 
 Use `intent: "publish"` for publish transaction modules or publish `.mv` artifacts. Use `intent: "upgrade"` for upgrade transaction modules or upgrade preparation output.
 
-For publish transaction payload modules that keep the package self address as `0x0`, provide `reference.packageId` as deployed package metadata and do not provide `reference.rootAddress`. Use `reference.rootAddress` only when the reference bytecode already contains the published package address as the module self address; it explicitly rewrites the current build's module identity for semantic comparison.
+For publish transaction payload modules that keep the package self address as `0x0`, provide `reference.packageId` as deployed package metadata and do not provide `reference.rootAddress`. Do not pass both `reference.packageId` and `reference.rootAddress` when verifying normal publish transaction payload modules whose package self address is `0x0`. Use `reference.rootAddress` only when the reference bytecode already contains the published package address as the module self address; it explicitly rewrites the current build's module identity for semantic comparison.
 
 `verified` with `exact_bytecode_match` means the rebuilt raw modules match the reference bytes. Other statuses and verdicts are comparison evidence, not transaction execution results. See [VERIFICATION.md](./VERIFICATION.md).
 
