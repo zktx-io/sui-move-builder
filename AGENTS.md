@@ -168,6 +168,7 @@ For a normal refactor or version-up task, produce these outputs:
 - Updated source files or scripts with narrow, reviewable changes.
 - `.sui-build/patch-state.json` from a successful prepare run when WASM preparation is part of the task.
 - `dist/lite` and/or `dist/full` only after the prepared build commands succeed.
+- Bundled bytecode verifier artifacts such as `dist/verification/v6` only after `npm run build:bytecode-verifiers` or `npm run build` succeeds.
 - Updated README/CLI_PIPELINE content only for facts confirmed by code or tests.
 - Verified CLI and WASM full/lite runtime version exposure when version-up work produces runnable artifacts.
 - A final report listing changed files, commands run, failures, and remaining risks.

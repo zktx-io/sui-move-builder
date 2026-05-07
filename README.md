@@ -396,7 +396,8 @@ npm run build:wasm:prepared:full # builds dist/full from prepared state
 npm run build:wasm:prepared:verification # builds dist/verification from prepared state
 npm run build:wasm:prepared      # builds all variants from prepared state
 npm run build:wasm          # prepare + prepared build
-npm run build               # WASM build + JS package build
+npm run build:verification:v6 # builds bundled decoded-bytecode-version 6 verifier
+npm run build               # WASM build + JS package build + bundled bytecode verifiers
 npm run release:check       # typecheck + lint + format check + tests
 ```
 
@@ -411,6 +412,7 @@ The build keeps the upstream Sui checkout separate from generated and patched st
 - `.sui-build/generated/local-bin/`: local build tools such as the pinned `wasm-bindgen`
 - `.sui-build/patch-state.json`: successful prepare marker checked by `build:wasm:prepared`
 - `dist/full`, `dist/lite`, and `dist/verification`: generated npm artifacts
+- `dist/verification/v6`: generated verifier artifact for decoded bytecode version 6, created by `npm run build:verification:v6` and included by `npm run build`
 
 Only edit tracked project sources such as `src/`, `sui-move-wasm/`, and `scripts/compat/`. The `.sui-build/` directory is ignored build/cache state and can be removed with `npm run clean` together with `dist/`. Set `SUI_SOURCE_DIR` or `SUI_WORK_DIR` only when you intentionally want those directories somewhere else.
 
