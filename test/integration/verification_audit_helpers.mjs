@@ -135,8 +135,9 @@ export function verificationStatusGate(fixture, verification) {
     differences.push(`${fixture.name}: fixture must declare expectedStatus`);
   }
   if (
-    verification.status === "build_failure" ||
-    verification.status === "invalid_reference"
+    (verification.status === "build_failure" ||
+      verification.status === "invalid_reference") &&
+    verification.status !== fixture.expectedStatus
   ) {
     differences.push(
       `${fixture.name}: verification returned ${verification.status}: ${
@@ -158,6 +159,14 @@ export function verificationStatusGate(fixture, verification) {
   ) {
     differences.push(
       `${fixture.name}: expected verification verdict ${fixture.expectedVerdict}, got ${verification.verdict}`
+    );
+  }
+  if (
+    fixture.expectedFailureStage &&
+    verification.failureStage !== fixture.expectedFailureStage
+  ) {
+    differences.push(
+      `${fixture.name}: expected verification failureStage ${fixture.expectedFailureStage}, got ${verification.failureStage}`
     );
   }
   if (fixture.expectedVerdict === "bytecode_format_drift") {

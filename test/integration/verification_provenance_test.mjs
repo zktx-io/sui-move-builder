@@ -261,9 +261,9 @@ const wrongDigestResult = await verify(files, {
 expectStatus(wrongDigestResult, "mismatch", "wrong digest");
 expectVerdict(wrongDigestResult, "semantic_mismatch", "wrong digest");
 
-const v6ReferenceModule = withHeaderVersion(reference.modules[0], 6);
+const noFlavorReferenceModule = withHeaderVersion(reference.modules[0], 7);
 const metadataBytecodeVersionMismatch = await verify(files, {
-  modules: [v6ReferenceModule],
+  modules: [noFlavorReferenceModule],
   dependencies: reference.dependencies,
   cliVersion: "0.0.0-metadata-only",
   buildConfig: { edition: "2024", flavor: "sui" },

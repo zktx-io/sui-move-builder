@@ -42,8 +42,8 @@ const fixtures = [
     binaryArtifactPath:
       "crates/sui-single-node-benchmark/tests/data/package_publish_from_bytecode/package_a/build/a/bytecode_modules",
     intent: "publish",
-    expectedStatus: "bytecode_version_mismatch",
-    expectedVerdict: "bytecode_format_drift",
+    expectedStatus: "verified",
+    expectedVerdict: "exact_bytecode_match",
   },
 ];
 
@@ -176,8 +176,14 @@ async function main() {
             ok: false,
             differences: ["verification result has no currentBuild"],
           };
+      const expectsExactVerification =
+        fixture.expectedVerdict === "exact_bytecode_match";
       const comparison = {
-        ok: verificationGate.ok && cliVsVerification.ok,
+        ok:
+          verificationGate.ok &&
+          (expectsExactVerification
+            ? githubVsVerification.ok
+            : cliVsVerification.ok),
         verification,
         verificationGate,
         intent,

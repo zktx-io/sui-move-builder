@@ -5,6 +5,7 @@ import {
   type MovePackageInput,
   type MovePackageResolvedDependencies,
   type WasmModule,
+  withNodeFileFetch,
 } from "./core.js";
 import {
   applyLegacyPublicationMigrationToFiles,
@@ -205,6 +206,33 @@ type VerificationWasmModule = Pick<
   verification_resolve_package_groups(inputJson: string): string;
 };
 
+type VerificationWasmInitializerModule = VerificationWasmModule & {
+  default(init?: unknown): Promise<unknown>;
+};
+
+interface BundledBytecodeVerifierRoute {
+  verifierId: string;
+  importSpecifier: string;
+}
+
+const CURRENT_BYTECODE_VERSION = 7;
+const BUNDLED_BYTECODE_VERIFIER_ROUTES: ReadonlyMap<
+  number,
+  BundledBytecodeVerifierRoute
+> = new Map([
+  [
+    6,
+    {
+      verifierId: "sui-1.26.2",
+      importSpecifier: "./v6/sui_move_wasm.js",
+    },
+  ],
+]);
+const bundledBytecodeVerifierReady = new Map<
+  number,
+  Promise<VerificationWasmModule>
+>();
+
 /** Initialize the verification WASM module (idempotent). */
 export async function initMovePackageVerifier(options?: {
   wasm?: string | URL | BufferSource;
@@ -244,8 +272,11 @@ export async function verifyMovePackageProvenance(
 
   let mod: VerificationWasmModule;
   try {
-    mod = (await loadWasm(input.wasm)) as unknown as VerificationWasmModule;
+    mod = await loadVerificationWasm(input);
   } catch (error) {
+    if (isMovePackageProvenanceResult(error)) {
+      return error;
+    }
     const failure = asFailure(error, "wasm_init");
     return buildFailure(failure.error, "wasm_init");
   }
@@ -320,6 +351,137 @@ function buildFailure(
     failureStage,
     error,
   };
+}
+
+function isMovePackageProvenanceResult(
+  value: unknown
+): value is MovePackageProvenanceResult {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    typeof (value as MovePackageProvenanceResult).status === "string"
+  );
+}
+
+async function loadVerificationWasm(
+  input: MovePackageProvenanceInput
+): Promise<VerificationWasmModule> {
+  if (input.wasm) {
+    return (await loadWasm(input.wasm)) as unknown as VerificationWasmModule;
+  }
+
+  const bytecodeVersion = referenceBytecodeVersion(input.reference);
+  if (
+    bytecodeVersion === undefined ||
+    bytecodeVersion === CURRENT_BYTECODE_VERSION
+  ) {
+    return (await loadWasm()) as unknown as VerificationWasmModule;
+  }
+
+  const route = BUNDLED_BYTECODE_VERIFIER_ROUTES.get(bytecodeVersion);
+  if (!route) {
+    throw unsupportedBytecodeVersion(bytecodeVersion);
+  }
+
+  return loadBundledBytecodeVerifier(bytecodeVersion, route);
+}
+
+function unsupportedBytecodeVersion(
+  bytecodeVersion: number
+): MovePackageProvenanceResult {
+  return {
+    status: "bytecode_version_mismatch",
+    verdict: "unverified",
+    summary: `Decoded bytecode version ${bytecodeVersion} is not supported by this verifier package.`,
+    error: `Unsupported decoded bytecode version ${bytecodeVersion}. Supported bundled verifier versions: ${[
+      CURRENT_BYTECODE_VERSION,
+      ...BUNDLED_BYTECODE_VERIFIER_ROUTES.keys(),
+    ]
+      .sort((left, right) => left - right)
+      .join(", ")}`,
+  };
+}
+
+async function loadBundledBytecodeVerifier(
+  bytecodeVersion: number,
+  route: BundledBytecodeVerifierRoute
+): Promise<VerificationWasmModule> {
+  let ready = bundledBytecodeVerifierReady.get(bytecodeVersion);
+  if (!ready) {
+    ready = importVerificationWasm(route.importSpecifier).then(async (mod) => {
+      await withNodeFileFetch(async () => {
+        await mod.default({});
+      });
+      return mod;
+    });
+    bundledBytecodeVerifierReady.set(bytecodeVersion, ready);
+  }
+  return ready;
+}
+
+async function importVerificationWasm(
+  specifier: string
+): Promise<VerificationWasmInitializerModule> {
+  const dynamicImport = new Function(
+    "specifier",
+    "return import(specifier)"
+  ) as (specifier: string) => Promise<VerificationWasmInitializerModule>;
+  return dynamicImport(specifier);
+}
+
+function referenceBytecodeVersion(
+  reference: ReferenceArtifact
+): number | undefined {
+  const versions = new Set<number>();
+  for (const moduleBase64 of reference.modules) {
+    const version = moduleBytecodeVersion(moduleBase64);
+    if (version === undefined) {
+      return undefined;
+    }
+    versions.add(version);
+  }
+  if (versions.size !== 1) {
+    return undefined;
+  }
+  return versions.values().next().value as number;
+}
+
+function moduleBytecodeVersion(moduleBase64: string): number | undefined {
+  const header = decodeBase64Prefix(moduleBase64, 8);
+  if (!header || header.length < 8) {
+    return undefined;
+  }
+  const rawVersionWord =
+    (header[4] | (header[5] << 8) | (header[6] << 16) | (header[7] << 24)) >>>
+    0;
+  return rawVersionWord & 0x00ff_ffff;
+}
+
+function decodeBase64Prefix(
+  value: string,
+  length: number
+): Uint8Array | undefined {
+  const bufferCtor = (globalThis as any).Buffer;
+  if (typeof bufferCtor?.from === "function") {
+    const decoded = bufferCtor.from(value, "base64");
+    return new Uint8Array(decoded.subarray(0, length));
+  }
+
+  const atobFn = (globalThis as any).atob;
+  if (typeof atobFn !== "function") {
+    return undefined;
+  }
+
+  try {
+    const decoded = atobFn(value);
+    const bytes = new Uint8Array(Math.min(length, decoded.length));
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = decoded.charCodeAt(index);
+    }
+    return bytes;
+  } catch {
+    return undefined;
+  }
 }
 
 function verificationResolverHelpers(

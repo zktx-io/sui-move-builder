@@ -220,7 +220,9 @@ async function fetchNodeFileUrl(fileUrl: URL): Promise<Response> {
   });
 }
 
-async function withNodeFileFetch<T>(operation: () => Promise<T>): Promise<T> {
+export async function withNodeFileFetch<T>(
+  operation: () => Promise<T>
+): Promise<T> {
   if (!isNodeLikeEnvironment()) {
     return operation();
   }

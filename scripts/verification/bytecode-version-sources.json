@@ -180,7 +180,7 @@
           "sha256": "65d196c9fa72138d4c363f0e9f07dd42c87b3f33cf8b0d13b26d2a9f10caead0"
         }
       },
-      "notes": "Candidate source record for decoded bytecode version 6. This is the first decoded bytecode version observed in release CLI tags. Runtime routing is not enabled until an isolated verifier build and fixture prove a distinct exact result."
+      "notes": "Supported legacy verifier source record for decoded bytecode version 6. The isolated sui-1.26.2 verifier is bundled under dist/verification/v6 after fixture proof shows a distinct exact result."
     },
     {
       "decodedBytecodeVersion": 7,
@@ -260,7 +260,7 @@
           "sha256": "e6a8f7b0906d5be278ca911b498b71a952f8f8d7efe77d88d99aa53a0701a896"
         }
       },
-      "notes": "Current verifier source record. VERSION_MIN=5 is parser lower-bound evidence, not an observed verifier route. Runtime routing remains enabled only for this current verifier until legacy verifier builds and fixtures are added."
+      "notes": "Current verifier source record. VERSION_MIN=5 is parser lower-bound evidence, not an observed verifier route. Runtime routing uses this current verifier for decoded bytecode version 7."
     }
   ]
 }

@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 
 import { getSuiBuildConfig } from "../../scripts/sui-workspace.mjs";
 import {
-  legacyPackageName,
   loadBytecodeVerifierManifest,
   validateBytecodeVerifierManifest,
 } from "../../scripts/verification/bytecode-verifier-manifest.mjs";
@@ -64,16 +63,14 @@ for (const [bytecodeVersion, route] of Object.entries(
       `Bytecode version ${bytecodeVersion} route points at verifier ${route.verifier} with bytecodeVersion ${verifier.bytecodeVersion}`
     );
   }
-}
-
-for (const [verifierId, entry] of Object.entries(manifest.verifiers)) {
-  if (entry.status === "legacy") {
-    const expectedPackage = legacyPackageName(verifierId);
-    if (entry.packageName !== expectedPackage) {
-      throw new Error(
-        `Legacy bytecode verifier ${verifierId} must use package ${expectedPackage}`
-      );
-    }
+  const expectedDistPath =
+    route.verifier === manifest.current
+      ? "dist/verification"
+      : `dist/verification/v${bytecodeVersion}`;
+  if (route.distPath !== expectedDistPath) {
+    throw new Error(
+      `Bytecode version ${bytecodeVersion} route should use ${expectedDistPath}, got ${route.distPath}`
+    );
   }
 }
 
@@ -96,6 +93,7 @@ const invalidCaseManifest = {
     7: {
       verifier: invalidCaseVerifierId,
       flavor: 5,
+      distPath: "dist/verification",
     },
   },
   verifiers: {

@@ -17,6 +17,7 @@ import {
   assertSuiCliVersion,
   createVerificationAuditContext,
   readMovePackageFiles,
+  repoRoot,
   toArtifactPackageName,
 } from "./parity_helpers.mjs";
 import { runSuiCliReferenceArtifact } from "./sui_cli_artifact_helpers.mjs";
@@ -50,8 +51,14 @@ const fixtures = [
     packagePath: "move/enclave",
     txDigest: "B2eHopwUuSgMhJNHQA6LNMkQYVKesPe6M6MorbiwiaGX",
     expectedKind: "publish",
-    expectedStatus: "bytecode_version_mismatch",
-    expectedVerdict: "bytecode_format_drift",
+    expectedStatus: "build_failure",
+    expectedVerdict: "unverified",
+    expectedFailureStage: "compile",
+    verifierSource: {
+      sourceDir: ".sui-build/bytecode-verifiers/sui-1.26.2/source",
+      tag: "mainnet-v1.26.2",
+      commit: "f531168c745260b60a4ec4906c9f2b22240d872d",
+    },
   },
   {
     name: "apps-kiosk",
@@ -61,10 +68,108 @@ const fixtures = [
     packagePath: "kiosk",
     txDigest: "LexwBJLt1jMwhNsNCkU4jiWwZPaAeqwhgLy2RPZbd2n",
     expectedKind: "upgrade",
-    expectedStatus: "bytecode_version_mismatch",
-    expectedVerdict: "bytecode_format_drift",
+    expectedStatus: "verified",
+    expectedVerdict: "exact_bytecode_match",
+    verifierSource: {
+      sourceDir: ".sui-build/bytecode-verifiers/sui-1.26.2/source",
+      tag: "mainnet-v1.26.2",
+      commit: "f531168c745260b60a4ec4906c9f2b22240d872d",
+    },
   },
 ];
+
+class LocalSuiSourceFetcher {
+  constructor({ sourceDir, tag, commit }) {
+    this.sourceDir = path.resolve(repoRoot, sourceDir);
+    this.tag = tag;
+    this.commit = commit;
+  }
+
+  isSuiRepo(gitUrl) {
+    try {
+      const url = new URL(gitUrl);
+      const parts = url.pathname
+        .replace(/\.git$/, "")
+        .split("/")
+        .filter(Boolean);
+      return (
+        url.hostname.toLowerCase() === "github.com" &&
+        parts[0]?.toLowerCase() === "mystenlabs" &&
+        parts[1]?.toLowerCase() === "sui"
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  acceptsRev(rev) {
+    return (
+      rev === "framework/mainnet" ||
+      rev === "framework/testnet" ||
+      rev === this.tag ||
+      rev === this.commit ||
+      (typeof rev === "string" && this.commit.startsWith(rev))
+    );
+  }
+
+  async fetch(gitUrl, rev, subdir = "") {
+    if (!this.isSuiRepo(gitUrl)) {
+      throw new Error(
+        `Unexpected git dependency for verifier source: ${gitUrl}`
+      );
+    }
+    if (!this.acceptsRev(rev)) {
+      throw new Error(
+        `Unexpected Sui dependency revision ${rev}; expected framework/mainnet, framework/testnet, ${this.tag}, or ${this.commit}`
+      );
+    }
+    return readMovePackageFiles(path.join(this.sourceDir, subdir));
+  }
+
+  async fetchLocal(localPath, context) {
+    const parent = context?.parentSource;
+    if (parent?.type !== "git" || !this.isSuiRepo(parent.git)) {
+      throw new Error(
+        `Unexpected local dependency parent for verifier source: ${JSON.stringify(
+          parent
+        )}`
+      );
+    }
+    if (!this.acceptsRev(parent.rev)) {
+      throw new Error(
+        `Unexpected Sui local dependency revision ${parent.rev}; expected framework/mainnet, framework/testnet, ${this.tag}, or ${this.commit}`
+      );
+    }
+
+    const parentSubdir = parent.subdir || "";
+    const resolved = path.resolve(this.sourceDir, parentSubdir, localPath);
+    if (
+      resolved !== this.sourceDir &&
+      !resolved.startsWith(`${this.sourceDir}${path.sep}`)
+    ) {
+      throw new Error(`Local dependency escaped verifier source: ${localPath}`);
+    }
+    return readMovePackageFiles(resolved);
+  }
+
+  async fetchFile(gitUrl, rev, filePath) {
+    if (!this.isSuiRepo(gitUrl) || !this.acceptsRev(rev)) {
+      return null;
+    }
+    try {
+      return await fs.readFile(path.join(this.sourceDir, filePath), "utf8");
+    } catch {
+      return null;
+    }
+  }
+
+  getResolvedSha(gitUrl, rev) {
+    if (this.isSuiRepo(gitUrl) && this.acceptsRev(rev)) {
+      return this.commit;
+    }
+    return undefined;
+  }
+}
 
 const { suiVersion, mode, suiCli, parityOutputDir } =
   createVerificationAuditContext(
@@ -281,6 +386,9 @@ async function main() {
         files,
         intent: transactionArtifact.kind,
         network: fixture.network,
+        fetcher: fixture.verifierSource
+          ? new LocalSuiSourceFetcher(fixture.verifierSource)
+          : undefined,
         githubToken: token,
         rootGit: {
           git: fixture.git,
@@ -291,14 +399,27 @@ async function main() {
       });
       await writeJsonArtifact(outputRoot, "verification.json", verification);
       const verificationGate = verificationStatusGate(fixture, verification);
-      const cliVsVerification = cliReference
-        ? compareCliReferenceWithVerificationCurrent(cliReference, verification)
-        : {
+      const expectsVerifierFailure =
+        fixture.expectedStatus === "build_failure" ||
+        fixture.expectedStatus === "invalid_reference";
+      const cliVsVerification = expectsVerifierFailure
+        ? {
             ok: true,
             skipped: true,
             reason:
-              "Upgrade transaction verification compares the extracted transaction modules against the verifier's upgrade-intent currentBuild; no dump reference is used.",
-          };
+              "Fixture records a verifier failure state; no currentBuild comparison is expected.",
+          }
+        : cliReference
+          ? compareCliReferenceWithVerificationCurrent(
+              cliReference,
+              verification
+            )
+          : {
+              ok: true,
+              skipped: true,
+              reason:
+                "Upgrade transaction verification compares the extracted transaction modules against the verifier's upgrade-intent currentBuild; no dump reference is used.",
+            };
       const verificationCurrentBuild = verification.currentBuild
         ? normalizeOutput(verification.currentBuild)
         : undefined;
@@ -325,10 +446,16 @@ async function main() {
             "verification",
             verificationCurrentBuild
           )
-        : {
-            ok: false,
-            differences: ["verification result has no currentBuild"],
-          };
+        : expectsVerifierFailure
+          ? {
+              ok: true,
+              skipped: true,
+              differences: [],
+            }
+          : {
+              ok: false,
+              differences: ["verification result has no currentBuild"],
+            };
       const compareDependencyOutputs = transactionArtifact.kind === "upgrade";
       const txVsVerificationOutput =
         compareDependencyOutputs && verificationCurrentBuild
@@ -361,7 +488,9 @@ async function main() {
       const transactionMatchesCli = txVsCli.ok && txVsCliOutput.length === 0;
       const currentBuildPresent = Boolean(verificationCurrentBuild);
       const currentBuildGate =
-        transactionArtifact.kind === "upgrade" ? currentBuildPresent : true;
+        expectsVerifierFailure || transactionArtifact.kind !== "upgrade"
+          ? true
+          : currentBuildPresent;
       const comparison = {
         ok: verificationGate.ok && cliVsVerification.ok && currentBuildGate,
         transactionMatchesCurrent:
@@ -389,8 +518,12 @@ async function main() {
           `[DIFF] transaction modules differ from current build output; see ${path.join(outputRoot, "comparison.json")}`
         );
       } else {
+        const moduleCount =
+          verification.currentBuild?.modules?.length ??
+          cliReference?.output?.modules?.length ??
+          transactionArtifact.modules.length;
         console.log(
-          `[OK] kind=${transactionArtifact.kind}, status=${verification.status}, modules=${cliReference.output.modules.length}`
+          `[OK] kind=${transactionArtifact.kind}, status=${verification.status}, modules=${moduleCount}`
         );
       }
     } catch (error) {

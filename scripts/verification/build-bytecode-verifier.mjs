@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   defaultCompatDir,
   getBytecodeVerifierEntry,
+  getBytecodeVerifierRoute,
   getRepoRoot,
   isolatedVerifierRoot,
 } from "./bytecode-verifier-manifest.mjs";
@@ -153,6 +154,40 @@ function buildVerificationJs(repoRoot, root) {
   });
 }
 
+async function syncBundledVerificationDist(repoRoot, entry, root) {
+  const routeInfo = getBytecodeVerifierRoute(entry.verifierId, repoRoot);
+  if (!routeInfo) {
+    console.log(
+      `[INFO] ${entry.verifierId} has no bundled bytecode version route; leaving artifacts under ${path.join(root, "dist")}`
+    );
+    return;
+  }
+
+  const sourceDir = path.join(root, "dist", "verification");
+  const targetDir = path.join(repoRoot, routeInfo.route.distPath);
+  await fs.rm(targetDir, { recursive: true, force: true });
+  await fs.mkdir(path.dirname(targetDir), { recursive: true });
+  if (entry.status === "current") {
+    await fs.cp(sourceDir, targetDir, { recursive: true });
+  } else {
+    await fs.mkdir(targetDir, { recursive: true });
+    for (const fileName of [
+      "sui_move_wasm.js",
+      "sui_move_wasm.d.ts",
+      "sui_move_wasm_bg.wasm",
+      "sui_move_wasm_bg.wasm.d.ts",
+    ]) {
+      await fs.copyFile(
+        path.join(sourceDir, fileName),
+        path.join(targetDir, fileName)
+      );
+    }
+  }
+  console.log(
+    `[OK] ${entry.verifierId} bundled verifier copied to ${routeInfo.route.distPath}`
+  );
+}
+
 function ensureRustTarget(entry, repoRoot, env) {
   if (!entry.rustVersion) return;
   run(
@@ -258,6 +293,7 @@ async function main() {
   }
   if (shouldBuildJs(options)) {
     buildVerificationJs(repoRoot, root);
+    await syncBundledVerificationDist(repoRoot, entry, root);
   }
 
   console.log(

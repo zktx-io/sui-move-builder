@@ -1,12 +1,18 @@
 {
   "schemaVersion": 1,
   "selectionModel": "bytecode-version-first",
-  "distribution": "separate-npm-packages",
+  "distribution": "bundled-lazy",
   "current": "sui-1.70.2",
   "bytecodeVersions": {
+    "6": {
+      "verifier": "sui-1.26.2",
+      "flavor": null,
+      "distPath": "dist/verification/v6"
+    },
     "7": {
       "verifier": "sui-1.70.2",
-      "flavor": 5
+      "flavor": 5,
+      "distPath": "dist/verification"
     }
   },
   "verifiers": {
@@ -40,8 +46,8 @@
       "bytecodeVersion": 6,
       "bytecodeFlavor": null,
       "selectionReason": "Legacy verifier candidate for the final mainnet decoded bytecode version 6 source before version 7.",
-      "packageName": "@zktx.io/sui-move-builder-bytecode-verifier-sui-1.26.2",
-      "verificationWasmPath": ".sui-build/bytecode-verifiers/sui-1.26.2/dist/verification/sui_move_wasm_bg.wasm",
+      "packageName": "@zktx.io/sui-move-builder",
+      "verificationWasmPath": "dist/verification/v6/sui_move_wasm_bg.wasm",
       "knownFixtures": [
         {
           "name": "apps-kiosk",

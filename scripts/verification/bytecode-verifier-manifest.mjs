@@ -36,8 +36,16 @@ export function getBytecodeVerifierEntry(verifierId, repoRoot = getRepoRoot()) {
   return entry;
 }
 
-export function legacyPackageName(verifierId) {
-  return `@zktx.io/sui-move-builder-bytecode-verifier-${verifierId}`;
+export function getBytecodeVerifierRoute(verifierId, repoRoot = getRepoRoot()) {
+  const { manifest } = loadBytecodeVerifierManifest(repoRoot);
+  for (const [bytecodeVersion, route] of Object.entries(
+    manifest.bytecodeVersions
+  )) {
+    if (route.verifier === verifierId) {
+      return { bytecodeVersion: Number.parseInt(bytecodeVersion, 10), route };
+    }
+  }
+  return undefined;
 }
 
 export function isolatedVerifierRoot(repoRoot, verifierId) {
@@ -69,8 +77,8 @@ export function validateBytecodeVerifierManifest(
     `${label}: selectionModel must be bytecode-version-first`
   );
   assertValue(
-    manifest.distribution === "separate-npm-packages",
-    `${label}: distribution must be separate-npm-packages`
+    manifest.distribution === "bundled-lazy",
+    `${label}: distribution must be bundled-lazy`
   );
   assertString(manifest.current, `${label}: current`);
   assertObject(manifest.bytecodeVersions, `${label}: bytecodeVersions`);
@@ -80,7 +88,6 @@ export function validateBytecodeVerifierManifest(
     `${label}: current must name an existing verifier`
   );
 
-  const seenPackageNames = new Set();
   for (const [verifierId, entry] of Object.entries(manifest.verifiers)) {
     assertObject(entry, `${label}: verifiers.${verifierId}`);
     assertString(entry.verifierId, `${label}: ${verifierId}.verifierId`);
@@ -172,10 +179,9 @@ export function validateBytecodeVerifierManifest(
     );
     assertString(entry.packageName, `${label}: ${verifierId}.packageName`);
     assertValue(
-      !seenPackageNames.has(entry.packageName),
-      `${label}: duplicate packageName ${entry.packageName}`
+      entry.packageName === "@zktx.io/sui-move-builder",
+      `${label}: ${verifierId}.packageName must be @zktx.io/sui-move-builder for bundled-lazy distribution`
     );
-    seenPackageNames.add(entry.packageName);
     assertString(
       entry.verificationWasmPath,
       `${label}: ${verifierId}.verificationWasmPath`
@@ -188,18 +194,6 @@ export function validateBytecodeVerifierManifest(
       validateKnownFixture(
         fixture,
         `${label}: ${verifierId}.knownFixtures[${fixtureIndex}]`
-      );
-    }
-
-    if (entry.status === "current") {
-      assertValue(
-        entry.packageName === "@zktx.io/sui-move-builder",
-        `${label}: current verifier packageName must be @zktx.io/sui-move-builder`
-      );
-    } else {
-      assertValue(
-        entry.packageName === legacyPackageName(verifierId),
-        `${label}: legacy ${verifierId}.packageName must be ${legacyPackageName(verifierId)}`
       );
     }
   }
@@ -235,7 +229,43 @@ export function validateBytecodeVerifierManifest(
         `${label}: bytecodeVersions.${version}.flavor must match verifier bytecodeFlavor`
       );
     }
+    assertString(
+      route.distPath,
+      `${label}: bytecodeVersions.${version}.distPath`
+    );
+    validateBundledDistPath(
+      route.distPath,
+      manifest.current,
+      route.verifier,
+      bytecodeVersion,
+      `${label}: bytecodeVersions.${version}.distPath`
+    );
+    assertValue(
+      verifier.verificationWasmPath ===
+        path.posix.join(route.distPath, "sui_move_wasm_bg.wasm"),
+      `${label}: ${route.verifier}.verificationWasmPath must point inside ${route.distPath}`
+    );
   }
+}
+
+function validateBundledDistPath(
+  distPath,
+  currentVerifierId,
+  verifierId,
+  bytecodeVersion,
+  label
+) {
+  assertString(distPath, label);
+  assertValue(!path.isAbsolute(distPath), `${label} must be relative`);
+  assertValue(
+    !distPath.split(/[\\/]+/).includes(".."),
+    `${label} must not contain .. path segments`
+  );
+  const expected =
+    verifierId === currentVerifierId
+      ? "dist/verification"
+      : `dist/verification/v${bytecodeVersion}`;
+  assertValue(distPath === expected, `${label} must be ${expected}`);
 }
 
 function validateSourceVariantPath(sourceVariantPath, label, repoRoot) {
