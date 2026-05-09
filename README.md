@@ -196,6 +196,15 @@ await initMovePackageBuilder({
 });
 ```
 
+The verification entry can also lazy-load decoded-bytecode-version 6 verifier modules. Browser deployments that use `@zktx.io/sui-move-builder/verification` must publish the routed verifier JS and WASM files with the app assets:
+
+- `v6/classic/sui_move_wasm.js`
+- `v6/classic/sui_move_wasm_bg.wasm`
+- `v6/v7source-2024/sui_move_wasm.js`
+- `v6/v7source-2024/sui_move_wasm_bg.wasm`
+
+If your bundler emits the verification entry under `/assets`, these files are requested under `/assets/v6/...`. A missing routed verifier JS file fails before source comparison with a dynamic import error.
+
 ## Main Input Options
 
 | Option                        | Type                                 | Notes                                                              |

@@ -75,6 +75,15 @@ Run `npm run build` first when a check needs generated `dist/` artifacts.
 
 The local Sui CLI must be installed or selected with `SUI_CLI` for CLI comparison checks. A version difference from `sui-version.json` is a warning and comparison risk, not a reason to accept mismatched output.
 
+Before publishing or deploying a browser app that uses the verification entry, confirm the package or deploy artifact includes the routed verifier assets:
+
+- `dist/verification/v6/classic/sui_move_wasm.js`
+- `dist/verification/v6/classic/sui_move_wasm_bg.wasm`
+- `dist/verification/v6/v7source-2024/sui_move_wasm.js`
+- `dist/verification/v6/v7source-2024/sui_move_wasm_bg.wasm`
+
+When checking npm package contents locally, `npm pack --dry-run --json --cache /private/tmp/sui-move-builder-npm-cache` avoids relying on a user-global npm cache. Consumer web-app deploy artifacts may rewrite the prefix, but the `v6/classic` and `v6/v7source-2024` route files must remain reachable next to the emitted verification entry chunk.
+
 Useful environment variables:
 
 - `SUI_CLI=/path/to/sui` selects the local Sui CLI binary.

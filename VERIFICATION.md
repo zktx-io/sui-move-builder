@@ -26,6 +26,8 @@ The wrapper reads the decoded bytecode version from `reference.modules` and lazy
 | 6                        | `dist/verification/v6/classic`       |
 | 6                        | `dist/verification/v6/v7source-2024` |
 
+Browser bundles must keep each routed verifier's `sui_move_wasm.js` and `sui_move_wasm_bg.wasm` reachable relative to the verification entry chunk. For example, if the verification entry is served from `/assets`, decoded-bytecode-version 6 routes are loaded from `/assets/v6/classic/sui_move_wasm.js` and `/assets/v6/v7source-2024/sui_move_wasm.js`, and each route then initializes its adjacent WASM file.
+
 The selected verifier's Sui source version is reported as `bytecodeHeaderEvidence.currentVerifierSuiVersion`. This is build-time verifier metadata, not a local CLI probe. `reference.cliVersion` is caller-declared metadata and does not replace bytecode comparison.
 
 Declared `reference.cliVersion` and `reference.buildConfig` are returned as evidence when provided. They are caller-provided metadata and are not used as a substitute for bytecode comparison.
