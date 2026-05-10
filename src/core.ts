@@ -179,6 +179,21 @@ interface RootPublicationMetadata {
 export type WasmModule = typeof import("./sui_move_wasm.js");
 
 let wasmReady: Promise<WasmModule> | undefined;
+const WASM_FETCH_RETRY_DELAYS_MS = [250, 750] as const;
+
+class WasmFetchHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly statusText: string
+  ) {
+    super(
+      `WASM fetch failed with HTTP ${status}${
+        statusText ? ` ${statusText}` : ""
+      }`
+    );
+    this.name = "WasmFetchHttpError";
+  }
+}
 
 function isNodeLikeEnvironment(): boolean {
   return Boolean((globalThis as any).process?.versions?.node);
@@ -228,23 +243,71 @@ async function fetchNodeFileUrl(fileUrl: URL): Promise<Response> {
   });
 }
 
+function isRetryableWasmFetchStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+function shouldRetryWasmFetch(error: unknown): boolean {
+  if (error instanceof WasmFetchHttpError) {
+    return isRetryableWasmFetchStatus(error.status);
+  }
+  return true;
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWasmWithRetry(
+  previousFetch: unknown,
+  input: unknown,
+  init?: unknown
+): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= WASM_FETCH_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      const fileUrl = asFileUrl(input);
+      const response = fileUrl
+        ? await fetchNodeFileUrl(fileUrl)
+        : await callFetch(previousFetch, input, init);
+      if (!response.ok) {
+        throw new WasmFetchHttpError(response.status, response.statusText);
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (
+        attempt >= WASM_FETCH_RETRY_DELAYS_MS.length ||
+        !shouldRetryWasmFetch(error)
+      ) {
+        throw error;
+      }
+      await delay(WASM_FETCH_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+  throw lastError;
+}
+
+async function callFetch(
+  previousFetch: unknown,
+  input: unknown,
+  init?: unknown
+): Promise<Response> {
+  if (typeof previousFetch !== "function") {
+    throw new TypeError("fetch is not available");
+  }
+  return (await previousFetch.call(globalThis, input, init)) as Response;
+}
+
 export async function withNodeFileFetch<T>(
   operation: () => Promise<T>
 ): Promise<T> {
-  if (!isNodeLikeEnvironment()) {
-    return operation();
-  }
-
   const previousFetch = (globalThis as any).fetch;
   (globalThis as any).fetch = async (input: unknown, init?: unknown) => {
-    const fileUrl = asFileUrl(input);
-    if (fileUrl) {
-      return fetchNodeFileUrl(fileUrl);
+    if (!isNodeLikeEnvironment() && typeof previousFetch !== "function") {
+      return callFetch(previousFetch, input, init);
     }
-    if (typeof previousFetch !== "function") {
-      throw new TypeError("fetch is not available");
-    }
-    return previousFetch.call(globalThis, input, init);
+    return fetchWasmWithRetry(previousFetch, input, init);
   };
 
   try {
@@ -271,6 +334,12 @@ export async function loadWasm(
         }
       });
       return mod;
+    });
+    const ready = wasmReady;
+    ready.catch(() => {
+      if (wasmReady === ready) {
+        wasmReady = undefined;
+      }
     });
   }
   return wasmReady;

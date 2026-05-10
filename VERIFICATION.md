@@ -13,6 +13,7 @@ The verification entrypoint rebuilds caller-provided source and compares the res
 - `reference.rootAddress`: optional explicit root address for on-chain package module comparison
 - `reference.digest`: optional package digest
 - `reference.cliVersion` and `reference.buildConfig`: optional caller-declared evidence metadata
+- `verifierAssetBaseUrl`: optional browser asset base URL for routed bundled verifiers
 
 The verifier does not fetch RPC, GitHub, transaction, or filesystem data. Transaction callers extract `Publish` or `Upgrade` externally and pass the matching reference artifact.
 
@@ -26,7 +27,11 @@ The wrapper reads the decoded bytecode version from `reference.modules` and lazy
 | 6                        | `dist/verification/v6/classic`       |
 | 6                        | `dist/verification/v6/v7source-2024` |
 
-Browser bundles must keep each routed verifier's `sui_move_wasm.js` and `sui_move_wasm_bg.wasm` reachable relative to the verification entry chunk. For example, if the verification entry is served from `/assets`, decoded-bytecode-version 6 routes are loaded from `/assets/v6/classic/sui_move_wasm.js` and `/assets/v6/v7source-2024/sui_move_wasm.js`, and each route then initializes its adjacent WASM file.
+Browser bundles must keep each routed verifier's `sui_move_wasm.js` and `sui_move_wasm_bg.wasm` reachable relative to the verification entry chunk, or pass `verifierAssetBaseUrl` to point at a root-relative or absolute HTTP(S) asset base. For example, `verifierAssetBaseUrl: "/assets"` loads decoded-bytecode-version 6 routes from `/assets/v6/classic/sui_move_wasm.js` and `/assets/v6/v7source-2024/sui_move_wasm.js`, and each route then initializes its adjacent WASM file.
+
+`verifierAssetBaseUrl` accepts `/assets`, `/assets/`, and HTTP(S) URL objects or strings without query strings or hashes. Plain relative paths such as `assets`, `./assets`, and `../assets` are rejected as `input_validation` failures. A custom `wasm` override bypasses bundled verifier routing.
+
+Serve routed `.wasm` files with `Content-Type: application/wasm`. The loader retries transient route JS import and WASM fetch failures such as `408`, `425`, `429`, and `5xx`; it does not retry missing assets such as `404`.
 
 The selected verifier's Sui source version is reported as `bytecodeHeaderEvidence.currentVerifierSuiVersion`. This is build-time verifier metadata, not a local CLI probe. `reference.cliVersion` is caller-declared metadata and does not replace bytecode comparison.
 

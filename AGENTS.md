@@ -62,6 +62,8 @@ Publication update helpers consume successful external execution results and pre
 
 Run build, parity, audit, and browser verification serially. These commands share `.sui-build`, `dist`, and Sui CLI cache state, so the default process does not use background jobs or parallel npm runners.
 
+When changing verification WASM loader or routed verifier asset behavior, map the full browser and Node call path before editing: verification wrapper selection, route JS dynamic import, wasm-bindgen adjacent WASM fetch, custom `wasm` override, cache keys, retry policy, and ESM/CJS dist loading. Retry behavior must distinguish transient HTTP status or network failures from missing assets, and rejected loader promises must not poison later calls. Add or update Node/browser resilience tests and package dry-run checks when routed asset loading or package contents can change.
+
 ## Version-Up Review Checklist
 
 Before implementing a Sui version-up, map the full dependency and artifact flow: `sui-version.json` -> pinned upstream source -> active compat manifest -> prepare patch targets -> Cargo workspace dependencies -> WASM profiles -> verification routes -> generated runtime config -> tests and docs. Use that map to decide the order of changes and the verification commands, not only the first failing command.

@@ -84,6 +84,8 @@ Before publishing or deploying a browser app that uses the verification entry, c
 
 When checking npm package contents locally, `npm pack --dry-run --json --cache /private/tmp/sui-move-builder-npm-cache` avoids relying on a user-global npm cache. Consumer web-app deploy artifacts may rewrite the prefix, but the `v6/classic` and `v6/v7source-2024` route files must remain reachable next to the emitted verification entry chunk.
 
+For browser deploy checks, request the routed verifier JS and adjacent WASM URLs directly and confirm successful responses. The `.wasm` responses should use `Content-Type: application/wasm`. The loader retries transient route JS and WASM fetch failures, including provider or cache warmup `503` responses, but `404` remains a deployment error.
+
 Useful environment variables:
 
 - `SUI_CLI=/path/to/sui` selects the local Sui CLI binary.

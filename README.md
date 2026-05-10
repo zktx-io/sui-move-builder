@@ -205,6 +205,30 @@ The verification entry can also lazy-load decoded-bytecode-version 6 verifier mo
 
 If your bundler emits the verification entry under `/assets`, these files are requested under `/assets/v6/...`. A missing routed verifier JS file fails before source comparison with a dynamic import error.
 
+If your app hosts routed verifier files under a browser asset prefix, pass a root-relative or absolute HTTP(S) base URL:
+
+```ts
+const result = await verifyMovePackageProvenance({
+  files,
+  intent: "publish",
+  reference,
+  verifierAssetBaseUrl: "/assets",
+});
+```
+
+`verifierAssetBaseUrl` accepts values such as `/assets`, `/assets/`, and `https://cdn.example.com/assets`. Plain relative paths such as `assets`, `./assets`, and `../assets` are rejected. If you pass a custom `wasm` override, routed verifier asset loading is skipped.
+
+Serve `.wasm` files with `Content-Type: application/wasm`. The loader retries transient route JS and WASM fetch failures such as `503`, but missing assets such as `404` still fail.
+
+Browser deployment checklist:
+
+- Keep each routed `sui_move_wasm.js` next to its `sui_move_wasm_bg.wasm` file under the same route directory.
+- If your bundler or CDN moves package assets away from the verification entry chunk, set `verifierAssetBaseUrl` to the deployed root-relative or absolute HTTP(S) asset base.
+- Probe the routed JS and WASM URLs after deploy, including both `v6/classic` and `v6/v7source-2024`.
+- Treat `404` as an asset packaging or path error. Retry only covers transient network, gateway, or warmup failures.
+- Fix `application/octet-stream` or missing WASM MIME settings to `application/wasm`; otherwise browsers fall back to slower non-streaming initialization and still fail on non-OK responses.
+- Browser apps must pass source snapshots and dependency snapshots or a `fetcher`; they should not rely on host filesystem package roots.
+
 ## Main Input Options
 
 | Option                        | Type                                 | Notes                                                              |
@@ -220,6 +244,7 @@ If your bundler emits the verification entry under `/assets`, these files are re
 | `ansiColor`                   | `boolean`                            | Enable ANSI output                                                 |
 | `stripMetadata`               | `boolean`                            | Reserved; currently passed through but not applied                 |
 | `onProgress`                  | `(event) => void`                    | Build progress callback                                            |
+| `verifierAssetBaseUrl`        | `string \| URL`                      | Verification-only browser asset base for routed verifier files     |
 
 Build and test failures return `{ error, category, code? }`. `category` is a broad stage label; `error` is the detailed diagnostic.
 

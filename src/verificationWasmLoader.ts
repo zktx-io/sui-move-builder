@@ -19,6 +19,8 @@ type VerificationWasmInitializerModule = VerificationWasmModule & {
   default(init?: unknown): Promise<unknown>;
 };
 
+const ROUTE_IMPORT_RETRY_DELAYS_MS = [250, 750] as const;
+
 export interface LoadedVerificationWasm {
   mod: VerificationWasmModule;
   selectedVerifier: VerificationSelectedVerifier;
@@ -94,6 +96,10 @@ export async function loadVerificationWasmCandidates(
       },
     ];
   }
+  const verifierAssetBaseUrl = normalizedVerifierAssetBaseUrl(
+    input.verifierAssetBaseUrl,
+    referenceBytecode
+  );
 
   const bytecodeVersion = referenceBytecode.decodedVersion;
   if (
@@ -152,7 +158,11 @@ export async function loadVerificationWasmCandidates(
         if (!verifier.importSpecifier) {
           throw unsupportedBytecodeVersion(bytecodeVersion, referenceBytecode);
         }
-        const mod = await loadBundledBytecodeVerifier(verifier);
+        const importSpecifier = verifierImportSpecifier(
+          verifier,
+          verifierAssetBaseUrl
+        );
+        const mod = await loadBundledBytecodeVerifier(verifier, importSpecifier);
         return {
           mod,
           referenceBytecode,
@@ -192,19 +202,24 @@ function unsupportedBytecodeVersion(
 }
 
 async function loadBundledBytecodeVerifier(
-  verifier: RuntimeVerifier
+  verifier: RuntimeVerifier,
+  importSpecifier: string
 ): Promise<VerificationWasmModule> {
-  let ready = bundledBytecodeVerifierReady.get(verifier.verifierId);
+  const cacheKey = `${verifier.verifierId}|${importSpecifier}`;
+  let ready = bundledBytecodeVerifierReady.get(cacheKey);
   if (!ready) {
-    ready = importVerificationWasm(verifier.importSpecifier ?? "").then(
-      async (mod) => {
-        await withNodeFileFetch(async () => {
-          await mod.default({});
-        });
-        return mod;
+    ready = importVerificationWasm(importSpecifier).then(async (mod) => {
+      await withNodeFileFetch(async () => {
+        await mod.default({});
+      });
+      return mod;
+    });
+    ready.catch(() => {
+      if (bundledBytecodeVerifierReady.get(cacheKey) === ready) {
+        bundledBytecodeVerifierReady.delete(cacheKey);
       }
-    );
-    bundledBytecodeVerifierReady.set(verifier.verifierId, ready);
+    });
+    bundledBytecodeVerifierReady.set(cacheKey, ready);
   }
   return ready;
 }
@@ -216,7 +231,164 @@ async function importVerificationWasm(
     "specifier",
     "return import(specifier)"
   ) as (specifier: string) => Promise<VerificationWasmInitializerModule>;
-  return dynamicImport(specifier);
+  let lastError: unknown;
+  for (
+    let attempt = 0;
+    attempt <= ROUTE_IMPORT_RETRY_DELAYS_MS.length;
+    attempt++
+  ) {
+    const attemptSpecifier =
+      attempt === 0 ? specifier : retryImportSpecifier(specifier, attempt);
+    try {
+      return await dynamicImport(attemptSpecifier);
+    } catch (error) {
+      lastError = error;
+      if (
+        attempt >= ROUTE_IMPORT_RETRY_DELAYS_MS.length ||
+        !(await shouldRetryRouteImport(specifier, error))
+      ) {
+        throw error;
+      }
+      await delay(ROUTE_IMPORT_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+  throw lastError;
+}
+
+function normalizedVerifierAssetBaseUrl(
+  value: string | URL | undefined,
+  referenceBytecode: VerificationReferenceBytecode
+): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const invalid = (reason: string): never => {
+    throw inputValidationFailure(
+      `Invalid verifierAssetBaseUrl: ${reason}`,
+      referenceBytecode
+    );
+  };
+  if (value instanceof URL) {
+    if (value.protocol !== "http:" && value.protocol !== "https:") {
+      invalid("URL objects must use http: or https:");
+    }
+    if (value.search || value.hash) {
+      invalid("query strings and hashes are not supported");
+    }
+    return trimTrailingSlash(value.toString());
+  }
+  const raw = value.trim();
+  if (!raw) {
+    invalid("value must not be empty");
+  }
+  if (raw.startsWith("http://") || raw.startsWith("https://")) {
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      invalid("absolute URLs must be valid HTTP(S) URLs");
+    }
+    if (url.search || url.hash) {
+      invalid("query strings and hashes are not supported");
+    }
+    return trimTrailingSlash(url.toString());
+  }
+  if (raw.startsWith("/") && !raw.startsWith("//")) {
+    if (raw.includes("?") || raw.includes("#")) {
+      invalid("query strings and hashes are not supported");
+    }
+    return trimTrailingSlash(raw);
+  }
+  invalid("use a root-relative path such as /assets or an absolute HTTP(S) URL");
+}
+
+function verifierImportSpecifier(
+  verifier: RuntimeVerifier,
+  verifierAssetBaseUrl: string | undefined
+): string {
+  if (verifierAssetBaseUrl === undefined) {
+    return verifier.importSpecifier ?? "";
+  }
+  const relative = (verifier.importSpecifier ?? "").replace(/^\.\/+/, "");
+  return verifierAssetBaseUrl
+    ? `${verifierAssetBaseUrl}/${relative}`
+    : `/${relative}`;
+}
+
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+function inputValidationFailure(
+  error: string,
+  referenceBytecode: VerificationReferenceBytecode
+): MovePackageProvenanceResult {
+  return {
+    status: "build_failure",
+    failureStage: "input_validation",
+    error,
+    displayMessage: `Verification failed at input_validation: ${error}`,
+    referenceBytecode,
+  };
+}
+
+function retryImportSpecifier(specifier: string, attempt: number): string {
+  if (!isPathLikeImportSpecifier(specifier)) {
+    return specifier;
+  }
+  const separator = specifier.includes("?") ? "&" : "?";
+  return `${specifier}${separator}sui_move_builder_retry=${attempt}`;
+}
+
+function isPathLikeImportSpecifier(specifier: string): boolean {
+  return (
+    specifier.startsWith("./") ||
+    specifier.startsWith("../") ||
+    specifier.startsWith("/") ||
+    specifier.startsWith("http://") ||
+    specifier.startsWith("https://")
+  );
+}
+
+async function shouldRetryRouteImport(
+  specifier: string,
+  _error: unknown
+): Promise<boolean> {
+  const status = await routeImportStatus(specifier);
+  if (status === undefined) {
+    return true;
+  }
+  if (status >= 400) {
+    return status === 408 || status === 425 || status === 429 || status >= 500;
+  }
+  return true;
+}
+
+async function routeImportStatus(specifier: string): Promise<number | undefined> {
+  const url = statusProbeUrl(specifier);
+  if (!url || typeof fetch !== "function") {
+    return undefined;
+  }
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    return response.status;
+  } catch {
+    return undefined;
+  }
+}
+
+function statusProbeUrl(specifier: string): string | undefined {
+  if (specifier.startsWith("http://") || specifier.startsWith("https://")) {
+    return specifier;
+  }
+  if (specifier.startsWith("/")) {
+    return specifier;
+  }
+  return undefined;
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function currentVerifierConfig(): RuntimeVerifier {

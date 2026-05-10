@@ -237,6 +237,11 @@ export interface MovePackageProvenanceInput extends MovePackageInput {
   intent: VerificationProvenanceIntent;
   reference: ReferenceArtifact;
   /**
+   * Browser asset base for bundled routed verifier modules.
+   * Accepts root-relative paths such as "/assets" or absolute HTTP(S) URLs.
+   */
+  verifierAssetBaseUrl?: string | URL;
+  /**
    * Evidence label for a caller-provided verification WASM.
    * This does not affect compiler behavior; it only identifies custom WASM results.
    */
